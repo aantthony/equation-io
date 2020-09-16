@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "commonjs",
+    "declaration": true,
+    "outDir": "./dist",
+    "strict": true,
+    "noImplicitAny": true,
+    "noImplicitThis": true,
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "allowSyntheticDefaultImports": true,
+    "inlineSourceMap": true
+  },
+  "include": [
+    "import.d.ts",
+    "./lib/index.ts"
+  ]
+}

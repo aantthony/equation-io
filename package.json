@@ -1,0 +1,29 @@
+{
+  "name": "equation",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "directories": {
+    "lib": "lib"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aantthony/equation.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/aantthony/equation/issues"
+  },
+  "homepage": "https://github.com/aantthony/equation#readme",
+  "dependencies": {
+    "chalk": "^4.1.0",
+    "typescript": "^4.0.2"
+  },
+  "devDependencies": {
+    "ts-node": "^9.0.0"
+  }
+}
