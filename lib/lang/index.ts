@@ -100,7 +100,7 @@ export function partial(string: string): {
   const implied = addImplicitTokens(tokens);
   const stack: Token[] = [];
   try {
-    const output = parsePartial(stack, implied, ops);    
+    const output = parsePartial(stack, implied, ops);
     const canDrain = !stack.some(t => t.type === 'parenopen');
     if (canDrain) drain(stack, output);
     return {
