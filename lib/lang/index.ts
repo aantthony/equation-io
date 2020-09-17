@@ -32,10 +32,11 @@ const ops: OperatorDict = {
 };
 
 function isStringCandidate(x: string): boolean {
-  if (x[0] !== '"') return false;
+  const c0 = x[0];
+  if (c0 !== '"' && c0 !== '\'') return false;
   if (x.length === 2) return true;
   const secondLast = x[x.length - 2];
-  if (secondLast === '"') {
+  if (secondLast === c0) {
     const thirdLast = x[x.length - 3];
     if (thirdLast !== '\\') return false;
   }
@@ -69,7 +70,7 @@ function addImplicitTokens(tokens: Token[]): Token[] {
     const last = out[out.length - 1];
     if (last) {
       if (token.type === 'parenopen') {
-        if (last.type !== 'operator') {
+        if (last.type !== 'operator' && last.type !== 'parenopen') {
           out.push(implicit);
         }
       } else if (token.type === 'number' || token.type === 'symbol') {
@@ -84,9 +85,10 @@ function addImplicitTokens(tokens: Token[]): Token[] {
 }
 
 export default function evaluate(string: string) {
-  const rawTokens = tokenize(string);
-  const tokens = addImplicitTokens(rawTokens);
-  const rpn = parse(tokens, ops);
+  const tokens = tokenize(string);
+  const implicit = addImplicitTokens(tokens);
+  const rpn = parse(implicit, ops);
+  console.log(implicit);
   return rpn;
 }
 

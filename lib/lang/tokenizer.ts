@@ -30,13 +30,12 @@ export default function Tokenizer(patternDict: PatternDict) {
       const cds = s + ds;
       if (fns[t](cds)) {
         s = cds;
-        si = i;
       } else {
         tokens.push({
           type: names[t],
           str: s,
           line,
-          loc: [si, i - 1]
+          loc: [si, i]
         });
         const nt = fns.findIndex(p => p(ds));
         t = nt;
@@ -44,13 +43,14 @@ export default function Tokenizer(patternDict: PatternDict) {
         si = i;
       }
     }
-
-    tokens.push({
-      type: names[t],
-      str: s,
-      line,
-      loc: [si, string.length - 1],
-    });
+    if (s) {
+      tokens.push({
+        type: names[t],
+        str: s,
+        line,
+        loc: [si, string.length],
+      });
+    }
 
     return tokens;
   }
