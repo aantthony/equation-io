@@ -9,9 +9,3 @@ export function parse(str: string) {
 }
 
 export default lang;
-
-// const expr = lang(`
-// const expr = lang("");
-// `);
-
-// console.log(format(expr));

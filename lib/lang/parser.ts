@@ -105,5 +105,6 @@ export default function parse(tokens: Token[], ops: OperatorDict) {
   const stack: Token[] = [];
   const output = parsePartial(stack, tokens, ops);
   drainStack(stack, output);
-  return output;
+  const rpn = output;
+  return rpn;
 }

@@ -84,11 +84,45 @@ function addImplicitTokens(tokens: Token[]): Token[] {
   }, [] as Token[]);
 }
 
+interface Type {
+  name: string;
+}
+
+function inferAtomic(token: Token): Type {
+  if (token.type === 'string') return { name: 'string' };
+  if (token.type === 'number') return { name: 'number' };
+  if (token.type === 'symbol') return { name: 'symbol' };
+  return { name: 'unknown' };
+}
+
+function inferOp(operator: Operator, args: Type[]): Type {
+  return args[0];
+}
+
+function walk<T>(
+  rpn: Token[],
+  build: (token: Token) => T,
+  apply: (op: Operator, args: T[]) => T,
+): T {
+  const stack: T[] = [];
+  rpn.forEach(tok => {
+    if (tok.type === 'operator') {
+      const op = ops[tok.str]!;
+      const args = stack.splice(stack.length - op.n);
+      stack.push(apply(op, args));
+    } else {
+      stack.push(build(tok));
+    }
+  });
+  return stack[0];
+}
+
 export default function evaluate(string: string) {
   const tokens = tokenize(string);
   const implicit = addImplicitTokens(tokens);
   const rpn = parse(implicit, ops);
-  console.log(implicit);
+  const type = walk(rpn, inferAtomic, inferOp);
+  console.log({ type });
   return rpn;
 }
 
