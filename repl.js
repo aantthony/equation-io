@@ -1,8 +1,9 @@
 require('source-map-support/register');
+const { inspect } = require('util');
 
 const colorReadline = require('node-color-readline');
 const chalk = require('chalk');
-const { partial, parse } = require('./');
+const { partial, parse, check } = require('./');
 
 const repl = colorReadline.createInterface({
   input: process.stdin,
@@ -27,7 +28,11 @@ const repl = colorReadline.createInterface({
 });
  
 repl.on('line', function (cmd) {
-  console.log('LINE:', parse(cmd));
+  const ast = parse(cmd);
+  console.log({ ast });
+  const type = check(ast);
+  console.log('LINE:', JSON.stringify(ast, null, 2));
+  console.log('type:', JSON.stringify(type, null, 2));
 });
  
 repl.prompt();
