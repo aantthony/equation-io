@@ -7,6 +7,10 @@ const ops: OperatorDict = {
   '//.': BinaryInfix('ReplaceRepeated', 10),
   '=': BinaryInfix('Equal', 10),
   '==': BinaryInfix('SameQ', 10),
+  '||': BinaryInfix('Or', 10),
+  '&&': BinaryInfix('And', 10),
+  '|': BinaryInfix('Or', 10),
+  '&': BinaryInfix('And', 10),
   '!=': BinaryInfix('UnsameQ', 10),
   '!!': BinaryInfix('TrueQ', 10),
   '<': BinaryInfix('Less', 10),
@@ -29,7 +33,20 @@ const ops: OperatorDict = {
   '^': BinaryInfix('Power', 25, true),
   '.': BinaryInfix('Dot', 30),
   '!': Postfix('Factorial', 80),
+
+
+  '}': BinaryInfix('Bracket', -1),
+  ')': BinaryInfix('Bracket', -1),
+  ']': BinaryInfix('Bracket', -1),
 };
+
+const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);
+
+function isOpCandidate(x: string) {
+  if (ops[x]) return true;
+  return MULTI_CHAR_OPS.some(m => m.startsWith(x));
+  return false;
+}
 
 function isStringCandidate(x: string): boolean {
   const c0 = x[0];
@@ -50,7 +67,7 @@ const syntax: PatternDict = {
   whitespace: /\s$/,
   symbol: /[A-Za-z]$/,
   string: isStringCandidate,
-  operator: x => !!ops[x],
+  operator: isOpCandidate,
   invalid(x) { throw new Error(`Invalid character: ${x}.`); }
 };
 
@@ -91,14 +108,17 @@ interface Type {
 function walk<T>(
   rpn: Token[],
   build: (token: Token) => T,
-  apply: (op: Operator, args: T[]) => T,
+  apply: (token: Token, op: Operator, args: T[]) => T,
 ): T {
   const stack: T[] = [];
   rpn.forEach(tok => {
-    if (tok.type === 'operator') {
+    if (tok.type === 'operator' || tok.type === 'parenclose') {
       const op = ops[tok.str]!;
       const args = stack.splice(stack.length - op.n);
-      stack.push(apply(op, args));
+      stack.push(apply(tok, op, args));
+    } else if (tok.type === 'parenopen') {
+      // It's just a token
+      stack.push(build(tok));
     } else {
       stack.push(build(tok));
     }
@@ -109,19 +129,22 @@ function walk<T>(
 export interface AstNode {
   name: string;
   args: AstNode[];
+  token: Token;
   value?: string;
 }
 
 function createLeaf(token: Token): AstNode {
   return {
+    token,
     name: token.type,
     args: [],
     value: token.str,
   };
 }
 
-function createNode(op: Operator, args: AstNode[]): AstNode {
+function createNode(token: Token, op: Operator, args: AstNode[]): AstNode {
   return {
+    token,
     name: op.name,
     args: args,
   };
@@ -144,6 +167,16 @@ function simplify(type: LangType): LangType {
       if (a === 'false' || a === 'true') return 'boolean';
       if (typeof a === 'string') return a;
     }
+    case 'And': {
+      const [a, b] = type.args;
+      if (a === b) return a;
+      const int = unpack(b, 'Intersect');
+      if (int && int[0] === a) return a;
+
+      if (a === 'unknown') return b;
+      if (b === 'unknown') return a;
+      return a;
+    }
   }
   return type;
 }
@@ -162,11 +195,10 @@ const Types = {
   Array: (x: T) => construct('Array', [x]),
   Function: (args: T[], returns: T) => construct('Function', [Types.Tuple(args), returns]),
   Intersect: (a: T) => construct('Intersect', [a]),
+  And: (a: T, b: T) => construct('And', [a, b]),
   Boolean: () => 'boolean',
   Number: () => 'number',
-  Tuple: (vals: LangType[]) => {
-    return construct('Tuple', vals);
-  }
+  Tuple: (vals: LangType[]) => construct('Tuple', vals),
 }
 
 function unpack(type: LangType, name: string): LangType[] | null {
@@ -199,12 +231,10 @@ class Scope implements IScope {
   parent: Scope | null;
   values: ScopeDict;
   errors: string[];
-  infer: ScopeDict;
   constructor(parent: Scope | null, values: ScopeDict) {
     this.parent = parent;
     this.values = values;
     this.errors = [];
-    this.infer = {};
   }
   fork(values: LangDeclaration[]) {
     const dict = values.reduce((all, def) => {
@@ -233,7 +263,7 @@ class Scope implements IScope {
         this.error(`Expected ${inspectType(type)} for ${name}, but got ${existing.type} instead.`);
       }
 
-      existing.type = and(existing.type, type);
+      existing.type = Types.And(existing.type, type);
 
       return existing;
     }
@@ -347,16 +377,6 @@ function is(subject: LangType, condition: LangType): boolean {
   return false;
 }
 
-function and(a: LangType, b: LangType): LangType {
-  if (a === b) return a;
-  const int = unpack(b, 'Intersect');
-  if (int && int[0] === a) return a;
-
-  if (a === 'unknown') return b;
-  if (b === 'unknown') return a;
-  return a;
-}
-
 function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): LangType {
   if (node.name === 'number') return 'number';
   if (node.name === 'string') return 'string';
@@ -399,7 +419,7 @@ function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): La
       return typeCheckInscope(arg, scope, 'number');
     });
     if (!types.every(t => is(t, 'number'))) {
-      scope.error(`The ${node.name} operator expected [number,number], but got [${types.map(inspectType).join(',')}].`);
+      scope.error(`The ${node.name} operator expected [number,number], but got ${types.map(inspectType).join(node.token.str)}.`);
     }
     return 'number';
   }
@@ -411,7 +431,7 @@ function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): La
       return typeCheckInscope(arg, scope, conforms);
     });
     if (!others.every(t => is(t, conforms))) {
-      scope.error(`Type mismatch for ${node.name}: Got [${others.map(inspectType).join(',')}].`);
+      scope.error(`Type mismatch for ${node.name}: Got ${others.map(inspectType).join(node.token.str)}.`);
     }
     return 'boolean';
   }

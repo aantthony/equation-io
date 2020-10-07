@@ -64,7 +64,12 @@ export function parsePartial(
       while (1) {
         const op = stack.pop();
         if (!op) throw new ParseError(`Could not find open brace.`, tok);
-        if (op.type === 'parenopen') break;
+        if (op.type === 'parenopen') {
+          // modification: Add "{" "}" to output:
+          output.push(op);
+          output.push(tok);
+          break;
+        }
         output.push(op);
       }
     } else if (tok.type === 'operator') {
