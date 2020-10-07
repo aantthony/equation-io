@@ -83,10 +83,15 @@ const implicit: Token = {
 }
 
 function addImplicitTokens(tokens: Token[]): Token[] {
-  return tokens
-  .filter(t => t.type !== 'whitespace')
-  .reduce((out, token) => {
-    const last = out[out.length - 1];
+  const out: Token[] = [];
+  let last: Token | null = null;
+
+  tokens.forEach((token) => {
+    if (token.type === 'whitespace') {
+      out.push(token);
+      return;
+    }
+
     if (last) {
       if (token.type === 'parenopen') {
         if (last.type !== 'operator' && last.type !== 'parenopen') {
@@ -98,9 +103,11 @@ function addImplicitTokens(tokens: Token[]): Token[] {
         }
       }
     }
+
     out.push(token);
-    return out;
-  }, [] as Token[]);
+    last = token;
+  });
+  return out;
 }
 
 

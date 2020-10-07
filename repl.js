@@ -32,6 +32,9 @@ repl.on('line', function (cmd) {
   const cr = check(ast);
   console.log('LINE:', format(ast));
   console.log('type:', typeInpect(cr.type));
+  cr.scope.errors.forEach(err => {
+    console.log(chalk.red(`Error: ${err}`));
+  });
 });
  
 repl.prompt();

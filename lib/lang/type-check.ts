@@ -1,6 +1,6 @@
 import { AstNode } from './ast';
 import { IScope, LangDeclaration } from './scope';
-import { LangType, Types, unpack, inspectType } from './types';
+import { LangType, Types, unpack, inspectType, accessProp, InterfaceDict } from './types';
 
 const BINARY_MATH_OPS = [
   'Plus',
@@ -116,13 +116,23 @@ function unpackParen(x: AstNode, str: string): AstNode {
 }
 
 export default function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): LangType {
-  while (node.name === 'RoundBracket') {
+  while (node.name === 'RoundBracket' && node.args.length === 1) {
     node = node.args[0];
   }
   if (node.name === 'number') return 'number';
   if (node.name === 'string') return 'string';
 
-  if (node.name === 'Lambda') {
+  if (node.name === 'RoundBracket') {
+    // tuple
+    const tt = required ? unpack(required, 'Tuple') : null;
+
+    const res = node.args.map((a, i) => {
+      const e = tt ? tt[i] : undefined;
+      return typeCheckInscope(a, scope, e);
+    });
+
+    return Types.Tuple(res);
+  } else if (node.name === 'Lambda') {
     const defn = node.args[1];
     const args = unpackParen(node.args[0], '(');
     const fnArgs = enumerate(args).map(arg => readDeclaration(arg, scope));
@@ -132,13 +142,12 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
 
     return Types.Function(fnArgs.map(a => a.type), retType);
   }
-
   if (node.name === 'symbol') {
     const name = node.value!;
+    console.log('asserting', name, inspectType(required || 'unknown'));
     const def = assert(scope, name, required || 'unknown');
     return def.type;
   }
-
   if (node.name === 'Statements') {
     const [defScope, retType] = node.args.reduce((last: [IScope, LangType], arg: AstNode): [IScope, LangType] => {
       const oScope = last[0];
@@ -153,7 +162,6 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
     }, <[IScope, LangType]>[scope, 'never'])
     return retType;
   }
-
   if (BINARY_MATH_OPS.indexOf(node.name) !== -1) {
     const types = node.args.map(arg => {
       return typeCheckInscope(arg, scope, 'number');
@@ -163,7 +171,6 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
     }
     return 'number';
   }
-
   if (node.name === 'SameQ' || node.name ==='UnsameQ') {
     const first = typeCheckInscope(node.args[0], scope);
     const conforms = Types.Intersect(first);
@@ -178,12 +185,63 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
   if (node.name === 'SquareBracket') {
     if (required) {
       const aType = unpack(required, 'Array');
-      if (aType) {
-        return typeCheckInscope(node.args[0], scope, aType[0]);
-      }
+
+      const subType = aType ? aType[0] : 'unknown';
+
+      const res = node.args.map(a => {
+        return typeCheckInscope(a, scope, subType);
+      });
+      return Types.Tuple(res);
     }
-    const internalType = typeCheckInscope(node.args[0], scope, required);
-    return Types.Array(internalType);
+
+    const res = node.args.map(a => {
+      return typeCheckInscope(a, scope);
+    });
+    return Types.Tuple(res);
   }
+  if (node.name === 'CurlyBracket') {
+    const dict: InterfaceDict = {};
+    function addProp(key: string, t: AstNode) {
+      const inferedPropType = required ? accessProp(required, key) : undefined;
+      dict[key] = typeCheckInscope(t, scope, inferedPropType);
+    }
+    node.args.map(p => {
+      if (p.name === 'Property') {
+        if (p.args[0].name === 'symbol') {
+          addProp(p.args[0].value!, p.args[1]);
+        } else if (p.args[0].name === 'string') {
+          addProp(JSON.parse(p.args[0].value!), p.args[1]);
+        } else {
+          throw new Error('Unregonizable property');
+        }
+      }
+    });
+
+    return Types.Interface(dict);
+  }
+  if (node.name === 'Default') {
+    const typeLhs = typeCheckInscope(node.args[0], scope);
+    const fnType = unpack(typeLhs, 'Function');
+    if (fnType) {
+      const tupleArgType = unpack(fnType[0], 'Tuple');
+      if (!tupleArgType) throw new Error('Fn is not tuple?');
+      const typeRhs = typeCheckInscope(node.args[1], scope, tupleArgType[0])
+      if (!is(typeRhs, tupleArgType[0])) {
+        scope.error(`Invalid function argument. Expected: ${inspectType(tupleArgType[0])}, got ${inspectType(typeRhs)}.`);
+      }
+      return fnType[1];
+    }
+
+    scope.error(`Unknown lhs default: ${inspectType(typeLhs)}`);
+
+    const typeRhs = typeCheckInscope(node.args[1], scope);
+    const typeLhsInf = Types.Function([typeRhs], required || 'unknown');
+    const typeLhs2 = typeCheckInscope(node.args[0], scope, typeLhsInf);
+    const fnArg2 = unpack(typeLhs2, 'Function');
+    if (fnArg2) return fnArg2[1];
+    return 'unknown';
+  }
+
+  scope.error(`Type checking not defined for ${node.name}.`);
   return 'unknown';
 }
