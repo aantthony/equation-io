@@ -13,6 +13,9 @@ export type LangType = LangPrimitive | CustomType;
  */
 export function inspectType(type: LangType): string {
   if (typeof type == 'string') return type;
+  if (type.name === 'Array') {
+    return `${inspectType(type.args[0])}[]`;
+  }
   if (type.name === 'Tuple') {
     return `[${type.args.map(inspectType).join(',')}]`;
   }

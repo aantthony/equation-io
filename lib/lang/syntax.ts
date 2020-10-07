@@ -37,9 +37,9 @@ const ops: OperatorDict = {
   '!': Postfix('Factorial', 80),
 
 
-  '}': BinaryInfix('Bracket', -1),
-  ')': BinaryInfix('Bracket', -1),
-  ']': BinaryInfix('Bracket', -1),
+  '}': BinaryInfix('CurlyBracket', -1),
+  ')': BinaryInfix('RoundBracket', -1),
+  ']': BinaryInfix('SquareBracket', -1),
 };
 
 const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);

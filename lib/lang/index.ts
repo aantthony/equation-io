@@ -29,6 +29,24 @@ export function partial(string: string) {
   return decode(string);
 }
 
-export function format(rpn: Token[]): string {
-  return rpn.map(t => t.str).join(' ');
+export function format(ast: AstNode): string {
+  let str = '';
+  let prefix = 0;
+  function add(n: AstNode) {
+    if (n.value) {
+      str += ''.padEnd(prefix) + n.value;
+      return;
+    }
+    str += ''.padEnd(prefix) + n.name + '[\n';
+    prefix += 2;
+    n.args.forEach((a) => {
+      add(a);
+      str += ',\n';
+    });
+    prefix -= 2;
+    str += ''.padEnd(prefix) + ']';
+  }
+
+  add(ast);
+  return str;
 }

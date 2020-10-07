@@ -109,14 +109,14 @@ function readDeclaration(target: AstNode, scope: IScope): LangDeclaration {
 }
 
 function unpackParen(x: AstNode, str: string): AstNode {
-  if (x.name === 'Bracket' && x.args[1].value === '(') {
+  if (x.name === 'RoundBracket') {
     return x.args[0];
   }
   return x;
 }
 
 export default function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): LangType {
-  while (node.name === 'Bracket' && node.args[1].value === '(') {
+  while (node.name === 'RoundBracket') {
     node = node.args[0];
   }
   if (node.name === 'number') return 'number';
@@ -175,6 +175,15 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
     }
     return 'boolean';
   }
-
+  if (node.name === 'SquareBracket') {
+    if (required) {
+      const aType = unpack(required, 'Array');
+      if (aType) {
+        return typeCheckInscope(node.args[0], scope, aType[0]);
+      }
+    }
+    const internalType = typeCheckInscope(node.args[0], scope, required);
+    return Types.Array(internalType);
+  }
   return 'unknown';
 }

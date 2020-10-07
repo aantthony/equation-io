@@ -39,7 +39,56 @@ function createLeaf(token: Token): AstNode {
   };
 }
 
+const R_ASSOC: {[key: string]: 1} = {
+  'Plus': 1,
+  'Series': 1,
+};
+
+const L_ASSOC: {[key: string]: 1} = {
+  'Plus': 1,
+  'Series': 1,
+};
+
+const BRACKET: {[key: string]: 1} = {
+  CurlyBracket: 1,
+  SquareBracket: 1,
+  RoundBracket: 1,
+};
+
 function createNode(token: Token, op: Operator, args: AstNode[]): AstNode {
+  if (BRACKET[op.name]) {
+    const bareArgs = args.splice(0, args.length - 1);
+
+    const arrayArgs: AstNode[] = (bareArgs.length === 1 && bareArgs[0].name === 'Series')
+      ? bareArgs[0].args
+      : bareArgs;
+
+    return {
+      token,
+      name: op.name,
+      args: arrayArgs,
+    };
+  }
+  if (L_ASSOC[op.name] && args[1] && args[1].name === op.name) {
+    return {
+      token,
+      name: op.name,
+      args: [
+        args[0],
+        ...args[1].args,
+      ],
+    };
+  }
+  if (R_ASSOC[op.name] && args[0] && args[0].name === op.name) {
+    return {
+      token,
+      name: op.name,
+      args: [
+        ...args[0].args,
+        args[1],
+      ],
+    };
+  }
   return {
     token,
     name: op.name,

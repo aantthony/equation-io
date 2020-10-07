@@ -1,8 +1,10 @@
 import lang, * as L from './lang';
 import { LangType, inspectType } from './lang/types';
+import { AstNode } from './lang/ast';
 
 export const partial = L.partial;
 export const check = L.check;
+export const format = L.format;
 
 export function parse(str: string) {
   return lang(str);
