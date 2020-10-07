@@ -131,23 +131,48 @@ type LangPrimitive = 'any' | 'number' | 'string' | 'true' | 'false' | 'boolean' 
 
 interface CustomType {
   name: string;
-  args: CustomType[];
+  args: LangType[];
 }
 
 type LangType = LangPrimitive | CustomType;
 
-function createArrayType(base: LangType): LangType {
-  return <CustomType>{
-    name: 'Array',
-    args: [base],
-  };
+function simplify(type: LangType): LangType {
+  if (typeof type === 'string') return type;
+  switch (type.name) {
+    case 'Intersect': {
+      const a = type.args[0];
+      if (a === 'false' || a === 'true') return 'boolean';
+      if (typeof a === 'string') return a;
+    }
+  }
+  return type;
 }
 
-function createFnType(args: LangType[], returns: LangType): LangType {
-  return <CustomType>{
-    name: 'Function',
-    args: [args, returns],
+function construct(name: string, args: LangType[]): LangType {
+  const p = <CustomType>{
+    name,
+    args,
   };
+  return simplify(p);
+}
+
+type T = LangType;
+
+const Types = {
+  Array: (x: T) => construct('Array', [x]),
+  Function: (args: T[], returns: T) => construct('Function', [Types.Tuple(args), returns]),
+  Intersect: (a: T) => construct('Intersect', [a]),
+  Boolean: () => 'boolean',
+  Number: () => 'number',
+  Tuple: (vals: LangType[]) => {
+    return construct('Tuple', vals);
+  }
+}
+
+function unpack(type: LangType, name: string): LangType[] | null {
+  if (typeof type === 'string') return null;
+  if (type.name === name) return type.args;
+  return null;
 }
 
 const TYPE_ANY = 'any';
@@ -165,6 +190,7 @@ interface IScope {
   fork(defns: LangDeclaration[]): IScope;
   get(name: string): LangDeclaration | undefined;
   error(message: string): void;
+  assert(name: string, type: LangType): LangDeclaration;
 }
 
 type ScopeDict = {[key: string]: LangDeclaration};
@@ -173,10 +199,12 @@ class Scope implements IScope {
   parent: Scope | null;
   values: ScopeDict;
   errors: string[];
+  infer: ScopeDict;
   constructor(parent: Scope | null, values: ScopeDict) {
     this.parent = parent;
     this.values = values;
     this.errors = [];
+    this.infer = {};
   }
   fork(values: LangDeclaration[]) {
     const dict = values.reduce((all, def) => {
@@ -197,6 +225,24 @@ class Scope implements IScope {
       return;
     }
     this.parent.error(message);
+  }
+  assert(name: string, type: LangType): LangDeclaration {
+    const existing = this.get(name);
+    if (existing) {
+      if (!sat(existing.type, type)) {
+        this.error(`Expected ${inspectType(type)} for ${name}, but got ${existing.type} instead.`);
+      }
+
+      existing.type = and(existing.type, type);
+
+      return existing;
+    }
+
+    this.error(`${name} is not defined.`);
+    return {
+      name,
+      type,
+    };
   }
 }
 
@@ -251,8 +297,13 @@ function readDeclaration(target: AstNode, scope: IScope): LangDeclaration {
   };
 }
 
+const ROOT_SCOPE: ScopeDict = {
+  true: <LangDeclaration>{ name: 'true', type: 'true' },
+  false: <LangDeclaration>{ name: 'false', type: 'false' },
+};
+
 export function check(node: AstNode) {
-  const scope = new Scope(null, {});
+  const scope = new Scope(null, ROOT_SCOPE);
   const type = typeCheckInscope(node, scope);
   return { type, scope };
 }
@@ -270,6 +321,7 @@ function inspectType(type: LangType): string {
 }
 
 function sat(subject: LangType, condition: LangType): boolean {
+  if (subject === 'unknown') return true;
   if (condition === 'any') return true;
   if (condition === 'unknown') return true;
   if (condition === 'number') return subject === 'number';
@@ -280,29 +332,50 @@ function sat(subject: LangType, condition: LangType): boolean {
   return false;
 }
 
-function typeCheckInscope(node: AstNode, scope: IScope): LangType {
+function is(subject: LangType, condition: LangType): boolean {
+  const int = unpack(condition, 'Intersect');
+  if (int) {
+    return sat(subject, int[0]);
+  }
+  if (condition === 'any') return true;
+  if (condition === 'unknown') return true;
+  if (condition === 'number') return subject === 'number';
+  if (condition === 'string') return subject === 'string';
+  if (condition === 'boolean') return subject === 'boolean' || subject === 'true' || subject === 'false';
+  if (condition === 'true') return subject === 'boolean';
+  if (condition === 'false') return subject === 'boolean';
+  return false;
+}
+
+function and(a: LangType, b: LangType): LangType {
+  if (a === b) return a;
+  const int = unpack(b, 'Intersect');
+  if (int && int[0] === a) return a;
+
+  if (a === 'unknown') return b;
+  if (b === 'unknown') return a;
+  return a;
+}
+
+function typeCheckInscope(node: AstNode, scope: IScope, required?: LangType): LangType {
   if (node.name === 'number') return 'number';
   if (node.name === 'string') return 'string';
-  if (node.name === 'symbol') {
-    if (node.value === 'true') return 'true';
-    if (node.value === 'false') return 'false';
-  }
+
   if (node.name === 'Lambda') {
     const defn = node.args[1];
 
     const fnArgs = enumerate(node.args[0])
     .map(arg => readDeclaration(arg, scope));
 
-    console.log({ fnArgs });
     const s = scope.fork(fnArgs);
     const retType = typeCheckInscope(defn, s);
 
-    return createFnType(fnArgs.map(a => a.type), retType);
+    return Types.Function(fnArgs.map(a => a.type), retType);
   }
 
   if (node.name === 'symbol') {
-    const def = scope.get(node.value!);
-    if (!def) throw new Error(`${node.value!} is not defined.`);
+    const name = node.value!;
+    const def = scope.assert(name, required || 'unknown');
     return def.type;
   }
 
@@ -323,20 +396,22 @@ function typeCheckInscope(node: AstNode, scope: IScope): LangType {
 
   if (BINARY_MATH_OPS.indexOf(node.name) !== -1) {
     const types = node.args.map(arg => {
-      return typeCheckInscope(arg, scope);
+      return typeCheckInscope(arg, scope, 'number');
     });
-    if (!types.every(t => t === 'number')) {
+    if (!types.every(t => is(t, 'number'))) {
       scope.error(`The ${node.name} operator expected [number,number], but got [${types.map(inspectType).join(',')}].`);
     }
     return 'number';
   }
 
   if (node.name === 'SameQ' || node.name ==='UnsameQ') {
-    const types = node.args.map(arg => {
-      return typeCheckInscope(arg, scope);
+    const first = typeCheckInscope(node.args[0], scope);
+    const conforms = Types.Intersect(first);
+    const others = node.args.slice(1).map(arg => {
+      return typeCheckInscope(arg, scope, conforms);
     });
-    if (!types.every(t => sat(t, types[0]))) {
-      scope.error(`Type mismatch for ${node.name}: Got [${types.map(inspectType).join(',')}].`);
+    if (!others.every(t => is(t, conforms))) {
+      scope.error(`Type mismatch for ${node.name}: Got [${others.map(inspectType).join(',')}].`);
     }
     return 'boolean';
   }
