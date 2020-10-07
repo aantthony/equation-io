@@ -3,7 +3,7 @@ const { inspect } = require('util');
 
 const colorReadline = require('node-color-readline');
 const chalk = require('chalk');
-const { partial, parse, check } = require('./');
+const { partial, parse, check, typeInpect } = require('./');
 
 const repl = colorReadline.createInterface({
   input: process.stdin,
@@ -29,10 +29,9 @@ const repl = colorReadline.createInterface({
  
 repl.on('line', function (cmd) {
   const ast = parse(cmd);
-  console.log({ ast });
-  const type = check(ast);
-  console.log('LINE:', JSON.stringify(ast, null, 2));
-  console.log('type:', JSON.stringify(type, null, 2));
+  const cr = check(ast);
+  // console.log('LINE:', JSON.stringify(ast, null, 2));
+  console.log('type:', typeInpect(cr.type));
 });
  
 repl.prompt();
