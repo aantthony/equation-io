@@ -178,7 +178,7 @@ const I_NUMBER: InterfaceDict = {
   toFixed: Types.Function([], 'string'),
 };
 
-export function accessProp(type: LangType, key: string): LangType {
+export function accessProp(type: LangType, key: string | number): LangType {
   if (type === 'string') return I_STRING[key] || 'never';
   if (type === 'number') return I_NUMBER[key] || 'never';
   if (typeof type === 'string') {
@@ -186,5 +186,13 @@ export function accessProp(type: LangType, key: string): LangType {
   }
   const d = readInterface(type);
   if (d) return d[key] || 'never';
-  return type;
+
+  if (typeof key === 'number') {
+    const t = unpack(type, 'Tuple');
+    if (t) return t[key] || 'never';
+    const a = unpack(type, 'Array');
+    if (a) return a[0];
+  }
+
+  return 'never';
 }

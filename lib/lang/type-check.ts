@@ -221,6 +221,11 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
   }
   if (node.name === 'Dot') {
     const rhs = node.args[1];
+    if (rhs.name === 'number') {
+      throw new Error('Restricted syntax.');
+      const lhs = typeCheckInscope(node.args[0], scope);
+      return accessProp(lhs, parseInt(rhs.value!));
+    }
     if (rhs.name !== 'symbol') throw new Error('dot but then not symbol?');
     const sym = rhs.value!;
     if (!sym) throw new Error('missing sym');
@@ -228,6 +233,7 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
     return accessProp(lhs, sym);
   }
   if (node.name === 'Default') {
+    const rhs = node.args[0];
     const typeLhs = typeCheckInscope(node.args[0], scope);
     const fnType = unpack(typeLhs, 'Function');
     if (fnType) {
@@ -240,7 +246,16 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
       return fnType[1];
     }
 
-    scope.error(`Unknown lhs default: ${inspectType(typeLhs)}`);
+    // if (typeLhs.name === 'Tuple') {
+
+    // }
+
+    if (rhs.name === 'number') {
+      const tupleType = unpack(typeLhs, 'Tuple');
+      if (tupleType) {
+        return tupleType[parseInt(rhs.value!)]!;
+      }
+    }
 
     console.log("DEFAULT", JSON.stringify(node, null, 2));
     const typeRhs = typeCheckInscope(node.args[1], scope);
