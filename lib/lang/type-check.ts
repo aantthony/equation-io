@@ -219,6 +219,14 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
 
     return Types.Interface(dict);
   }
+  if (node.name === 'Dot') {
+    const rhs = node.args[1];
+    if (rhs.name !== 'symbol') throw new Error('dot but then not symbol?');
+    const sym = rhs.value!;
+    if (!sym) throw new Error('missing sym');
+    const lhs = typeCheckInscope(node.args[0], scope, Types.Interface({[sym]: required || 'unknown'}));
+    return accessProp(lhs, sym);
+  }
   if (node.name === 'Default') {
     const typeLhs = typeCheckInscope(node.args[0], scope);
     const fnType = unpack(typeLhs, 'Function');
@@ -234,6 +242,7 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
 
     scope.error(`Unknown lhs default: ${inspectType(typeLhs)}`);
 
+    console.log("DEFAULT", JSON.stringify(node, null, 2));
     const typeRhs = typeCheckInscope(node.args[1], scope);
     const typeLhsInf = Types.Function([typeRhs], required || 'unknown');
     const typeLhs2 = typeCheckInscope(node.args[0], scope, typeLhsInf);

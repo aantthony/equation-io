@@ -1,5 +1,5 @@
 
-export type LangPrimitive = 'any' | 'number' | 'string' | 'true' | 'false' | 'boolean' | 'unknown' | 'never';
+export type LangPrimitive = 'any' | 'void' | 'number' | 'string' | 'true' | 'false' | 'boolean' | 'unknown' | 'never';
 
 export interface CustomType {
   name: string;
@@ -12,7 +12,7 @@ export interface StringConstant {
   string: string;
 }
 
-export type InterfaceDict = {[key: string]: LangType};
+export type InterfaceDict = {[key: string]: LangType | undefined};
 
 export interface InterfaceType {
   name: 'interface';
@@ -45,7 +45,7 @@ export function inspectType(type: LangType): string {
   if (type.name === 'interface') {
     const d = readInterface(type)!;
     const s = Object.keys(d).map(k => {
-      const v = d[k];
+      const v = d[k]!;
       return `${k}: ${inspectType(v)}`
     }).join(',');
     return `{${s}}`
@@ -95,7 +95,7 @@ function simplify(type: LangType): LangType {
         const dict: InterfaceDict = {};
         function mergeIn(dict: InterfaceDict) {
           Object.keys(dict).forEach(k => {
-            const v = dict[k];
+            const v = dict[k]!;
             const existing = dict[k];
             if (existing) {
               dict[k] = construct('And', [existing, v]);
@@ -144,6 +144,7 @@ export const Types = {
   Function: (args: T[], returns: T) => construct('Function', [Types.Tuple(args), returns]),
   Intersect: (a: T) => construct('Intersect', [a]),
   And: (a: T, b: T) => construct('And', [a, b]),
+  Or: (a: T, b: T) => construct('or', [a, b]),
   Boolean: () => 'boolean',
   Number: () => 'number',
   Tuple: (vals: LangType[]) => construct('Tuple', vals),
@@ -159,6 +160,31 @@ export const Types = {
 
 const TYPE_ANY = 'any';
 
+const I_STRING: InterfaceDict = {
+  length: 'number',
+  toString: Types.Function([], 'string'),
+  charAt: Types.Function([], 'string'),
+  trim: Types.Function([], 'string'),
+  toUpperCase: Types.Function([], 'string'),
+  toLowerCase: Types.Function([], 'string'),
+  slice: Types.Function(['number', Types.Or('number', 'void')], 'string'),
+  replace: Types.Function(['string', 'string'], 'string'),
+  charCodeAt: Types.Function([], 'number'),
+};
+
+const I_NUMBER: InterfaceDict = {
+  toString: Types.Function([], 'string'),
+  toExponential: Types.Function([], 'string'),
+  toFixed: Types.Function([], 'string'),
+};
+
 export function accessProp(type: LangType, key: string): LangType {
+  if (type === 'string') return I_STRING[key] || 'never';
+  if (type === 'number') return I_NUMBER[key] || 'never';
+  if (typeof type === 'string') {
+    return 'never';
+  }
+  const d = readInterface(type);
+  if (d) return d[key] || 'never';
   return type;
 }
