@@ -1,5 +1,5 @@
-import parser, { ParseError, drainStack, parsePartial, Operator, OperatorDict, BinaryInfix, Prefix, Postfix } from './parser';
-import Tokenzier, { Token, PatternDict } from './tokenizer';
+import shuntingFull, { BinaryInfix, OperatorDict, ParseError, Postfix, Prefix, shuntingDrain, shuntingPartial } from './parser';
+import Tokenzier, { PatternDict, Token } from './tokenizer';
 
 import build, { AstNode } from './ast';
 
@@ -36,10 +36,9 @@ const ops: OperatorDict = {
   '.': BinaryInfix('Dot', 30),
   '!': Postfix('Factorial', 80),
 
-
-  '}': BinaryInfix('CurlyBracket', -1),
-  ')': BinaryInfix('RoundBracket', -1),
-  ']': BinaryInfix('SquareBracket', -1),
+  '}': BinaryInfix('Curly', -1),
+  ')': BinaryInfix('Paren', -1),
+  ']': BinaryInfix('Bracket', -1),
 };
 
 const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);
@@ -110,7 +109,6 @@ function addImplicitTokens(tokens: Token[]): Token[] {
   return out;
 }
 
-
 function tokenize(str: string): Token[] {
   const base = raw(str);
   const implicit = addImplicitTokens(base);
@@ -119,43 +117,35 @@ function tokenize(str: string): Token[] {
 
 export function full(str: string): AstNode {
   const tokens = tokenize(str);
-  const rpn = parser(tokens, ops);
+  const rpn = shuntingFull(tokens, ops);
   const ast = build(ops, rpn);
   return ast;
 }
 
-export function partial(string: string): {
-  error: ParseError | null,
-  tokens: Token[],
-  stack: Token[],
-  output: Token[],
-  ast: AstNode | null,
-} {
+export function partial(string: string) {
   const tokens = tokenize(string);
   const stack: Token[] = [];
-  try {
-    const output = parsePartial(stack, tokens, ops);
-    const canDrain = !stack.some(t => t.type === 'parenopen');
-    if (canDrain) drainStack(stack, output);
-    const ast = canDrain ? build(ops, output) : null;
 
-    return {
-      error: null,
-      ast,
-      tokens,
-      stack,
-      output,
-    };
-  } catch (error) {
-    if (error.token) {
-      return {
-        tokens,
-        error,
-        stack: [],
-        output: [],
-        ast: null,
-      };
+  let error: ParseError | null = null;
+  let output: AstNode | null = null;
+
+  try {
+    const rpn = shuntingPartial(stack, tokens, ops);
+    const canDrain = !stack.some(t => t.type === 'parenopen');
+    if (canDrain) shuntingDrain(stack, rpn);
+    output = canDrain ? build(ops, rpn) : null;
+  } catch (e) {
+    if (e instanceof ParseError) {
+      error = e;
+    } else {
+      throw e;
     }
-    throw error;
   }
+
+  return {
+    error,
+    tokens,
+    stack,
+    output,
+  };
 }

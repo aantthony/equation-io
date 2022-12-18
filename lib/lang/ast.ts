@@ -1,5 +1,5 @@
-import { Token } from './tokenizer';
 import { Operator, OperatorDict } from './parser';
+import { Token } from './tokenizer';
 
 function walk<T>(
   ops: OperatorDict,
@@ -50,9 +50,9 @@ const L_ASSOC: {[key: string]: 1} = {
 };
 
 const BRACKET: {[key: string]: 1} = {
-  CurlyBracket: 1,
-  SquareBracket: 1,
-  RoundBracket: 1,
+  Curly: 1,
+  Bracket: 1,
+  Paren: 1,
 };
 
 function createNode(token: Token, op: Operator, args: AstNode[]): AstNode {

@@ -51,7 +51,7 @@ export class ParseError extends Error {
 }
 
 // https://rosettacode.org/wiki/Parsing/Shunting-yard_algorithm#Go
-export function parsePartial(
+export function shuntingPartial(
   stack: Token[],
   tokens: Token[],
   ops: OperatorDict,
@@ -94,7 +94,7 @@ export function parsePartial(
   return output;
 }
 
-export function drainStack(stack: Token[], output: Token[]) {
+export function shuntingDrain(stack: Token[], output: Token[]) {
   // drain stack to result
   while (stack.length) {
     const tok = stack.pop()!;
@@ -106,10 +106,10 @@ export function drainStack(stack: Token[], output: Token[]) {
   return output;
 }
 
-export default function parse(tokens: Token[], ops: OperatorDict) {
+export default function shuntingFull(tokens: Token[], ops: OperatorDict) {
   const stack: Token[] = [];
-  const output = parsePartial(stack, tokens, ops);
-  drainStack(stack, output);
+  const output = shuntingPartial(stack, tokens, ops);
+  shuntingDrain(stack, output);
   const rpn = output;
   return rpn;
 }

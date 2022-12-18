@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "rootDir": "lib",
     "target": "ES2019",
     "module": "commonjs",
     "declaration": true,
@@ -11,9 +12,5 @@
     "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "inlineSourceMap": true
-  },
-  "include": [
-    "import.d.ts",
-    "./lib/index.ts"
-  ]
+  }
 }

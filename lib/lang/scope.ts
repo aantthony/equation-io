@@ -1,4 +1,4 @@
-import { Types, LangType } from './types';
+import { LangType } from './types';
 
 export interface LangDeclaration {
   type: LangType;

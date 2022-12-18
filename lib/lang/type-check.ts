@@ -1,6 +1,6 @@
 import { AstNode } from './ast';
 import { IScope, LangDeclaration } from './scope';
-import { LangType, Types, unpack, inspectType, accessProp, InterfaceDict } from './types';
+import { accessProp, inspectType, InterfaceDict, LangType, Types, unpack } from './types';
 
 const BINARY_MATH_OPS = [
   'Plus',
@@ -182,7 +182,7 @@ export default function typeCheckInscope(node: AstNode, scope: IScope, required?
     }
     return 'boolean';
   }
-  if (node.name === 'SquareBracket') {
+  if (node.name === 'Bracket') {
     if (required) {
       const aType = unpack(required, 'Array');
 

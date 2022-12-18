@@ -1,9 +1,8 @@
-require('source-map-support/register');
-const { inspect } = require('util');
-
-const colorReadline = require('node-color-readline');
-const chalk = require('chalk');
-const { partial, parse, check, format, typeInpect } = require('./');
+import chalk from 'chalk';
+import colorReadline from 'node-color-readline';
+import 'source-map-support/register';
+import { format } from './lang/format';
+import { full, partial } from './lang/syntax';
 
 const repl = colorReadline.createInterface({
   input: process.stdin,
@@ -28,13 +27,8 @@ const repl = colorReadline.createInterface({
 });
  
 repl.on('line', function (cmd) {
-  const ast = parse(cmd);
-  const cr = check(ast);
+  const ast = full(cmd);
   console.log('LINE:', format(ast));
-  console.log('type:', typeInpect(cr.type));
-  cr.scope.errors.forEach(err => {
-    console.log(chalk.red(`Error: ${err}`));
-  });
 });
- 
+
 repl.prompt();
