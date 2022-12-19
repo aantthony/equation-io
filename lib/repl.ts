@@ -174,14 +174,7 @@ function prod(args: MS[]): MS {
 }
 
 function div(a: MS, b: MS): MS {
-  const aCount = countEmpty(a);
-  const bCount = countEmpty(b);
-
-  if (aCount === 0n && bCount === 0n) return Empty;
-  if (aCount === 0n) return Nat(bCount);
-  if (bCount === 0n) return Nat(aCount);
-
-  return Nat(aCount / bCount);
+  // TODO:
 }
 
 interface Scope {
