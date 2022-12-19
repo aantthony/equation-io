@@ -7,7 +7,8 @@
     "lib": "lib"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest",
+    "coverage": "vitest run --coverage",
     "dev": "env TZ=UTC tsc-watch --onSuccess \"node repl\""
   },
   "repository": {
@@ -29,6 +30,7 @@
   "devDependencies": {
     "@types/node": "^18.11.17",
     "ts-node": "^9.1.1",
-    "tsc-watch": "^4.6.2"
+    "tsc-watch": "^4.6.2",
+    "vitest": "^0.25.8"
   }
 }

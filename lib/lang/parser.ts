@@ -28,10 +28,6 @@ export const Postfix = (name: string, prec: number): Operator => ({
   right: false,
 });
 
-function map<T,V>(t: T|null, fn: (arg0: T) => V): V | null {
-  return t ? fn(t): null;
-}
-
 export type OperatorDict = {
   [key: string]: Operator;
 }
@@ -51,26 +47,38 @@ export class ParseError extends Error {
 }
 
 // https://rosettacode.org/wiki/Parsing/Shunting-yard_algorithm#Go
-export function shuntingPartial(
-  stack: Token[],
-  tokens: Token[],
+export function shunting(
   ops: OperatorDict,
-): Token[] {
-  const output: Token[] = [];
-  for (const tok of tokens) {
-    if (tok.type === 'parenopen') {
+  emit: (tok: Token) => void,
+) {
+  const stack: Token[] = [];
+  return function write(tok: Token | null) {
+    if (tok === null) {
+      // drain stack to result
+      while (stack.length) {
+        const tok = stack.pop()!;
+        if (tok.type === 'parenopen') {
+          throw new Error(`Missing closing parentheses for bracket at ${tok.line}:${tok.loc[0]}`);
+        }
+        emit(tok);
+      }
+    } else if (tok.type === 'parenopen') {
       stack.push(tok);
     } else if (tok.type === 'parenclose') {
       while (1) {
         const op = stack.pop();
-        if (!op) throw new ParseError(`Could not find open brace.`, tok);
+        if (!op) {
+          // treat as EOF
+          return;
+          throw new ParseError(`Could not find open brace.`, tok);
+        }
         if (op.type === 'parenopen') {
           // modification: Add "{" "}" to output:
-          output.push(op);
-          output.push(tok);
+          emit(op);
+          emit(tok);
           break;
         }
-        output.push(op);
+        emit(op);
       }
     } else if (tok.type === 'operator') {
       const o1 = lookup(tok, ops);
@@ -83,33 +91,11 @@ export function shuntingPartial(
         if (o1.prec == o2.prec && o1.right) break;
         // top item is an operator that needs to come off
         stack.pop();
-        output.push(op);
+        emit(op);
       }
       stack.push(tok);
     } else {
-      output.push(tok);
+      emit(tok);
     }
   }
-
-  return output;
-}
-
-export function shuntingDrain(stack: Token[], output: Token[]) {
-  // drain stack to result
-  while (stack.length) {
-    const tok = stack.pop()!;
-    if (tok.type === 'parenopen') {
-      throw new Error(`Missing closing parentheses for bracket at ${tok.line}:${tok.loc[0]}`);
-    }
-    output.push(tok);
-  }
-  return output;
-}
-
-export default function shuntingFull(tokens: Token[], ops: OperatorDict) {
-  const stack: Token[] = [];
-  const output = shuntingPartial(stack, tokens, ops);
-  shuntingDrain(stack, output);
-  const rpn = output;
-  return rpn;
 }

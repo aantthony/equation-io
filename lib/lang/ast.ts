@@ -1,15 +1,18 @@
 import { Operator, OperatorDict } from './parser';
 import { Token } from './tokenizer';
 
-function walk<T>(
+export function walk<T>(
   ops: OperatorDict,
-  rpn: Token[],
   build: (token: Token) => T,
   apply: (token: Token, op: Operator, args: T[]) => T,
-): T {
+  emit: (res: T) => void,
+) {
   const stack: T[] = [];
-  rpn.forEach(tok => {
-    if (tok.type === 'operator' || tok.type === 'parenclose') {
+  return function write(tok: Token | null) {
+    console.log({ tok });
+    if (tok === null) {
+      emit(stack[0]);
+    } else if (tok.type === 'operator' || tok.type === 'parenclose') {
       const op = ops[tok.str]!;
       const args = stack.splice(stack.length - op.n);
       stack.push(apply(tok, op, args));
@@ -19,8 +22,7 @@ function walk<T>(
     } else {
       stack.push(build(tok));
     }
-  });
-  return stack[0];
+  }
 }
 
 export interface AstNode {
@@ -94,8 +96,4 @@ function createNode(token: Token, op: Operator, args: AstNode[]): AstNode {
     name: op.name,
     args: args,
   };
-}
-
-export default function build(ops: OperatorDict, rpn: Token[]): AstNode {
-  return walk(ops, rpn, createLeaf, createNode);
 }

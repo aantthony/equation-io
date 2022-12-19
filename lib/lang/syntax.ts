@@ -1,7 +1,6 @@
-import shuntingFull, { BinaryInfix, OperatorDict, ParseError, Postfix, Prefix, shuntingDrain, shuntingPartial } from './parser';
+import { walk } from './ast';
+import { BinaryInfix, Operator, OperatorDict, Postfix, Prefix, shunting } from './parser';
 import Tokenzier, { PatternDict, Token } from './tokenizer';
-
-import build, { AstNode } from './ast';
 
 const ops: OperatorDict = {
   ';': BinaryInfix('Statements', 10),
@@ -46,7 +45,6 @@ const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);
 function isOpCandidate(x: string) {
   if (ops[x]) return true;
   return MULTI_CHAR_OPS.some(m => m.startsWith(x));
-  return false;
 }
 
 function isStringCandidate(x: string): boolean {
@@ -66,7 +64,7 @@ const syntax: PatternDict = {
   parenclose: /^[\)\}\]]$/,
   number: /^\d+(\.\d+)*$/,
   whitespace: /\s$/,
-  symbol: /[A-Za-z]$/,
+  symbol: /[A-Za-z_]$/,
   string: isStringCandidate,
   operator: isOpCandidate,
   invalid(x) { throw new Error(`Invalid character: ${x}.`); }
@@ -81,71 +79,37 @@ const implicit: Token = {
   loc: [-1,-1],
 }
 
-function addImplicitTokens(tokens: Token[]): Token[] {
-  const out: Token[] = [];
+function addImplicitTokens(emit: (tok: Token) => void) {
   let last: Token | null = null;
 
-  tokens.forEach((token) => {
+  return function (token: Token) {
     if (token.type === 'whitespace') {
-      out.push(token);
+      emit(token);
       return;
     }
 
     if (last) {
       if (token.type === 'parenopen') {
         if (last.type !== 'operator' && last.type !== 'parenopen') {
-          out.push(implicit);
+          emit(implicit);
         }
       } else if (token.type === 'number' || token.type === 'symbol') {
         if (last.type === 'number' || last.type === 'symbol') {
-          out.push(implicit);
+          emit(implicit);
         }
       }
     }
 
-    out.push(token);
+    emit(token);
     last = token;
-  });
-  return out;
-}
-
-function tokenize(str: string): Token[] {
-  const base = raw(str);
-  const implicit = addImplicitTokens(base);
-  return implicit;
-}
-
-export function full(str: string): AstNode {
-  const tokens = tokenize(str);
-  const rpn = shuntingFull(tokens, ops);
-  const ast = build(ops, rpn);
-  return ast;
-}
-
-export function partial(string: string) {
-  const tokens = tokenize(string);
-  const stack: Token[] = [];
-
-  let error: ParseError | null = null;
-  let output: AstNode | null = null;
-
-  try {
-    const rpn = shuntingPartial(stack, tokens, ops);
-    const canDrain = !stack.some(t => t.type === 'parenopen');
-    if (canDrain) shuntingDrain(stack, rpn);
-    output = canDrain ? build(ops, rpn) : null;
-  } catch (e) {
-    if (e instanceof ParseError) {
-      error = e;
-    } else {
-      throw e;
-    }
-  }
-
-  return {
-    error,
-    tokens,
-    stack,
-    output,
   };
+}
+
+export function instance<T>(
+  build: (tok: Token) => T,
+  apply: (tok: Token, op: Operator, args: T[]) => T,
+  emit: (o: T) => void) {
+  return raw(addImplicitTokens(
+    shunting(ops, walk(ops, build, apply, emit))
+  ));
 }
