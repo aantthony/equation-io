@@ -52,16 +52,17 @@ export function shunting(
   emit: (tok: Token) => void,
 ) {
   const stack: Token[] = [];
-  return function write(tok: Token | null) {
-    if (tok === null) {
+  return function write(tok: Token) {
+    if (tok.type === 'eof') {
       // drain stack to result
       while (stack.length) {
-        const tok = stack.pop()!;
-        if (tok.type === 'parenopen') {
+        const entry = stack.pop()!;
+        if (entry.type === 'parenopen') {
           throw new Error(`Missing closing parentheses for bracket at ${tok.line}:${tok.loc[0]}`);
         }
-        emit(tok);
+        emit(entry);
       }
+      emit(tok);
     } else if (tok.type === 'parenopen') {
       stack.push(tok);
     } else if (tok.type === 'parenclose') {
@@ -70,7 +71,7 @@ export function shunting(
         if (!op) {
           // treat as EOF
           return;
-          throw new ParseError(`Could not find open brace.`, tok);
+          // throw new ParseError(`Could not find open brace.`, tok);
         }
         if (op.type === 'parenopen') {
           // modification: Add "{" "}" to output:
@@ -94,6 +95,8 @@ export function shunting(
         emit(op);
       }
       stack.push(tok);
+    } else if (tok.type === 'whitespace') {
+      // ignore whitespace
     } else {
       emit(tok);
     }

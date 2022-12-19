@@ -2,7 +2,7 @@ lockfileVersion: 5.4
 
 specifiers:
   '@types/node': ^18.11.17
-  chalk: ^3
+  chalk: ^3.0.0
   node-color-readline: ^1.0.1
   source-map-support: ^0.5.21
   ts-node: ^9.1.1

@@ -32,21 +32,27 @@ interface OnEnumerate {
 }
 
 interface MS {
+  brand?: symbol;
+  s?: string;
   forEach(fn: OnEnumerate): void;
 }
 
 const Empty: MS = {
+  s: '0',
   forEach(fn) {}
 }
 
 function Nat(val: bigint): MS {
   if (val === 0n) return Empty;
   return {
+    s: `${val}`,
     forEach(fn) {
       fn(Empty, val);
     }
   }
 }
+
+let logEqual = false;
 
 function isEqual(a: MS, b: MS): boolean {
   if (!a || !b) throw new Error('Invalid arguments');
@@ -96,7 +102,18 @@ function factor(s: MS): MS {
     let found = false;
     for (let i = 0; i < factors.length; i++) {
       const [factor, factorCount] = factors[i];
-      if (isEqual(factor, item)) {
+      const sA = formatMs(factor);
+      const sB = formatMs(item);
+      if (sA === '3' && sB === '3') {
+        logEqual = true;
+        console.log({ item, factor });
+      }
+      const qSame = isEqual(factor, item);
+      logEqual = false;
+
+      console.log(`qSame: ${qSame} ${sA} ${sB}`);
+
+      if (qSame) {
         factors[i] = [factor, factorCount + count];
         found = true;
         break;
@@ -106,6 +123,8 @@ function factor(s: MS): MS {
       factors.push([item, count]);
     }
   });
+
+  console.log(factors);
 
   return {
     forEach(fn) {
@@ -147,6 +166,34 @@ function add(args: MS[]): MS {
   };
 }
 
+function prod(args: MS[]): MS {
+  const a = args[0];
+  const b = args[1];
+  const rest = args.slice(2);
+
+  return {
+    forEach(fn) {
+      a.forEach((aItem, aCount) => {
+        b.forEach((bItem, bCount) => {
+          fn(add([aItem, bItem]), aCount * bCount);
+        });
+      });
+      rest.forEach(r => r.forEach(fn));
+    }
+  };
+}
+
+function div(a: MS, b: MS): MS {
+  const aCount = countEmpty(a);
+  const bCount = countEmpty(b);
+
+  if (aCount === 0n && bCount === 0n) return Empty;
+  if (aCount === 0n) return Nat(bCount);
+  if (bCount === 0n) return Nat(aCount);
+
+  return Nat(aCount / bCount);
+}
+
 interface Scope {
   lookup(name: string): MS;
 }
@@ -184,141 +231,226 @@ interface Scope {
 //   throw new Error(`Unknown function ${ast.name}`);
 // }
 
-interface TreeNode {
-  name: string;
-  args?: TreeNode[];
-  value?: string;
-}
+type TreeNode =
+| { name: 'Plus'; items: TreeNode[]; }
+| { name: 'Multiton'; count: string; item: TreeNode; }
+| { name: 'Singleton'; item: TreeNode; }
+| { name: 'Empty'; }
+| { name: 'Nat'; value: string; }
 
 function formatTree(ast: TreeNode): string {
   let str = '';
   let prefix = 0;
-  function stringForName(name: string): string {
-    if (name === 'Bracket') return '';
-    return name;
+  function _(): string {
+    return ''.padEnd(prefix);
   }
   function add(n: TreeNode) {
-    if (n.name === 'Bracket' && n.args?.length === 1 && n.args[0].value) {
-      str += ''.padEnd(prefix) + '[' + n.args[0].value + ']';
-      return;
+    if (n.name === 'Empty') {
+      str += `${_()}Empty\n`;
+    } else if (n.name === 'Nat') {
+      str += `${_()}Nat(${n.value})\n`;
+    } else if (n.name === 'Multiton') {
+      str += `${_()}${n.count}[\n`;
+      prefix += 2;
+      add(n.item);
+      prefix -= 2;
+      str += `${_()}]`;
+    } else if (n.name === 'Plus') {
+      str += `${_()}Plus[\n`;
+      prefix += 2;
+      n.items.forEach(add);
+      prefix -= 2;
+      str += `${_()}]\n`;
+    } else {
+      throw new Error('Unknown node type');
     }
-
-    if (n.value) {
-      str += ''.padEnd(prefix) + n.value;
-      return;
-    }
-    str += ''.padEnd(prefix) + stringForName(n.name) + '[\n';
-    prefix += 2;
-    n.args?.forEach((a) => {
-      add(a);
-      str += ',\n';
-    });
-    prefix -= 2;
-    str += ''.padEnd(prefix) + ']';
   }
 
-  add(ast);
-  return str;
+  function single(n: TreeNode): string {
+    if (n.name === 'Empty') return '0';
+    if (n.name === 'Nat') return n.value.toString();
+    if (n.name === 'Multiton') return `${n.count}[${single(n.item)}]`;
+    if (n.name === 'Singleton') return `[${single(n.item)}]`;
+    if (n.name === 'Plus') return n.items.map(single).join(' + ');
+    throw new Error('Unknown node type');
+  }
+
+  // add(ast);
+  return single(ast);
 }
 
 function toTree(ms: MS): TreeNode {
-  const sum: TreeNode[] = [];
+  const items: [MS, bigint][] = [];
 
   ms.forEach((item, count) => {
-    if (count === 1n) {
-      sum.push({
-        name: 'Bracket',
-        args: [toTree(item)],
-      });
+    if (count === 0n) return;
+    const found = items.find(([i]) => isEqual(i, item));
+    if (found) {
+      found[1] += count;
     } else {
-      sum.push({
-        name: 'Times',
-        args: [
-          {
-            name: 'number',
-            value: count.toString(),
-          },
-          {
-            name: 'Bracket',
-            args: [toTree(item)],
-          },
-        ]
-      });
+      items.push([item, count]);
     }
   });
-  
-  if (sum.length === 0) {
+
+  if (items.length === 0) {
     return {
-      name: '',
-      value: '0'
+      name: 'Empty',
     };
-  } else if (sum.length === 1) {
-    return sum[0];
   }
+
+  if (items.length === 1) {
+    // eg. 3*[2]
+    const count = items[0][1];
+    const item = toTree(items[0][0]);
+    if (item.name === 'Empty') {
+      return { name: 'Nat', value: `${count}` };
+    }
+
+    if (count === 1n) {
+      return {
+        name: 'Singleton',
+        item,
+      };
+    }
+
+    return {
+      name: 'Multiton',
+      count: `${count}`,
+      item,
+    };
+  }
+
   return {
     name: 'Plus',
-    args: sum,
+    items: items.map(([item, count]): TreeNode => {
+      const i = toTree(item);
+      if (count === 1n) {
+        if (i.name === 'Empty') {
+          return { name: 'Nat', value: '1' };
+        }
+        return {
+          name: 'Singleton',
+          item: i,
+        };
+      }
+
+      if (i.name === 'Empty') {
+        return { name: 'Nat', value: `${count}` };
+      }
+
+      return {
+        name: 'Multiton',
+        count: `${count}`,
+        item: i,
+      };
+    }),
   };
 }
 
 function formatMs(ms: MS): string {
-  return formatTree(toTree(ms));
+  const tr = toTree(ms);
+  // console.log(JSON.stringify(tr, null, 2));
+  return formatTree(tr);
 }
+
+const bSeries = Symbol('Series');
+
+interface Series extends MS {
+  brand?: typeof bSeries;
+  items?: MS[];
+}
+
+function Series(items: MS[]): Series {
+  return {
+    brand: bSeries,
+    items,
+    forEach() {
+      throw new Error('Series are intermediate datastructures passed into function arguments, and cannot be iterated');
+    },
+  }
+}
+
+const TRUE = Nat(1n);
+const FALSE = Empty;
 
 const Fn: {
   [key: string]: (args: MS[]) => MS;
 } = {
-  Bracket(items) {
+  Series(items) {
+    return Series(items);
+  },
+  Bracket(args) {
+    const contents = args[0] as Series;
+    const terminal = args[1];
+    if (terminal !== null) throw new Error('Terminal not null');
+
+    if (contents.brand === bSeries) {
+      const items = contents.items!;
+      return {
+        forEach(fn) {
+          function collect(entry: MS) {
+            if (entry.brand === bSeries) {
+              (entry as Series).items!.forEach(collect);
+            } else {
+              fn(entry, 1n);
+            }
+          }
+
+          items.forEach(collect);
+        }
+      };
+    }
+
     return {
       forEach(fn) {
-        items.forEach(i => {
-          fn(i, 1n);
-        });
+        fn(contents, 1n);
       }
     }
+  },
+  Paren(args) {
+    const contents = args[0];
+    const terminal = args[1];
+    if (terminal !== null) throw new Error('Terminal not null');
+
+    if (contents.brand === bSeries) {
+      throw new Error('Tuple not supported');
+    }
+
+    return contents;
   },
   Plus(args) {
     return add(args);
   },
   Times(args) {
-    const a = args[0];
-    const b = args[1];
-    const rest = args.slice(2);
-
-    return {
-      forEach(fn) {
-        a.forEach((aItem, aCount) => {
-          b.forEach((bItem, bCount) => {
-            fn(add([aItem, bItem]), aCount * bCount);
-          });
-        });
-        rest.forEach(r => r.forEach(fn));
-      }
-    }
+    return prod(args);
   },
   Divide(args) {
     const a = args[0];
     const b = args[1];
-    const rest = args.slice(2);
+
+    if (args.length !== 2) throw new Error('Divide with more than 2 arguments not supported');
+
+    return div(a, b);
+  },
+  Minus([a, b]) {
+    if (!b) {
+      // unary minus
+      return {
+        forEach(fn) {
+          a.forEach((aItem, aCount) => {
+            fn(aItem, -aCount);
+          });
+        }
+      };
+    }
 
     return {
       forEach(fn) {
         a.forEach((aItem, aCount) => {
-          b.forEach((bItem, bCount) => {
-            fn(add([aItem, bItem]), aCount / bCount);
-          });
+          fn(aItem, aCount);
         });
-        rest.forEach(r => r.forEach(fn));
-      }
-    }
-  },
-  Minus([a, b]) {
-    return {
-      forEach(fn) {
-        a.forEach((aItem, aCount) => {
-          b.forEach((bItem, bCount) => {
-            fn(add([aItem, bItem]), aCount - bCount);
-          });
+        b.forEach((bItem, bCount) => {
+          fn(bItem, -bCount);
         });
       }
     }
@@ -346,24 +478,70 @@ const Fn: {
     return Nat(n);
   },
   Equal(args) {
-    console.log('Equal', args);
-    return Nat(1n);
-    // return isEqual(a, b) ? Nat(1n) : Nat(0n);
-  }
+    if (args.length < 2) throw new Error('Equal needs at least 2 arguments');
+    const a = args[0];
+    const b = args[1];
+    return isEqual(a, b) ? TRUE : FALSE;
+  },
 };
 
 const saved = new Map<string, MS>();
 
 function build(tok: Token): MS {
+  if (tok.type === 'parenopen') return null as any;
   if (tok.type === 'number') return Nat(BigInt(tok.str));
+  if (tok.type === 'symbol') {
+    return saved.get(tok.str) || {
+      s: tok.str,
+      forEach(fn) {
+        throw new Error(`Unknown symbol ${tok.str}`);
+      }
+    };
+  }
   throw new Error(`Unknown token ${tok.type}`);
 }
 
 function apply(tok: Token, op: Operator, args: MS[]): MS {
+  // console.log('apply', tok.type, op.name, args);
+  if (op.name === 'Default') {
+    const lhs = args[0];
+    const rhs = args[1];
+    
+    // do a product:
+    return prod([lhs, rhs]);
+  }
+  if (tok.type === 'parenclose') {
+    const fn = Fn[op.name];
+    if (fn) return fn(args);
+    throw new Error(`Unknown operator ${op.name}`);
+  }
   const fn = Fn[op.name];
   if (fn) return fn(args);
   throw new Error(`Unknown operator ${op.name}`);
 }
+
+function exec(str: string, emit: (ms: MS) => void) {
+  instance(build, apply, emit)(str);
+}
+
+function def(name: string, str: string) {
+  exec(str, ms => {
+    saved.set(name, ms);
+  });
+}
+
+def('a', '[1]');
+
+def('x', '[1]');
+def('y', '[2]');
+
+
+exec('(2x+y-x*x*x)*(x + 3y)', ms => {
+  factor(ms).forEach((item, count) => {
+    const s = formatMs(item);
+    console.log(s, count);
+  });
+});
 
 repl.on('line', function (cmd) {
   const scope: Scope = {
@@ -375,9 +553,16 @@ repl.on('line', function (cmd) {
   };
 
   const inst = instance(build, apply, res => {
+    if (!res) {
+      repl.prompt();
+      return;
+    }
     const f = factor(res);
+
+    console.log(formatTree(toTree(res)));
+    // const f = res;
     saved.set('_', f);
-    console.log(formatMs(f));
+    console.log(formatMs(res));
 
     repl.prompt();
   });

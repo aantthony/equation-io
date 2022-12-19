@@ -1,9 +1,9 @@
-export interface PatternDict {
+export type PatternDict = {
   [type: string]: (RegExp | ((val: string) => boolean));
 }
 
-export interface Token {
-  type: string;
+export interface Token<TokenType=string> {
+  type: TokenType;
   str: string;
   line: number;
   loc: [number, number];
@@ -42,6 +42,7 @@ export default function Tokenizer(patternDict: PatternDict) {
           si = i;
         }
       }
+
       if (s) {
         emit({
           type: names[t],
@@ -50,6 +51,13 @@ export default function Tokenizer(patternDict: PatternDict) {
           loc: [si, string.length],
         });
       }
+
+      emit({
+        type: 'eof',
+        str: '',
+        line,
+        loc: [string.length, string.length],
+      });
     }
   }
 }

@@ -1,6 +1,9 @@
 import { Operator, OperatorDict } from './parser';
 import { Token } from './tokenizer';
 
+/**
+ * Walks an RPN stream and invokes the callbacks to build the AST.
+ */
 export function walk<T>(
   ops: OperatorDict,
   build: (token: Token) => T,
@@ -8,9 +11,8 @@ export function walk<T>(
   emit: (res: T) => void,
 ) {
   const stack: T[] = [];
-  return function write(tok: Token | null) {
-    console.log({ tok });
-    if (tok === null) {
+  return function write(tok: Token) {
+    if (tok.type === 'eof') {
       emit(stack[0]);
     } else if (tok.type === 'operator' || tok.type === 'parenclose') {
       const op = ops[tok.str]!;
@@ -30,15 +32,6 @@ export interface AstNode {
   args: AstNode[];
   token: Token;
   value?: string;
-}
-
-function createLeaf(token: Token): AstNode {
-  return {
-    token,
-    name: token.type,
-    args: [],
-    value: token.str,
-  };
 }
 
 const R_ASSOC: {[key: string]: 1} = {
