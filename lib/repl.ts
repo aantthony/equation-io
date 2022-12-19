@@ -52,48 +52,50 @@ function Nat(val: bigint): MS {
   }
 }
 
-let logEqual = false;
-
 function isEqual(a: MS, b: MS): boolean {
   if (!a || !b) throw new Error('Invalid arguments');
-  let aCount = 0n;
-  let bCount = 0n;
-  let aEmpty = true;
-  let bEmpty = true;
-
-  a.forEach((item, count) => {
-    aCount += count;
-    aEmpty = false;
-  });
-
-  b.forEach((item, count) => {
-    bCount += count;
-    bEmpty = false;
-  });
-
-  if (aEmpty && bEmpty) return true;
-  if (aEmpty || bEmpty) return false;
-  if (aCount !== bCount) return false;
-
   let aItems: [MS, bigint][] = [];
   let bItems: [MS, bigint][] = [];
 
+  let aTC = 0n;
+  let bTC = 0n;
+
   a.forEach((item, count) => {
     aItems.push([item, count]);
+    aTC += count;
   });
 
   b.forEach((item, count) => {
     bItems.push([item, count]);
+    bTC += count;
   });
 
-  for (let i = 0; i < aItems.length; i++) {
-    const [aItem, aCount] = aItems[i];
-    const [bItem, bCount] = bItems[i];
-    if (aCount !== bCount) return false;
-    if (!isEqual(aItem, bItem)) return false;
-  }
+  if (aTC !== bTC) return false;
+  if (!aItems.length && !bItems.length) return true;
 
-  return true;
+  const balances: [MS, bigint][] = [];
+
+  aItems.forEach(([item, count]) => {
+    const match = bItems.find(([bItem]) => isEqual(item, bItem));
+    if (match) {
+      match[1] += count;
+    } else {
+      balances.push([item, count]);
+    }
+  });
+
+  bItems.forEach(([item, count]) => {
+    const match = aItems.find(([aItem]) => isEqual(item, aItem));
+    if (match) {
+      match[1] -= count;
+    } else {
+      balances.push([item, -count]);
+    }
+  });
+
+  const allGood = balances.every(([item, count]) => count === 0n);
+
+  return allGood;
 }
 
 function factor(s: MS): MS {
@@ -102,17 +104,7 @@ function factor(s: MS): MS {
     let found = false;
     for (let i = 0; i < factors.length; i++) {
       const [factor, factorCount] = factors[i];
-      const sA = formatMs(factor);
-      const sB = formatMs(item);
-      if (sA === '3' && sB === '3') {
-        logEqual = true;
-        console.log({ item, factor });
-      }
       const qSame = isEqual(factor, item);
-      logEqual = false;
-
-      console.log(`qSame: ${qSame} ${sA} ${sB}`);
-
       if (qSame) {
         factors[i] = [factor, factorCount + count];
         found = true;
@@ -123,8 +115,6 @@ function factor(s: MS): MS {
       factors.push([item, count]);
     }
   });
-
-  console.log(factors);
 
   return {
     forEach(fn) {
@@ -536,12 +526,12 @@ def('x', '[1]');
 def('y', '[2]');
 
 
-exec('(2x+y-x*x*x)*(x + 3y)', ms => {
-  factor(ms).forEach((item, count) => {
-    const s = formatMs(item);
-    console.log(s, count);
-  });
-});
+// exec('(2x+y-x*x*x)*(x + 3y)', ms => {
+//   factor(ms).forEach((item, count) => {
+//     const s = formatMs(item);
+//     console.log(s, count);
+//   });
+// });
 
 repl.on('line', function (cmd) {
   const scope: Scope = {
@@ -559,7 +549,6 @@ repl.on('line', function (cmd) {
     }
     const f = factor(res);
 
-    console.log(formatTree(toTree(res)));
     // const f = res;
     saved.set('_', f);
     console.log(formatMs(res));
