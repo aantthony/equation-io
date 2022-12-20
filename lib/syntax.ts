@@ -64,9 +64,9 @@ const ops = operators<Node>({
     return a;
   }),
 
-  // '}': BinaryInfix(a => a),
-  // ')': BinaryInfix(a => a),
-  ']': BinaryInfix((a, b) => {
+  '}': BinaryInfix(a => a),
+  ')': BinaryInfix(a => a),
+  ']': BinaryInfix(a => {
     const items: Node[] = a.type === 'series' ? a.items : [a];
     
     const values = items.map(n => {
