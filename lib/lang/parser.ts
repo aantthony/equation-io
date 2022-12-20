@@ -1,28 +1,29 @@
 import { Token } from './tokenizer';
 
-export interface Operator<T> {
-  n: number;
-  prec: number;
-  fn(...args: T[]): T;
 
+export interface OperatorSpec<T> {
+  n: number;
+  fn(...args: T[]): T;
   right: boolean;
 }
 
-export const BinaryInfix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => ({
+export interface Operator<T> extends OperatorSpec<T> {
+  prec: number;
+}
+
+export const BinaryInfix = <T>(fn: (a: T, b: T) => T): OperatorSpec<T> => ({
   n: 2,
-  prec,
   fn,
   right: false,
 });
 
-export const BinaryRightInfix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => ({
+export const BinaryRightInfix = <T>(fn: (a: T, b: T) => T): OperatorSpec<T> => ({
   n: 2,
-  prec,
   fn,
   right: true,
 });
 
-export const Infix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => {
+export const Infix = <T>(fn: (nodes: T[]) => T): OperatorSpec<T> => {
   // Example RPN stack 3 1 * 2 *
   // Example RPN stack 3 1 2 * *
   // The difference is that the first one is right associative, the second is left associative.
@@ -33,29 +34,49 @@ export const Infix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Ope
 
   return {
     n: 2,
-    prec,
-    fn,
+    fn: (a, b) => {
+      return fn([a, b]);
+    },
     right: true,
   };
 };
 
-export const Prefix = <T>(name: string, prec: number, fn: (a: T) => T): Operator<T> => ({
+export const Prefix = <T>(fn: (a: T) => T): OperatorSpec<T> => ({
   n: 1,
-  prec,
   right: true,
   fn,
 });
 
-export const Postfix = <T>(name: string, prec: number, fn: (a: T) => T): Operator<T> => ({
+export const Postfix = <T>(fn: (a: T) => T): OperatorSpec<T> => ({
   n: 1,
-  prec,
   right: false,
   fn,
 });
 
+export type OperatorSpecDict<T> = {
+  [key: string]: OperatorSpec<T>;
+  EOF: OperatorSpec<T>;
+}
+
 export type OperatorDict<T> = {
   [key: string]: Operator<T>;
   EOF: Operator<T>;
+}
+
+export function operators<T>(dict: OperatorSpecDict<T>): OperatorDict<T> {
+  const out: OperatorDict<T> = {
+    EOF: {...dict.EOF, prec: -1},
+  };
+  let prec = 0;
+  for (const key in dict) {
+    const op = dict[key];
+    out[key] = {
+      ...op,
+      prec,
+    };
+    prec += 1;
+  }
+  return out;
 }
 
 function lookup<T>(token: Token, dict: OperatorDict<T>): Operator<T> {

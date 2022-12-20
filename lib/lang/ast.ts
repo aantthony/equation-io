@@ -6,7 +6,7 @@ import { Token } from './tokenizer';
  */
 export function walk<T>(
   ops: OperatorDict<T>,
-  build: (token: Token) => T,
+  leaf: (token: Token) => T,
   rpn: Iterable<Token>,
 ) {
   const stack: T[] = [];
@@ -17,9 +17,9 @@ export function walk<T>(
       stack.push(op.fn.apply(null, args));
     } else if (tok.type === 'parenopen') {
       // It's just a token
-      stack.push(build(tok));
+      stack.push(leaf(tok));
     } else {
-      stack.push(build(tok));
+      stack.push(leaf(tok));
     }
   }
 
