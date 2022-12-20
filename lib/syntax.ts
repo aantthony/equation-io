@@ -185,8 +185,8 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
 
   for (const token of bare) {
     if (token.type === 'whitespace') {
-      yield token;
-      return;
+      // skip whitespace
+      continue;
     }
 
     if (last) {
@@ -279,7 +279,7 @@ globals.set('Times', FnRef(ms => {
 
 // globals.set('Power', FnRef(Power));
 
-function createLeaf(token: Token): Node {
+function createLeaf(token: Token, lookup: (s: string) => MS): Node {
   if (token.type === 'number') return {
     type: 'value',
     value: Nat(BigInt(token.str)),
@@ -291,19 +291,17 @@ function createLeaf(token: Token): Node {
   if (token.type === 'symbol') {
     const fn = globals.get(token.str);
     if (fn) return fn;
-    return {
-      type: 'symbol',
-      name: token.str,
-    };
+    const value = lookup(token.str);
+    return { type: 'value', value };
   }
   throw new Error(`Invalid token: ${token.type} ${token.str}`);
 }
 
-export function parse(str: string) {
+export function parse(str: string, lookup: (name: string) => MS) {
   const tokens = addImplicitTokens(tokenize(str));
   return walk(
     ops,
-    createLeaf,
+    token => createLeaf(token, lookup),
     shunting(ops, tokens),
   );
 }
