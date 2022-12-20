@@ -1,14 +1,17 @@
-export interface OnEnumerate {
-  (item: MS, count: bigint): void;
+export type MS = () => Generator<[MS, bigint], void, unknown>;
+
+export const Empty: MS = function *() {};
+
+export function Nat(n: bigint): MS {
+  if (n === 0n) return Empty;
+  return function *() {
+    yield [Empty, n];
+  };
 }
 
-export interface MS {
-  brand?: symbol;
-  s?: string;
-  forEach(fn: OnEnumerate): void;
-}
 
-export const Empty: MS = {
-  s: '0',
-  forEach(fn) {}
-}
+// True is a function that invokes the callback once, with the empty set
+export const TRUE = Nat(1n);
+
+// False never invokes, it is the empty set
+export const FALSE = Empty;

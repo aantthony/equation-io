@@ -1,4 +1,4 @@
-import isEqual from './is-equal';
+import { compare } from './compare';
 import { MS } from './ms';
 
 type TreeNode =
@@ -52,15 +52,15 @@ function formatTree(ast: TreeNode): string {
 function toTree(ms: MS): TreeNode {
   const items: [MS, bigint][] = [];
 
-  ms.forEach((item, count) => {
-    if (count === 0n) return;
-    const found = items.find(([i]) => isEqual(i, item));
+  for (const [item, count] of ms()) {
+    if (count === 0n) continue;
+    const found = items.find(([i]) => compare(i, item) === 0);
     if (found) {
       found[1] += count;
     } else {
       items.push([item, count]);
     }
-  });
+  }
 
   if (items.length === 0) {
     return {

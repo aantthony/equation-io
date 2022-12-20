@@ -1,38 +1,64 @@
 import { Token } from './tokenizer';
 
-export interface Operator {
-  name: string;
+export interface Operator<T> {
   n: number;
   prec: number;
+  fn(...args: T[]): T;
+
   right: boolean;
 }
 
-export const BinaryInfix = (name: string, prec: number, right: boolean = false): Operator => ({
-  name,
+export const BinaryInfix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => ({
   n: 2,
   prec,
-  right,
-});
-
-export const Prefix = (name: string, prec: number): Operator => ({
-  name,
-  n: 1,
-  prec,
-  right: true,
-});
-
-export const Postfix = (name: string, prec: number): Operator => ({
-  name,
-  n: 1,
-  prec,
+  fn,
   right: false,
 });
 
-export type OperatorDict = {
-  [key: string]: Operator;
+export const BinaryRightInfix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => ({
+  n: 2,
+  prec,
+  fn,
+  right: true,
+});
+
+export const Infix = <T>(name: string, prec: number, fn: (a: T, b: T) => T): Operator<T> => {
+  // Example RPN stack 3 1 * 2 *
+  // Example RPN stack 3 1 2 * *
+  // The difference is that the first one is right associative, the second is left associative.
+  // Left associative: (3*1)*2 +1, should be executed on "+"
+  // Right associative: 3*(1*2) +1, should executee on "+"
+  // That means that the * operator cannot know when to execute `fn` or when to create an internal
+  // node.
+
+  return {
+    n: 2,
+    prec,
+    fn,
+    right: true,
+  };
+};
+
+export const Prefix = <T>(name: string, prec: number, fn: (a: T) => T): Operator<T> => ({
+  n: 1,
+  prec,
+  right: true,
+  fn,
+});
+
+export const Postfix = <T>(name: string, prec: number, fn: (a: T) => T): Operator<T> => ({
+  n: 1,
+  prec,
+  right: false,
+  fn,
+});
+
+export type OperatorDict<T> = {
+  [key: string]: Operator<T>;
+  EOF: Operator<T>;
 }
 
-function lookup(token: Token, dict: OperatorDict): Operator {
+function lookup<T>(token: Token, dict: OperatorDict<T>): Operator<T> {
   const def = dict[token.str];
   if (!def) throw new Error(`Unknown operator: ${token.str} at ${token.line}:${token.loc[0]}.`);
   return def;
@@ -47,39 +73,29 @@ export class ParseError extends Error {
 }
 
 // https://rosettacode.org/wiki/Parsing/Shunting-yard_algorithm#Go
-export function shunting(
-  ops: OperatorDict,
-  emit: (tok: Token) => void,
-) {
+export function *shunting<T>(
+  ops: OperatorDict<T>,
+  tokens: Iterable<Token>,
+): Generator<Token, void, void> {
   const stack: Token[] = [];
-  return function write(tok: Token) {
-    if (tok.type === 'eof') {
-      // drain stack to result
-      while (stack.length) {
-        const entry = stack.pop()!;
-        if (entry.type === 'parenopen') {
-          throw new Error(`Missing closing parentheses for bracket at ${tok.line}:${tok.loc[0]}`);
-        }
-        emit(entry);
-      }
-      emit(tok);
-    } else if (tok.type === 'parenopen') {
+  for (const tok of tokens) {
+    if (tok.type === 'parenopen') {
       stack.push(tok);
     } else if (tok.type === 'parenclose') {
       while (1) {
         const op = stack.pop();
         if (!op) {
           // treat as EOF
-          return;
-          // throw new ParseError(`Could not find open brace.`, tok);
+          // return;
+          throw new ParseError(`Could not find open brace.`, tok);
         }
         if (op.type === 'parenopen') {
           // modification: Add "{" "}" to output:
-          emit(op);
-          emit(tok);
+          yield (op);
+          yield (tok);
           break;
         }
-        emit(op);
+        yield (op);
       }
     } else if (tok.type === 'operator') {
       const o1 = lookup(tok, ops);
@@ -92,13 +108,22 @@ export function shunting(
         if (o1.prec == o2.prec && o1.right) break;
         // top item is an operator that needs to come off
         stack.pop();
-        emit(op);
+        yield (op);
       }
       stack.push(tok);
     } else if (tok.type === 'whitespace') {
       // ignore whitespace
     } else {
-      emit(tok);
+      yield tok;
     }
+  }
+
+  // drain stack to result
+  while (stack.length) {
+    const entry = stack.pop()!;
+    if (entry.type === 'parenopen') {
+      throw new Error(`Missing closing parentheses for bracket "${entry.str}" at ${entry.line}:${entry.loc[0]}`);
+    }
+    yield (entry);
   }
 }
