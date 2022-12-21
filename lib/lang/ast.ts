@@ -2,29 +2,32 @@ import { OperatorDict } from './parser';
 import { Token } from './tokenizer';
 
 /**
- * Walks an RPN stream and invokes the callbacks to build the AST.
+ * Executes a stream of RPN tokens, invoking the leaf() callback to create leaf AST nodes,
+ * and the ops dictionary to create operator AST nodes.
  */
 export function walk<T>(
   ops: OperatorDict<T>,
   leaf: (token: Token) => T,
   rpn: Iterable<Token>,
+  push: (node: T) => void,
+  pop: (n: number) => T[],
 ) {
-  const stack: T[] = [];
   for (const tok of rpn) {
     if (tok.type === 'operator' || tok.type === 'parenclose') {
       const op = ops[tok.str];
       if (!op) throw new Error(`Unknown operator: ${tok.str} at ${tok.line}:${tok.loc[0]}.`);
-      const args = stack.splice(stack.length - op.n);
-      stack.push(op.fn.apply(null, args));
-    } else if (tok.type === 'parenopen') {
-      // It's just a token
-      stack.push(leaf(tok));
+
+      // Pop off op.n operands:
+      const args = pop(op.n);
+      
+      // Push the result of applying the operator:
+      const result = op.fn(...args);
+
+      push(result);
     } else {
-      stack.push(leaf(tok));
+      push(leaf(tok));
     }
   }
-
-  return ops.EOF.fn.apply(null, stack);
 }
 
 export interface AstNode {

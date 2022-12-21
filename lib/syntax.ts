@@ -6,44 +6,92 @@ import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus
 
 type ValueNode = { type: 'value'; value: MS };
 type SeriesNode = { type: 'series'; items: Node[] };
-type SymbolNode = { type: 'symbol'; name: string };
+type IdentifierNode = { type: 'identifier'; name: string, lookup?: (name: string) => DeclarationNode };
+export type DeclarationNode = { type: 'declaration'; id: IdentifierNode, value?: MS };
+type FnHeaderNode = { type: 'fnHeader'; args: DeclarationNode[] };
 type CallableNode = { type: 'callable'; impl: (arg: MS) => MS };
+type AssignmentNode = { type: 'assignment'; l: DeclarationNode; r: MS };
+type LambdaNode = { type: 'lambda', header: FnHeaderNode, body: Node };
 
 type Node =
 | ValueNode
 | SeriesNode
-| SymbolNode
+| DeclarationNode
 | CallableNode
+| AssignmentNode
+| IdentifierNode
+| LambdaNode
+| FnHeaderNode
 ;
 
-function onValueBinary(fn: (a: MS, b: MS) => MS) {
-  return (a: Node, b: Node): Node => {
-    if (a.type !== 'value' || b.type !== 'value') {
-      throw new Error(`Expected value, got ${a.type} and ${b.type}`);
+const implicit: Token = {
+  type: 'operator',
+  str: '',
+  line: -1,
+  loc: [-1,-1],
+}
+
+const implicitEmpty: Token = {
+  type: 'emptySeries',
+  str: '',
+  line: -1,
+  loc: [-1,-1],
+}
+
+const implicitLambdaSuffix: Token = {
+  type: 'implicitLambdaSuffix',
+  str: '',
+  line: -1,
+  loc: [-1,-1],
+}
+
+function ofType<Type extends Node['type']>(n: Type, node: Node): Node & { type: Type } {
+  if (node.type !== n) {
+    throw new Error(`Expected ${n}, got ${node.type}`);
+  }
+  return node as any;
+}
+
+function switchType<T>(cases: { [key in Node['type']]?: (node: Node & { type: key }) => T }): (node: Node) => T {
+  return node => {
+    const fn = cases[node.type];
+    if (!fn) {
+      throw new Error(`Expected one of ${Object.keys(cases).join(', ')}, got ${node.type}`);
     }
-    return { type: 'value', value: fn(a.value, b.value) };
+    return (fn as any)(node as any) as T;
+  }
+};
+
+const getValue = switchType({
+  value: n => n.value,
+  identifier: n => {
+    if (!n.lookup) {
+      throw new Error(`Identifier ${n.name} not found.`);
+    }
+    const val = n.lookup(n.name);
+    if (!val.value) throw new Error(`Identifier ${n.name} has no value.`);
+    return val.value;
+  },
+});
+
+const onValue = (fn: (x: MS) => MS): (node: Node) => Node => {
+  return node => {
+    return { type: 'value', value: fn(getValue(node)) };
+  }
+}
+
+function onValueBinary(fn: (x: MS, y: MS) => MS): (a: Node, b: Node) => Node {
+  return (a, b): ValueNode => {
+    const value = fn(getValue(a), getValue(b));
+    return { type: 'value', value };
   };
 }
 
 function onValueArray(fn: (args: MS[]) => MS) {
-  return (nodes: Node[]): Node => {
-    const values = nodes.map(n => {
-      if (n.type !== 'value') {
-        throw new Error(`Expected value, got ${n.type}`);
-      }
-      return n.value;
-    });
-    
-    return { type: 'value', value: fn(values) };
-  };
-}
-
-function onValue(fn: (value: MS) => MS) {
-  return (node: Node): Node => {
-    if (node.type !== 'value') {
-      throw new Error(`Expected value, got ${node.type}`);
-    }
-    return { type: 'value', value: fn(node.value) };
+  return (args: Node[]): ValueNode => {
+    const values = args.map(getValue);
+    const value = fn(values);
+    return { type: 'value', value };
   };
 }
 
@@ -57,10 +105,6 @@ function makeMultiSet(elements: MS[]): MS {
 
 const ops = operators<Node>({
   EOF: Postfix(a => {
-    if (a.type !== 'value') {
-      throw new Error(`Expected value, got ${a.type}`);
-    }
-
     return a;
   }),
 
@@ -68,22 +112,24 @@ const ops = operators<Node>({
   ')': BinaryInfix(a => a),
   ']': BinaryInfix(a => {
     const items: Node[] = a.type === 'series' ? a.items : [a];
-    
-    const values = items.map(n => {
-      if (n.type !== 'value') {
-        throw new Error(`Expected value, got ${n.type}`);
-      }
-
-      return n.value;
-    });
-    
+    const values = items.map(getValue);
     return { type: 'value', value: makeMultiSet(values) };
   }),
 
   // ';': BinaryInfix('Statements', 10),
   // '->': BinaryInfix('Rule', 10),
   // '//.': BinaryInfix('ReplaceRepeated', 10),
-  '=': BinaryInfix(onValueBinary(Equal)),
+  '=': BinaryInfix((a, b): AssignmentNode => {
+    if (a.type === 'identifier') {
+      return {
+        type: 'assignment',
+        l: { type: 'declaration', id: a },
+        r: getValue(b),
+      };
+    }
+
+    throw new Error(`Expected identifier, got ${a.type}`);
+  }),
   '==': BinaryInfix(onValueBinary(Equal)),
   // '||': BinaryInfix('Or', 10),
   // '&&': BinaryInfix('And', 10),
@@ -104,25 +150,33 @@ const ops = operators<Node>({
     };
   }),
   // ':': BinaryInfix('Property', 12),
-  // '=>': BinaryInfix('Lambda', 13, true),
+  [implicitLambdaSuffix.str]: Postfix((a): FnHeaderNode => {
+    const items = a.type === 'series' ? a.items : [a];
+  
+    const args = items.map((n): DeclarationNode => {
+      if (n.type !== 'identifier') {
+        throw new Error(`Expected identifier, got ${n.type}`);
+      }
+      return { type: 'declaration', id: n };
+    });
+
+    return { type: 'fnHeader', args };
+  }),
+  '=>': BinaryInfix((a, body): LambdaNode => {
+    const header = ofType('fnHeader', a);
+    return { type: 'lambda', header, body };
+  }),
 
   '-': BinaryInfix(onValueBinary(Minus)),
   '−': BinaryInfix(onValueBinary(Minus)),
   '+': Infix(onValueArray(Plus)),
-  '': BinaryInfix((a, b) => {
+  [implicit.str]: BinaryInfix((a, b): ValueNode => {
     if (a.type === 'callable') {
-      if (b.type === 'value') {
-        return { type: 'value', value: a.impl(b.value) };
-      }
+      return { type: 'value', value: a.impl(getValue(b)) };
     }
-    if (a.type === 'value') {
-      if (b.type === 'value') {
-        return { type: 'value', value: Times([a.value, b.value]) };
-      }
-    }
-
-    throw new Error(`Expected callable and value, got ${a.type} and ${b.type}`);
-  }),
+    
+    return { type: 'value', value: Times([getValue(a), getValue(b)]) };
+ }),
   '/': BinaryInfix(onValueBinary(Divide)),
   '÷': BinaryInfix(onValueBinary(Divide)),
   '¬': Prefix(onValue(Not)),
@@ -131,7 +185,6 @@ const ops = operators<Node>({
   // '^': BinaryRightInfix('Power', 25, Power),
   // '.': BinaryInfix('Dot', 30),
   // '!': Postfix('Factorial', 80),
-
 });
 
 const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);
@@ -166,20 +219,6 @@ const syntax: PatternDict = {
 
 const tokenize = Tokenzier(syntax);
 
-const implicit: Token = {
-  type: 'operator',
-  str: '',
-  line: -1,
-  loc: [-1,-1],
-}
-
-const implicitEmpty: Token = {
-  type: 'emptySeries',
-  str: '',
-  line: -1,
-  loc: [-1,-1],
-}
-
 function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   let last: Token | null = null;
 
@@ -207,6 +246,9 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
           }
         }
       } else if (token.type === 'operator') {
+        if (token.str === '=>') {
+          yield implicitLambdaSuffix;
+        } 
         if (last.type === 'operator') {
           if (token.str === ',' && last.str === ',') {
             yield implicitEmpty;
@@ -279,7 +321,7 @@ globals.set('Times', FnRef(ms => {
 
 // globals.set('Power', FnRef(Power));
 
-function createLeaf(token: Token, lookup: (s: string) => MS): Node {
+function createLeaf(token: Token): Node {
   if (token.type === 'number') return {
     type: 'value',
     value: Nat(BigInt(token.str)),
@@ -289,19 +331,50 @@ function createLeaf(token: Token, lookup: (s: string) => MS): Node {
     return { type: 'series', items: [] };
   }
   if (token.type === 'symbol') {
-    const fn = globals.get(token.str);
-    if (fn) return fn;
-    const value = lookup(token.str);
-    return { type: 'value', value };
+    if (globals.has(token.str)) return globals.get(token.str)!;
+    return { type: 'identifier', name: token.str };
   }
   throw new Error(`Invalid token: ${token.type} ${token.str}`);
 }
 
-export function parse(str: string, lookup: (name: string) => MS) {
+type Scopes = Map<string, DeclarationNode>[];
+function lookup(scopes: Scopes, name: string): DeclarationNode {
+  for (let i = scopes.length - 1; i >= 0; i--) {
+    const scope = scopes[i];
+    if (scope.has(name)) return scope.get(name)!;
+  }
+  
+  throw new Error(`Unknown identifier: ${name}`);
+}
+
+export function parse(str: string, rootScope: Scopes[0] = new Map()) {
   const tokens = addImplicitTokens(tokenize(str));
-  return walk(
-    ops,
-    token => createLeaf(token, lookup),
-    shunting(ops, tokens),
-  );
+
+  const scopes: Scopes = [rootScope];
+  const stack: Node[] = [];
+
+  function push(node: Node) {
+    if (node.type === 'identifier') {
+      node.lookup = () => lookup(scopes, node.name);
+    }
+
+    stack.push(node);
+    if (node.type === 'fnHeader') {
+      const fnScope = new Map();
+      node.args.forEach(arg => fnScope.set(arg.id.name, arg));
+      scopes.push(fnScope);
+    } else if (node.type === 'lambda') {
+      const popped = scopes.pop();
+      console.log(popped);
+    }
+  }
+
+  function pop(n: number): Node[] {
+    return stack.splice(stack.length - n);
+  }
+
+  walk(ops, createLeaf, shunting(ops, tokens), push, pop);
+
+  // Remove this:
+  return ops.EOF.fn.apply(null, pop(1));
 }

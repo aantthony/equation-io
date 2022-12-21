@@ -3,7 +3,7 @@ import 'source-map-support/register';
 import { compare } from './compare';
 import formatMs from './format';
 import { MS } from './ms';
-import { parse } from './syntax';
+import { DeclarationNode, parse } from './syntax';
 
 const repl = colorReadline.createInterface({
   input: process.stdin,
@@ -53,58 +53,46 @@ function factor(s: MS): MS {
   }
 }
 
-const bSeries = Symbol('Series');
-
-interface Series extends MS {
-  brand?: typeof bSeries;
-  items?: MS[];
-}
-
-
-const saved = new Map<string, MS|undefined>();
+const globals = new Map<string, DeclarationNode>();
 
 function def(name: string, str: string) {
-  const res = parse(str, lookup);
+  const res = parse(str, globals);
   if (!res) return;
   if (res.type !== 'value') {
     console.log('Not a value');
     return;
   }
-  saved.set(name, res.value);
-}
 
-// def('a', '[1]');
-// def('x', '[1]');
-// def('b', '(2+[1]-[2])');
-
-// exec('(2+7[1]+2[2]-3[3])/b', ms => {
-//   // ms.forEach((item, count) => {
-//   //   const s = formatMs(item);
-//   //   console.log(s, count);
-//   // });
-//   console.log('done');
-// });
-
-// parse('(6[1] + 3[2] + -3[3])/b');
-
-function lookup(name: string) {
-  const v = saved.get(name);
-  if (!v) {
-    throw new Error(`Unknown variable: ${name}`);
-  }
-  return v;
+  globals.set(name, {
+    id: { type: 'identifier', name },
+    type: 'declaration',
+    value: res.value,
+  });
 }
 
 repl.on('line', function (cmd) {
-  const res = parse(cmd, lookup);
+  let res = parse(cmd, globals);
   if (!res) {
     repl.prompt();
     return;
   }
+
+  if (res.type === 'assignment') {
+    globals.set(res.l.id.name, {
+      type: 'declaration',
+      id: res.l.id,
+      value: res.r,
+    });
+  }
+
   if (res.type === 'value') {
     const v = res.value;
     // const f = res;
-    saved.set('_', v);
+    // globals.set('_', {
+    //   type: 'declaration',
+    //   id: { type: 'identifier', name: '_' },
+    //   value: res,
+    // });
     console.log(formatMs(v));
 
   } else {
