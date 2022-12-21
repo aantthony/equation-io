@@ -64,7 +64,7 @@ interface Series extends MS {
 const saved = new Map<string, MS|undefined>();
 
 function def(name: string, str: string) {
-  const res = parse(str);
+  const res = parse(str, lookup);
   if (!res) return;
   if (res.type !== 'value') {
     console.log('Not a value');
@@ -87,8 +87,16 @@ function def(name: string, str: string) {
 
 // parse('(6[1] + 3[2] + -3[3])/b');
 
+function lookup(name: string) {
+  const v = saved.get(name);
+  if (!v) {
+    throw new Error(`Unknown variable: ${name}`);
+  }
+  return v;
+}
+
 repl.on('line', function (cmd) {
-  const res = parse(cmd);
+  const res = parse(cmd, lookup);
   if (!res) {
     repl.prompt();
     return;

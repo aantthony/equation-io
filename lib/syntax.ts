@@ -56,7 +56,13 @@ function makeMultiSet(elements: MS[]): MS {
 }
 
 const ops = operators<Node>({
-  EOF: Postfix(a => a),
+  EOF: Postfix(a => {
+    if (a.type !== 'value') {
+      throw new Error(`Expected value, got ${a.type}`);
+    }
+
+    return a;
+  }),
 
   '}': BinaryInfix(a => a),
   ')': BinaryInfix(a => a),
@@ -109,6 +115,12 @@ const ops = operators<Node>({
         return { type: 'value', value: a.impl(b.value) };
       }
     }
+    if (a.type === 'value') {
+      if (b.type === 'value') {
+        return { type: 'value', value: Times([a.value, b.value]) };
+      }
+    }
+
     throw new Error(`Expected callable and value, got ${a.type} and ${b.type}`);
   }),
   '/': BinaryInfix(onValueBinary(Divide)),
@@ -161,13 +173,20 @@ const implicit: Token = {
   loc: [-1,-1],
 }
 
+const implicitEmpty: Token = {
+  type: 'emptySeries',
+  str: '',
+  line: -1,
+  loc: [-1,-1],
+}
+
 function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   let last: Token | null = null;
 
   for (const token of bare) {
     if (token.type === 'whitespace') {
-      yield token;
-      return;
+      // skip whitespace
+      continue;
     }
 
     if (last) {
@@ -179,10 +198,25 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
         if (last.type === 'number' || last.type === 'symbol') {
           yield implicit;
         }
+      } else if (token.type === 'parenclose') {
+        if (last.type === 'operator') {
+          if (last.str === ',') {
+            yield implicitEmpty;
+          } else if (last.str === 'parenopen') {
+            yield implicitEmpty;
+          }
+        }
+      } else if (token.type === 'operator') {
+        if (last.type === 'operator') {
+          if (token.str === ',' && last.str === ',') {
+            yield implicitEmpty;
+          }
+        }
       }
     }
 
     yield token;
+
     last = token;
   };
 }
@@ -245,28 +279,29 @@ globals.set('Times', FnRef(ms => {
 
 // globals.set('Power', FnRef(Power));
 
-function createLeaf(token: Token): Node {
+function createLeaf(token: Token, lookup: (s: string) => MS): Node {
   if (token.type === 'number') return {
     type: 'value',
     value: Nat(BigInt(token.str)),
   };
-  if (token.type === 'parenopen') return null as any;
+  if (token.type === 'parenopen') return { type: 'series', items: [] };
+  if (token.type === 'emptySeries') {
+    return { type: 'series', items: [] };
+  }
   if (token.type === 'symbol') {
     const fn = globals.get(token.str);
     if (fn) return fn;
-    return {
-      type: 'symbol',
-      name: token.str,
-    };
+    const value = lookup(token.str);
+    return { type: 'value', value };
   }
   throw new Error(`Invalid token: ${token.type} ${token.str}`);
 }
 
-export function parse(str: string) {
+export function parse(str: string, lookup: (name: string) => MS) {
   const tokens = addImplicitTokens(tokenize(str));
   return walk(
     ops,
-    createLeaf,
+    token => createLeaf(token, lookup),
     shunting(ops, tokens),
   );
 }

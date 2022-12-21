@@ -132,8 +132,6 @@ export function *shunting<T>(
         yield (op);
       }
       stack.push(tok);
-    } else if (tok.type === 'whitespace') {
-      // ignore whitespace
     } else {
       yield tok;
     }
