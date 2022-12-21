@@ -12,7 +12,8 @@ export function walk<T>(
   const stack: T[] = [];
   for (const tok of rpn) {
     if (tok.type === 'operator' || tok.type === 'parenclose') {
-      const op = ops[tok.str]!;
+      const op = ops[tok.str];
+      if (!op) throw new Error(`Unknown operator: ${tok.str} at ${tok.line}:${tok.loc[0]}.`);
       const args = stack.splice(stack.length - op.n);
       stack.push(op.fn.apply(null, args));
     } else if (tok.type === 'parenopen') {

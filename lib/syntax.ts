@@ -58,8 +58,8 @@ function makeMultiSet(elements: MS[]): MS {
 const ops = operators<Node>({
   EOF: Postfix(a => a),
 
-  // '}': BinaryInfix(a => a),
-  // ')': BinaryInfix(a => a),
+  '}': BinaryInfix(a => a),
+  ')': BinaryInfix(a => a),
   ']': BinaryInfix(a => {
     const items: Node[] = a.type === 'series' ? a.items : [a];
     
