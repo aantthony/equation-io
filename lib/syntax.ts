@@ -6,10 +6,11 @@ import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus
 
 type ValueNode = { type: 'value'; value: MS };
 type SeriesNode = { type: 'series'; items: Node[] };
-type IdentifierNode = { type: 'identifier'; name: string, lookup?: (name: string) => DeclarationNode };
+type IdentifierNode = { type: 'identifier'; name: string, value?: MS };
 export type DeclarationNode = { type: 'declaration'; id: IdentifierNode, value?: MS };
 type FnHeaderNode = { type: 'fnHeader'; args: DeclarationNode[] };
 type CallableNode = { type: 'callable'; impl: (arg: MS) => MS };
+type CallNode = { type: 'call'; target: CallableNode, args: Node[] };
 type AssignmentNode = { type: 'assignment'; l: DeclarationNode; r: MS };
 type LambdaNode = { type: 'lambda', header: FnHeaderNode, body: Node };
 
@@ -18,6 +19,7 @@ type Node =
 | SeriesNode
 | DeclarationNode
 | CallableNode
+| CallNode
 | AssignmentNode
 | IdentifierNode
 | LambdaNode
@@ -26,7 +28,7 @@ type Node =
 
 const implicit: Token = {
   type: 'operator',
-  str: '',
+  str: '[impl]',
   line: -1,
   loc: [-1,-1],
 }
@@ -65,25 +67,35 @@ function switchType<T>(cases: { [key in Node['type']]?: (node: Node & { type: ke
 const getValue = switchType({
   value: n => n.value,
   identifier: n => {
-    if (!n.lookup) {
-      throw new Error(`Identifier ${n.name} not found.`);
-    }
-    const val = n.lookup(n.name);
-    if (!val.value) throw new Error(`Identifier ${n.name} has no value.`);
-    return val.value;
+    if (!n.value) throw new Error(`Identifier ${n.name} has no value.`);
+    return n.value;
   },
 });
 
 const onValue = (fn: (x: MS) => MS): (node: Node) => Node => {
-  return node => {
-    return { type: 'value', value: fn(getValue(node)) };
+  return (node): ValueNode | CallNode => {
+    const value = getValue(node);
+    if (!value) return {
+      type: 'call',
+      target: { type: 'callable', impl: fn },
+      args: [node],
+    };
+    return { type: 'value', value: fn(value) };
   }
 }
 
 function onValueBinary(fn: (x: MS, y: MS) => MS): (a: Node, b: Node) => Node {
-  return (a, b): ValueNode => {
-    const value = fn(getValue(a), getValue(b));
-    return { type: 'value', value };
+  return (a, b): ValueNode | CallNode => {
+    const vA = getValue(a);
+    const vB = getValue(b);
+    // if (!vA || !vB) {
+    //   return {
+    //     type: 'call',
+    //     target: { type: 'callable', impl: fn },
+    //     args: [a, b],
+    //   };
+    // }
+    return { type: 'value', value: fn(vA, vB) };
   };
 }
 
@@ -162,6 +174,7 @@ const ops = operators<Node>({
 
     return { type: 'fnHeader', args };
   }),
+
   '=>': BinaryInfix((a, body): LambdaNode => {
     const header = ofType('fnHeader', a);
     return { type: 'lambda', header, body };
@@ -170,18 +183,20 @@ const ops = operators<Node>({
   '-': BinaryInfix(onValueBinary(Minus)),
   '−': BinaryInfix(onValueBinary(Minus)),
   '+': Infix(onValueArray(Plus)),
-  [implicit.str]: BinaryInfix((a, b): ValueNode => {
-    if (a.type === 'callable') {
-      return { type: 'value', value: a.impl(getValue(b)) };
-    }
-    
-    return { type: 'value', value: Times([getValue(a), getValue(b)]) };
- }),
+
   '/': BinaryInfix(onValueBinary(Divide)),
   '÷': BinaryInfix(onValueBinary(Divide)),
   '¬': Prefix(onValue(Not)),
   '*': Infix(onValueArray(Times)),
   '×': Infix(onValueArray(Times)),
+
+  [implicit.str]: BinaryInfix((a, b): ValueNode => {
+    if (a.type === 'callable') {
+      return { type: 'value', value: a.impl(getValue(b)) };
+    }
+    return { type: 'value', value: Times([getValue(a), getValue(b)]) };
+  }),
+  
   // '^': BinaryRightInfix('Power', 25, Power),
   // '.': BinaryInfix('Dot', 30),
   // '!': Postfix('Factorial', 80),
@@ -244,6 +259,8 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
           } else if (last.str === 'parenopen') {
             yield implicitEmpty;
           }
+        } else if (last.type === 'parenopen') {
+          yield implicitEmpty;
         }
       } else if (token.type === 'operator') {
         if (token.str === '=>') {
@@ -321,7 +338,7 @@ globals.set('Times', FnRef(ms => {
 
 // globals.set('Power', FnRef(Power));
 
-function createLeaf(token: Token): Node {
+function createLeaf(token: Token, lookup: (name: string) => DeclarationNode | undefined): Node {
   if (token.type === 'number') return {
     type: 'value',
     value: Nat(BigInt(token.str)),
@@ -332,19 +349,22 @@ function createLeaf(token: Token): Node {
   }
   if (token.type === 'symbol') {
     if (globals.has(token.str)) return globals.get(token.str)!;
+
+    const decl = lookup(token.str);
+    if (decl && decl.value) return { type: 'value', value: decl.value };
     return { type: 'identifier', name: token.str };
   }
   throw new Error(`Invalid token: ${token.type} ${token.str}`);
 }
 
-type Scopes = Map<string, DeclarationNode>[];
-function lookup(scopes: Scopes, name: string): DeclarationNode {
+export type Scopes = Map<string, DeclarationNode>[];
+function lookup(scopes: Scopes, name: string): DeclarationNode | undefined {
   for (let i = scopes.length - 1; i >= 0; i--) {
     const scope = scopes[i];
     if (scope.has(name)) return scope.get(name)!;
   }
   
-  throw new Error(`Unknown identifier: ${name}`);
+  return undefined;
 }
 
 export function parse(str: string, rootScope: Scopes[0] = new Map()) {
@@ -354,18 +374,14 @@ export function parse(str: string, rootScope: Scopes[0] = new Map()) {
   const stack: Node[] = [];
 
   function push(node: Node) {
-    if (node.type === 'identifier') {
-      node.lookup = () => lookup(scopes, node.name);
-    }
-
     stack.push(node);
+
     if (node.type === 'fnHeader') {
       const fnScope = new Map();
       node.args.forEach(arg => fnScope.set(arg.id.name, arg));
       scopes.push(fnScope);
     } else if (node.type === 'lambda') {
-      const popped = scopes.pop();
-      console.log(popped);
+      scopes.pop();
     }
   }
 
@@ -373,7 +389,13 @@ export function parse(str: string, rootScope: Scopes[0] = new Map()) {
     return stack.splice(stack.length - n);
   }
 
-  walk(ops, createLeaf, shunting(ops, tokens), push, pop);
+  walk(
+    ops,
+    tok => createLeaf(tok, (name) => lookup(scopes, name)),
+    shunting(ops, tokens),
+    push,
+    pop
+  );
 
   // Remove this:
   return ops.EOF.fn.apply(null, pop(1));
