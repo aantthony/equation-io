@@ -10,10 +10,28 @@ export function Not(a: MS) {
   return Equal(a, FALSE);
 }
 
-export function Plus(args: MS[]): MS {
+export function add(args: MS[]): MS {
   return function *() {
     for (const arg of args) yield* arg();
   }
+}
+
+function Doublet(a: MS, b: MS): MS {
+  return function *() {
+    yield [a, 1n];
+    yield [b, 1n];
+  };
+}
+
+export function Plus(terms: MS): MS {
+  return function *() {
+    for (const [operand, operandCount] of terms()) {
+      if (operandCount === 0n) continue;
+      for (const [item, count] of operand()) {
+        yield [item, count * operandCount];
+      }
+    }
+  };
 }
 
 export function Negative(s: MS): MS {
@@ -24,31 +42,64 @@ export function Negative(s: MS): MS {
   }
 }
 
-export function Times(args: MS[]): MS {
-  if (args.length === 0) return TRUE;
-
-  const a = args[0];
-  const b = args[1];
-
-  if (!b) return a;
-
-  const aTimesB: MS = function *() {
+function multiplyPair(a: MS, b: MS): MS {
+  return function *() {
     for (const [aItem, aCount] of a()) {
       for (const [bItem, bCount] of b()) {
-        yield [Plus([aItem, bItem]), aCount * bCount];
+        const aSingleton = Singleton(aItem);
+        const bSingleton = Singleton(bItem);
+        const aAndB = Doublet(aSingleton, bSingleton);
+        yield [Plus(aAndB), aCount * bCount];
       }
     }
   };
-
-  const rest = args.slice(2);
-
-  if (rest.length === 0) return aTimesB;
-
-  return Times([aTimesB, ...rest]);
 }
 
-export function Power(a: MS, b: MS): MS {
-  return a;
+export function multiplyMany(args: MS[]): MS {
+  if (args.length === 0) return TRUE;
+  if (args.length === 1) return args[0];
+  let result = multiplyPair(args[0], args[1]);
+  for (let i = 2; i < args.length; i++) {
+    result = multiplyPair(result, args[i]);
+  }
+
+  return result;
+}
+
+export function Times(factors: MS): MS {
+  console.log('Times', formatMs(factors));
+
+  return function *() {
+    const allFactors: MS[] = [];
+
+    for (const [factor, factorCount] of factors()) {
+      console.log('Times factor', formatMs(factor), factorCount);
+      if (factorCount === 0n) continue;
+      if (factorCount < 0n) {
+        throw new Error('Negative exponent');
+      }
+      for (let i = 0n; i < factorCount; i++) {
+        allFactors.push(factor);
+      }
+    }
+    const prod = multiplyMany(allFactors);
+    console.log('prod', formatMs(prod));
+    for (const [item, count] of prod()) {
+      yield [item, count];
+    }
+  };
+}
+
+function Singleton(item: MS): MS {
+  return function *() {
+    yield [item, 1n];
+  }
+}
+
+export function Power(base: MS, exponent: MS) {
+  // We need to compute Times(exponent * [base])
+  const termsToAdd = Doublet(exponent, Singleton(base));
+  return Times(Times(Plus(termsToAdd)));
 }
 
 /**
@@ -139,4 +190,4 @@ export const Less = (a: MS, b: MS) => compare(a, b) < 0 ? TRUE : FALSE;
 export const LessEqual = (a: MS, b: MS) => compare(a, b) <= 0 ? TRUE : FALSE;
 export const Greater = (a: MS, b: MS) => compare(a, b) > 0 ? TRUE : FALSE;
 export const GreaterEqual = (a: MS, b: MS) => compare(a, b) >= 0 ? TRUE : FALSE;
-export const Minus = (a: MS, b?: MS) => b ? Plus([a, Negative(b)]) : Negative(a);
+export const Minus = (a: MS, b?: MS) => b ? Plus(Doublet(a, Negative(b))) : Negative(a);

@@ -1,8 +1,8 @@
 import { walk } from './lang/ast';
-import { BinaryInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser';
+import { BinaryInfix, BinaryRightInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser';
 import Tokenzier, { PatternDict, Token } from './lang/tokenizer';
 import { MS, Nat } from './ms';
-import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Times, TrueQ, UnsameQ } from './ops';
+import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Power, Times, TrueQ, UnsameQ } from './ops';
 
 type ValueNode = { type: 'value'; value: MS };
 type SeriesNode = { type: 'series'; items: Node[] };
@@ -99,10 +99,11 @@ function onValueBinary(fn: (x: MS, y: MS) => MS): (a: Node, b: Node) => Node {
   };
 }
 
-function onValueArray(fn: (args: MS[]) => MS) {
+function onValueArray(fn: (args: MS) => MS) {
   return (args: Node[]): ValueNode => {
     const values = args.map(getValue);
-    const value = fn(values);
+    const multiSet = FromArray(values);
+    const value = fn(multiSet);
     return { type: 'value', value };
   };
 }
@@ -111,6 +112,14 @@ function makeMultiSet(elements: MS[]): MS {
   return function *makeMultiSet() {
     for (const val of elements) {
       yield [val, 1n];
+    }
+  }
+}
+
+const FromArray = function (terms: MS[]): MS {
+  return function *FromArray() {
+    for (const term of terms) {
+      yield [term, 1n];
     }
   }
 }
@@ -194,10 +203,12 @@ const ops = operators<Node>({
     if (a.type === 'callable') {
       return { type: 'value', value: a.impl(getValue(b)) };
     }
-    return { type: 'value', value: Times([getValue(a), getValue(b)]) };
+
+    const operands = FromArray([getValue(a), getValue(b)]);
+    return { type: 'value', value: Times(operands) };
   }),
   
-  // '^': BinaryRightInfix('Power', 25, Power),
+  '^': BinaryRightInfix(onValueBinary(Power)),
   // '.': BinaryInfix('Dot', 30),
   // '!': Postfix('Factorial', 80),
 });
@@ -290,52 +301,8 @@ function FnRef(impl: (arg: MS) => MS): CallableNode {
 }
 
 // We expect Plus[1,1] to be 2.
-globals.set('Plus', FnRef(ms => {
-  // Plus[0] should be 0.
-  // Input: [0] ie. [[]]
-  // Output: 0, i.e. []
-
-  // Plus[1] should be 1.
-  // Input: [1] ie. [[0]]
-  // Output: 1, i.e. [0]
-
-  // Plus[1,1] should be 2.
-  // Input: [1,1] ie. [[0], [0]]
-  // Output: 2, i.e. [0,0]
-
-  // Plus[5, 3] should be 8.
-  // Input: [5, 3] ie. [[0,0,0,0,0], [0,0,0]]
-  // Output: 8, i.e. [0,0,0,0,0,0,0]
-
-  // For 5,3 ms() will yield 1[0,0,0,0,0] and 1[0,0,0]
-
-  return function *() {
-    // Is this 'Times'?
-    for (const [term, count] of ms()) {
-      for (const [sub, subCount] of term()) {
-        yield [sub, count * subCount];
-      }
-    }
-  }
-}));
-
-globals.set('Times', FnRef(ms => {
-  // Is this 'Power'?
-  const allFactors: MS[] = [];
-
-  for (const [factor, factorCount] of ms()) {
-    if (factorCount === 0n) continue;
-    if (factorCount < 0n) {
-      throw new Error('Negative exponent');
-    }
-    for (let i = 0n; i < factorCount; i++) {
-      allFactors.push(factor);
-    }
-  }
-
-  return Times(allFactors);
-}));
-
+globals.set('Times', FnRef(Times));
+globals.set('Plus', FnRef(Plus));
 // globals.set('Power', FnRef(Power));
 
 function createLeaf(token: Token, lookup: (name: string) => DeclarationNode | undefined): Node {
