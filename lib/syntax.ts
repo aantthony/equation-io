@@ -35,14 +35,14 @@ const implicit: Token = {
 
 const implicitEmpty: Token = {
   type: 'emptySeries',
-  str: '',
+  str: '[emptySeries]',
   line: -1,
   loc: [-1,-1],
 }
 
 const implicitLambdaSuffix: Token = {
   type: 'implicitLambdaSuffix',
-  str: '',
+  str: '[implicitLambdaSuffix]',
   line: -1,
   loc: [-1,-1],
 }
