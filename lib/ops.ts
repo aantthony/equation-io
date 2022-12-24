@@ -97,9 +97,7 @@ function Singleton(item: MS): MS {
 }
 
 export function Power(base: MS, exponent: MS) {
-  // We need to compute Times(exponent * [base])
-  const termsToAdd = Doublet(exponent, Singleton(base));
-  return Times(Times(Plus(termsToAdd)));
+  return Times(multiplyPair(exponent, Singleton(base)));
 }
 
 /**
