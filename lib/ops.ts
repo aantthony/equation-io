@@ -34,6 +34,10 @@ export function Plus(terms: MS): MS {
   };
 }
 
+function plus(a: MS, b: MS): MS {
+  return Plus(Doublet(a, b));
+}
+
 export function Negative(s: MS): MS {
   return function *() {
     for (const [item, count] of s()) {
@@ -46,10 +50,8 @@ function multiplyPair(a: MS, b: MS): MS {
   return function *() {
     for (const [aItem, aCount] of a()) {
       for (const [bItem, bCount] of b()) {
-        const aSingleton = Singleton(aItem);
-        const bSingleton = Singleton(bItem);
-        const aAndB = Doublet(aSingleton, bSingleton);
-        yield [Plus(aAndB), aCount * bCount];
+        const item = plus(aItem, bItem);
+        yield [item, aCount * bCount];
       }
     }
   };
@@ -59,6 +61,7 @@ export function multiplyMany(args: MS[]): MS {
   if (args.length === 0) return TRUE;
   if (args.length === 1) return args[0];
   let result = multiplyPair(args[0], args[1]);
+  
   for (let i = 2; i < args.length; i++) {
     result = multiplyPair(result, args[i]);
   }
@@ -67,13 +70,10 @@ export function multiplyMany(args: MS[]): MS {
 }
 
 export function Times(factors: MS): MS {
-  console.log('Times', formatMs(factors));
-
   return function *() {
     const allFactors: MS[] = [];
 
     for (const [factor, factorCount] of factors()) {
-      console.log('Times factor', formatMs(factor), factorCount);
       if (factorCount === 0n) continue;
       if (factorCount < 0n) {
         throw new Error('Negative exponent');
@@ -82,8 +82,8 @@ export function Times(factors: MS): MS {
         allFactors.push(factor);
       }
     }
+
     const prod = multiplyMany(allFactors);
-    console.log('prod', formatMs(prod));
     for (const [item, count] of prod()) {
       yield [item, count];
     }
