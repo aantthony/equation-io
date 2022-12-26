@@ -1,4 +1,4 @@
-export type MS = () => Generator<[MS, bigint], void, unknown>;
+export type MS = () => Generator<[MS, bigint], void, void>;
 
 export const Empty: MS = function *Empty() {};
 

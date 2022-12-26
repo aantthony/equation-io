@@ -1,8 +1,6 @@
 import colorReadline from 'node-color-readline';
 import 'source-map-support/register';
-import { compare } from './compare';
 import formatMs from './format';
-import { MS } from './ms';
 import { DeclarationNode, parse } from './syntax';
 
 const repl = colorReadline.createInterface({
@@ -27,31 +25,6 @@ const repl = colorReadline.createInterface({
     // }).join('');
   }
 });
-
-function factor(s: MS): MS {
-  let factors: [MS, bigint][] = [];
-  for (const [item, count] of s()) {
-    let found = false;
-    for (let i = 0; i < factors.length; i++) {
-      const [factor, factorCount] = factors[i];
-      const qSame = compare(factor, item) === 0;
-      if (qSame) {
-        factors[i] = [factor, factorCount + count];
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      factors.push([item, count]);
-    }
-  }
-
-  return function *() {
-    for (const [factor, count] of factors) {
-      yield [factor, count];
-    }
-  }
-}
 
 const globals = new Map<string, DeclarationNode>();
 

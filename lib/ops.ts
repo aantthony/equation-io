@@ -34,8 +34,12 @@ export function Plus(terms: MS): MS {
   };
 }
 
-function plus(a: MS, b: MS): MS {
-  return Plus(Doublet(a, b));
+function plus(terms: MS[]): MS {
+  return function *() {
+    for (const summand of terms) {
+      yield* summand();
+    }
+  };
 }
 
 export function Negative(s: MS): MS {
@@ -50,7 +54,7 @@ function multiplyPair(a: MS, b: MS): MS {
   return function *() {
     for (const [aItem, aCount] of a()) {
       for (const [bItem, bCount] of b()) {
-        const item = plus(aItem, bItem);
+        const item = plus([aItem, bItem]);
         yield [item, aCount * bCount];
       }
     }
@@ -69,24 +73,128 @@ export function multiplyMany(args: MS[]): MS {
   return result;
 }
 
-export function Times(factors: MS): MS {
+// function reduce(arr: MS[], f: (a: MS, b: MS) => MS): MS {
+//   return arr.reduce(f, TRUE);
+// }
+
+function scale(ms: MS, scale: bigint): MS {
   return function *() {
-    const allFactors: MS[] = [];
+    for (const [item, count] of ms()) {
+      yield [item, count * scale];
+    }
+  };
+}
 
-    for (const [factor, factorCount] of factors()) {
-      if (factorCount === 0n) continue;
-      if (factorCount < 0n) {
-        throw new Error('Negative exponent');
-      }
-      for (let i = 0n; i < factorCount; i++) {
-        allFactors.push(factor);
+/*
+  Input: [3a, b], [0,1] [true, false]
+  output: [
+    ...(prod(prefix=3a, [[0,1], [true, false]]))
+    ...(prod(prefix=b, [[0,1], [true, false]]))
+
+
+    ...(
+      prod(prefix=b+0, [[true, false]])
+      prod(prefix=b+1, [[true, false]])
+
+      prod(prefix=b+1+true, [])
+      prod(prefix=b+1+false, [])
+
+      b+1+false
+    )
+  ]
+
+  3*(2*[1]) = [0,0,0]*[1,1] = [3x0]*[2x1]
+      = [0,0,0]*[1,1]
+      = [
+        0+1,0+1,
+        0+1,0+1,
+        0+1,0+1,
+
+        opt 0: multiplicity 3
+          yield* cart(prefix=[0], [[1,1]], multiplicity=3)
+          = [
+            opt 1: multiplicity 2
+              yield* cart(prefix=[0,1], [], multiplicity=6)
+              = [
+                0+1   count=6
+              ]
+          ]
+      ]
+      = [
+        1,1,1,1,1,1
+      ]
+      = [6x1]
+
+  
+  x=[1]
+  x^3*[0,0] = [1][1][1][0,0]
+      = [
+        1+1+1+0, 1+1+1+0,
+      ]
+      = [
+        yield *cart(prefix=[3x1], [[0,0]], multiplicity=1)
+
+
+  [1]^3=cart(prefix=[], [3x[1]], multiplicity=1)
+       = [1]*[1]*[1]
+      = [
+        1+1+1
+      ]
+       = [
+          yield *cart(prefix=[3x1], [], multiplicity=1)
+          = [
+            1+1+1
+          ]
+       ]
+
+  2^32 = 2*2*2*2
+       = [0,0]*[0,0]*...*[0,0]
+       = [
+          0+0+0=0 (32 of them),
+          .. how many of them? 2^32
+       ]
+        = [
+          yield *cart(prefix=[32x0], [], multiplicity=2^32)
+*/
+function* cartesianProduct(prefix: [MS, bigint][], factors: [MS, bigint][], multiplicity: bigint): Generator<[MS, bigint], void, void> {
+  // console.log('cartesianProduct', {
+  //   prefix: prefix.map(([item, count]) => [formatMs(item), count]),
+  //   factors: factors.map(([item, count]) => [formatMs(item), count]),
+  //   multiplicity,
+  // })
+  if (!factors.length) {
+    // console.log({
+    //   summand: prefix.map(([item, count]) => [formatMs(item), count]),
+    // });
+    const sum: MS = function *() {
+      for (const [summand, count] of prefix) {
+        for (const [i, ic] of summand()) {
+          yield [i, ic * count];
+        }
       }
     }
-
-    const prod = multiplyMany(allFactors);
-    for (const [item, count] of prod()) {
-      yield [item, count];
+    // we want to yield sum(prefix) * multiplicity
+    // console.log('yield sum', formatMs(sum));
+    yield [sum, multiplicity];
+  } else {
+    const [[head, headCount], ...tail] = factors;
+    // console.log('headCount', headCount)
+    for (const [opt, optMultiplicity] of head()) {
+      // console.log('optMultiplicity', optMultiplicity)
+      const newPrefix: [MS, bigint][] = [...prefix, [opt, headCount]];
+      yield* cartesianProduct(newPrefix, tail, multiplicity * (optMultiplicity ** headCount));
     }
+  }
+}
+
+export function Times(setOfFactors: MS): MS {
+  return function *() {
+    const all: [MS, bigint][] = [];
+    for (const [factor, factorCount] of setOfFactors()) {
+      all.push([factor, factorCount]);
+    }
+
+    yield* cartesianProduct([], all, 1n);
   };
 }
 
