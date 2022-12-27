@@ -15,3 +15,6 @@ res = Times(multiplyPair(exponent, Singleton(base)))
 
 2^32=4294967296
 
+
+
+(x+y)^32

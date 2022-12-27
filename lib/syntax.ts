@@ -303,6 +303,7 @@ function FnRef(impl: (arg: MS) => MS): CallableNode {
 // We expect Plus[1,1] to be 2.
 globals.set('Times', FnRef(Times));
 globals.set('Plus', FnRef(Plus));
+// globals.set('Less', FnRef(Plus));
 // globals.set('Power', FnRef(Power));
 
 function createLeaf(token: Token, lookup: (name: string) => DeclarationNode | undefined): Node {
