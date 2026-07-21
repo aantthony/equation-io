@@ -43,8 +43,16 @@ interface Equation {
   def?: Definition;
   sliderMin?: number;
   sliderMax?: number;
-  /** Sync this row's error/slider UI with current state (set by rebuildList). */
-  refresh?: () => void;
+  /** Interleaved non-editable widgets, created lazily and kept across edits. */
+  sliderUI?: SliderUI;
+  errorEl?: HTMLElement;
+}
+
+interface SliderUI {
+  box: HTMLElement;
+  min: HTMLInputElement;
+  range: HTMLInputElement;
+  max: HTMLInputElement;
 }
 
 function cssColor([r, g, b]: [number, number, number]): string {
@@ -241,6 +249,12 @@ function render() {
 }
 
 // --- equation list UI ---
+//
+// One contentEditable document: each equation is a `.eq-line` div, so a whole
+// system of equations can be selected, copied, and pasted as plain text.
+// Sliders and error messages are `contenteditable=false` `.eq-widget` blocks
+// interleaved between lines; they live outside the text model (copy/cut skip
+// them) and are reconciled from state after every edit.
 
 const listEl = document.getElementById('equations')!;
 
@@ -318,10 +332,6 @@ function recompileAll() {
   }
 }
 
-function refreshAll() {
-  for (const eq of equations) eq.refresh?.();
-}
-
 function saveHash() {
   const texts = equations.map(e => e.text).filter(t => t.trim());
   history.replaceState(null, '', texts.length ? '#' + texts.map(encodeURIComponent).join(';') : '#');
@@ -338,61 +348,206 @@ const NUM_RE = /^\s*-?(\d+\.?\d*|\.\d+)([eE]-?\d+)?\s*$/;
 
 const fmtNum = (v: number) => String(parseFloat(v.toPrecision(6)));
 
-function rebuildList() {
-  listEl.innerHTML = '';
-  for (const eq of equations) {
-    const row = document.createElement('div');
-    row.className = 'eq-row';
+const lineEls = (): HTMLElement[] =>
+  [...listEl.children].filter((el): el is HTMLElement => el.classList.contains('eq-line'));
 
-    const dot = document.createElement('div');
-    dot.className = 'eq-color';
-    const paint = () => {
-      const [r, g, b] = PALETTE[eq.colorIndex];
-      dot.style.background = `rgb(${r * 255}, ${g * 255}, ${b * 255})`;
-    };
-    paint();
-    dot.title = 'Change color';
-    dot.addEventListener('click', () => {
-      eq.colorIndex = (eq.colorIndex + 1) % PALETTE.length;
-      paint();
-      requestRender();
-    });
+const lineText = (line: HTMLElement): string => (line.textContent ?? '').replace(/ /g, ' ');
 
-    const input = document.createElement('input');
-    input.className = 'eq-input';
-    input.value = eq.text;
-    input.placeholder = equations[equations.length - 1] === eq ? 'add an equation…' : '';
-    input.spellcheck = false;
-    input.autocapitalize = 'off';
-    const errorEl = document.createElement('div');
-    errorEl.className = 'eq-error';
+// --- caret mapped to (line index, character offset) ---
 
-    // Slider row, shown only while the equation is `name = <number>`.
-    const sliderBox = document.createElement('div');
-    sliderBox.className = 'eq-slider';
-    const minIn = document.createElement('input');
-    minIn.type = 'number';
-    minIn.className = 'eq-slider-bound';
-    minIn.title = 'Slider minimum';
-    const range = document.createElement('input');
-    range.type = 'range';
-    range.className = 'eq-slider-range';
-    const maxIn = document.createElement('input');
-    maxIn.type = 'number';
-    maxIn.className = 'eq-slider-bound';
-    maxIn.title = 'Slider maximum';
-    sliderBox.append(minIn, range, maxIn);
-    sliderBox.style.display = 'none';
+function caretPos(): { line: number; offset: number } | null {
+  const sel = getSelection();
+  if (!sel?.focusNode || !listEl.contains(sel.focusNode)) return null;
+  let node: Node | null = sel.focusNode;
+  while (node && node !== listEl) {
+    if (node instanceof HTMLElement && node.classList.contains('eq-line')) break;
+    node = node.parentNode;
+  }
+  if (!node || node === listEl) return null;
+  const line = lineEls().indexOf(node as HTMLElement);
+  if (line < 0) return null;
+  const r = document.createRange();
+  r.selectNodeContents(node);
+  r.setEnd(sel.focusNode, sel.focusOffset);
+  return { line, offset: r.toString().length };
+}
 
-    const refresh = () => {
-      input.classList.toggle('invalid', !!eq.error);
-      input.title = eq.error ?? '';
-      errorEl.textContent = eq.error ?? '';
-      errorEl.style.display = eq.error ? 'block' : 'none';
-      dot.style.visibility = eq.def ? 'hidden' : '';
-      const sliderable = eq.def?.kind === 'const' && !eq.error && NUM_RE.test(eq.def.rhs);
-      sliderBox.style.display = sliderable ? '' : 'none';
-      if (!sliderable) return;
+function setCaret(line: number, offset: number) {
+  const el = lineEls()[line];
+  if (!el) return;
+  const sel = getSelection()!;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let remaining = offset;
+  let t: Node | null;
+  while ((t = walker.nextNode())) {
+    const len = t.textContent!.length;
+    if (remaining <= len) {
+      sel.setBaseAndExtent(t, remaining, t, remaining);
+      return;
+    }
+    remaining -= len;
+  }
+  sel.setBaseAndExtent(el, el.childNodes.length, el, el.childNodes.length);
+}
+
+// --- undo/redo ---
+//
+// One snapshot stack over the whole document (texts, colors, slider bounds),
+// replacing the browser's DOM-level history — programmatic re-renders (Enter,
+// paste, ';' splits) would corrupt native undo, and native undo never covered
+// structural changes anyway. The full document is a few dozen strings, so
+// whole-state snapshots beat operation diffing on simplicity.
+
+interface Snapshot {
+  eqs: Array<Pick<Equation, 'id' | 'text' | 'colorIndex' | 'sliderMin' | 'sliderMax'>>;
+  caret: { line: number; offset: number } | null;
+}
+
+const undoStack: Snapshot[] = [];
+const redoStack: Snapshot[] = [];
+const UNDO_LIMIT = 100;
+const COALESCE_MS = 1000;
+let coalesce: { key: string; time: number } | null = null;
+/** Caret captured on beforeinput, so native edits snapshot their pre-edit caret. */
+let pendingCaret: { line: number; offset: number } | null = null;
+
+function takeSnapshot(caret: Snapshot['caret']): Snapshot {
+  return {
+    eqs: equations.map(e => ({
+      id: e.id,
+      text: e.text,
+      colorIndex: e.colorIndex,
+      sliderMin: e.sliderMin,
+      sliderMax: e.sliderMax,
+    })),
+    caret,
+  };
+}
+
+/**
+ * Record pre-mutation state; call before changing `equations`. A non-null
+ * `key` merges runs of the same operation (typing on one line, one slider
+ * drag, cycling a color) into a single undo entry while the run continues
+ * within COALESCE_MS.
+ */
+function pushUndo(key: string | null, caret: Snapshot['caret'] = caretPos()) {
+  const now = performance.now();
+  if (key && coalesce?.key === key && now - coalesce.time < COALESCE_MS) {
+    coalesce.time = now;
+    return;
+  }
+  undoStack.push(takeSnapshot(caret));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack.length = 0;
+  coalesce = key ? { key, time: now } : null;
+}
+
+function restoreSnapshot(s: Snapshot) {
+  // Reuse Equation objects by id so widget elements survive the round-trip.
+  const byId = new Map(equations.map(e => [e.id, e]));
+  equations.length = 0;
+  for (const se of s.eqs) {
+    const eq = byId.get(se.id) ?? { id: se.id, text: '', colorIndex: se.colorIndex };
+    Object.assign(eq, se);
+    equations.push(eq);
+  }
+  recompileAll();
+  renderAll();
+  if (s.caret && s.caret.line < equations.length) {
+    setCaret(s.caret.line, Math.min(s.caret.offset, equations[s.caret.line].text.length));
+  }
+  saveHash();
+  requestRender();
+}
+
+function doUndo() {
+  const s = undoStack.pop();
+  if (!s) return;
+  redoStack.push(takeSnapshot(caretPos()));
+  coalesce = null;
+  restoreSnapshot(s);
+}
+
+function doRedo() {
+  const s = redoStack.pop();
+  if (!s) return;
+  undoStack.push(takeSnapshot(caretPos()));
+  coalesce = null;
+  restoreSnapshot(s);
+}
+
+// --- rendering & reconciliation ---
+
+function makeSlider(eq: Equation): SliderUI {
+  const box = document.createElement('div');
+  box.className = 'eq-widget eq-slider';
+  box.contentEditable = 'false';
+  const min = document.createElement('input');
+  min.type = 'number';
+  min.className = 'eq-slider-bound';
+  min.title = 'Slider minimum';
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.className = 'eq-slider-range';
+  const max = document.createElement('input');
+  max.type = 'number';
+  max.className = 'eq-slider-bound';
+  max.title = 'Slider maximum';
+  box.append(min, range, max);
+
+  range.addEventListener('input', () => {
+    if (eq.def?.kind !== 'const') return;
+    pushUndo(`slider:${eq.id}`);
+    eq.text = `${eq.def.name} = ${fmtNum(Number(range.value))}`;
+    const line = lineEls()[equations.indexOf(eq)];
+    if (line) line.textContent = eq.text;
+    recompileAll();
+    reconcile();
+    saveHash();
+    requestRender();
+  });
+  // A drag is one undo entry: coalesced while it lasts, sealed on release.
+  range.addEventListener('change', () => {
+    coalesce = null;
+  });
+  const onBound = () => {
+    const lo = Number(min.value);
+    const hi = Number(max.value);
+    if (isFinite(lo) && isFinite(hi) && hi > lo) {
+      pushUndo(`bounds:${eq.id}`);
+      eq.sliderMin = lo;
+      eq.sliderMax = hi;
+    }
+    reconcile();
+  };
+  min.addEventListener('change', onBound);
+  max.addEventListener('change', onBound);
+  return { box, min, range, max };
+}
+
+/**
+ * Sync per-line decorations (color, error state, placeholder) and the
+ * interleaved widget blocks with current state. Never touches line text, so
+ * it is safe to run while the user is typing (the caret stays put).
+ */
+function reconcile() {
+  const lines = lineEls();
+  lines.forEach((line, i) => {
+    const eq = equations[i];
+    if (!eq) return;
+    line.dataset.id = String(eq.id);
+    line.style.setProperty('--eq-color', cssColor(PALETTE[eq.colorIndex]));
+    line.classList.toggle('invalid', !!eq.error);
+    line.classList.toggle('is-def', !!eq.def);
+    line.title = eq.error ?? '';
+    if (equations.length === 1 && !eq.text.trim()) line.dataset.ph = 'add an equation…';
+    else delete line.dataset.ph;
+
+    const wanted: HTMLElement[] = [];
+    const sliderable = eq.def?.kind === 'const' && !eq.error && NUM_RE.test(eq.def.rhs);
+    if (sliderable) {
+      eq.sliderUI ??= makeSlider(eq);
+      const { min, range, max } = eq.sliderUI;
       const v = Number(eq.def!.rhs);
       if (eq.sliderMin === undefined || eq.sliderMax === undefined) {
         eq.sliderMin = Math.min(-10, Math.floor(v));
@@ -400,105 +555,320 @@ function rebuildList() {
       }
       if (v < eq.sliderMin) eq.sliderMin = v;
       if (v > eq.sliderMax) eq.sliderMax = v;
-      minIn.value = fmtNum(eq.sliderMin);
-      maxIn.value = fmtNum(eq.sliderMax);
+      min.value = fmtNum(eq.sliderMin);
+      max.value = fmtNum(eq.sliderMax);
       range.min = String(eq.sliderMin);
       range.max = String(eq.sliderMax);
       range.step = String((eq.sliderMax - eq.sliderMin) / 400);
       range.value = String(v);
-    };
-    eq.refresh = refresh;
-
-    range.addEventListener('input', () => {
-      if (eq.def?.kind !== 'const') return;
-      eq.text = `${eq.def.name} = ${fmtNum(Number(range.value))}`;
-      input.value = eq.text;
-      recompileAll();
-      refreshAll();
-      saveHash();
-      requestRender();
-    });
-    const onBound = () => {
-      const lo = Number(minIn.value);
-      const hi = Number(maxIn.value);
-      if (isFinite(lo) && isFinite(hi) && hi > lo) {
-        eq.sliderMin = lo;
-        eq.sliderMax = hi;
-      }
-      refresh();
-    };
-    minIn.addEventListener('change', onBound);
-    maxIn.addEventListener('change', onBound);
-
-    input.addEventListener('input', () => {
-      const wasLast = equations[equations.length - 1] === eq;
-      if (input.value.includes(';')) {
-        // Multi-statement input: ';' splits into rows — the same separator
-        // the examples menu and the URL hash use, so pasted lists just work.
-        const parts = input.value.split(';').map(s => s.trim());
-        eq.text = parts[0] ?? '';
-        const rest = parts.slice(1).filter(s => s);
-        const at = equations.indexOf(eq) + 1;
-        rest.forEach((text, k) => addEquation(text, at + k));
-        if (equations[equations.length - 1].text.trim()) addEquation('');
-        recompileAll();
-        saveHash();
-        rebuildList();
-        requestRender();
-        // Land the caret at the end of the last statement's row.
-        const inputs = listEl.querySelectorAll<HTMLInputElement>('.eq-input');
-        const target = inputs[rest.length ? at + rest.length - 1 : at - 1];
-        target?.focus();
-        target?.setSelectionRange(target.value.length, target.value.length);
-        return;
-      }
-      eq.text = input.value;
-      recompileAll();
-      refreshAll();
-      saveHash();
-      requestRender();
-      if (wasLast && input.value.trim()) {
-        addEquation('');
-        rebuildList();
-        // Rebuilding replaces the input; restore focus and caret.
-        const inputs = listEl.querySelectorAll<HTMLInputElement>('.eq-input');
-        const mine = inputs[equations.indexOf(eq)];
-        mine.focus();
-        mine.selectionStart = mine.selectionEnd = input.selectionStart;
-      }
-    });
-    input.addEventListener('keydown', e => {
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-      const inputs = [...listEl.querySelectorAll<HTMLInputElement>('.eq-input')];
-      const target = inputs[inputs.indexOf(input) + (e.key === 'ArrowDown' ? 1 : -1)];
-      if (!target) return;
-      e.preventDefault();
-      const caret = Math.min(input.selectionStart ?? input.value.length, target.value.length);
-      target.focus();
-      target.selectionStart = target.selectionEnd = caret;
-    });
-    refresh();
-
-    const remove = document.createElement('button');
-    remove.className = 'eq-remove';
-    remove.textContent = '×';
-    remove.title = 'Remove';
-    remove.addEventListener('click', () => {
-      equations.splice(equations.indexOf(eq), 1);
-      if (!equations.length || equations[equations.length - 1].text.trim()) addEquation('');
-      recompileAll();
-      saveHash();
-      rebuildList();
-      requestRender();
-    });
-
-    const col = document.createElement('div');
-    col.className = 'eq-col';
-    col.append(input, sliderBox, errorEl);
-    row.append(dot, col, remove);
-    listEl.append(row);
-  }
+      wanted.push(eq.sliderUI.box);
+    }
+    if (eq.error) {
+      eq.errorEl ??= (() => {
+        const el = document.createElement('div');
+        el.className = 'eq-widget eq-error';
+        el.contentEditable = 'false';
+        return el;
+      })();
+      eq.errorEl.textContent = eq.error;
+      wanted.push(eq.errorEl);
+    }
+    // Place widgets directly after their line, then drop anything stale
+    // before the next line.
+    let ref: ChildNode = line;
+    for (const w of wanted) {
+      if (ref.nextSibling !== w) listEl.insertBefore(w, ref.nextSibling);
+      ref = w;
+    }
+    while (ref.nextSibling && !(ref.nextSibling instanceof HTMLElement && ref.nextSibling.classList.contains('eq-line'))) {
+      ref.nextSibling.remove();
+    }
+  });
 }
+
+/** Full rebuild of the editable DOM from state (loses caret; callers restore). */
+function renderAll() {
+  listEl.textContent = '';
+  for (const eq of equations) {
+    const line = document.createElement('div');
+    line.className = 'eq-line';
+    line.dataset.id = String(eq.id);
+    if (eq.text) line.textContent = eq.text;
+    else line.append(document.createElement('br'));
+    listEl.append(line);
+  }
+  reconcile();
+}
+
+/**
+ * Read the DOM back into `equations` after a native edit. Normalizes stray
+ * nodes the browser may create (bare text at container level, unclassed divs
+ * from splits), matches lines to state by data-id (first occurrence wins —
+ * Chrome clones attributes when Enter splits a line), and creates/drops
+ * Equation entries to mirror the document.
+ */
+function syncFromDOM() {
+  for (const node of [...listEl.childNodes]) {
+    if (node instanceof HTMLElement) {
+      if (node.classList.contains('eq-line') || node.classList.contains('eq-widget')) continue;
+      if (node.tagName === 'BR') node.remove();
+      else node.classList.add('eq-line');
+    } else if (node.nodeType === Node.TEXT_NODE && node.textContent) {
+      const div = document.createElement('div');
+      div.className = 'eq-line';
+      listEl.insertBefore(div, node);
+      div.append(node); // moving (not copying) the text node keeps the caret in it
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      node.remove();
+    }
+  }
+  const lines = lineEls();
+  if (!lines.length) {
+    equations.length = 0;
+    addEquation('');
+    renderAll();
+    setCaret(0, 0);
+    return;
+  }
+  const byId = new Map(equations.map(e => [String(e.id), e]));
+  const seen = new Set<string>();
+  const next: Equation[] = [];
+  for (const line of lines) {
+    const id = line.dataset.id;
+    let eq = id && !seen.has(id) ? byId.get(id) : undefined;
+    if (!eq) {
+      eq = { id: nextId++, text: '', colorIndex: (nextId - 2) % PALETTE.length };
+      line.dataset.id = String(eq.id);
+    }
+    seen.add(String(eq.id));
+    eq.text = lineText(line);
+    next.push(eq);
+  }
+  equations.length = 0;
+  equations.push(...next);
+}
+
+/**
+ * Replace the current selection with pasted/typed multi-statement text,
+ * entirely in state space. Statements separate on newlines or ';' (the same
+ * separator the examples menu and the URL hash use, so pasted lists and
+ * copied blocks both just work).
+ */
+function insertStatements(text: string) {
+  const sel = getSelection();
+  if (!sel?.rangeCount) return;
+  pushUndo(null);
+  // Map both selection endpoints to (line, offset) before touching anything.
+  const posOf = (node: Node, off: number): { line: number; offset: number } => {
+    const lines = lineEls();
+    const atEndOf = (from: Node | null): { line: number; offset: number } => {
+      // Nearest line at or before `from` (walking previous siblings).
+      for (let p = from; p; p = p.previousSibling) {
+        if (p instanceof HTMLElement && p.classList.contains('eq-line')) {
+          return { line: lines.indexOf(p), offset: lineText(p).length };
+        }
+      }
+      return { line: 0, offset: 0 };
+    };
+    let el: Node | null = node;
+    while (el && el !== listEl && el.parentNode !== listEl) el = el.parentNode;
+    if (!el) return { line: 0, offset: 0 };
+    // Container-level boundary (e.g. select-all): position sits between children.
+    if (el === listEl) return atEndOf(listEl.childNodes[Math.min(off, listEl.childNodes.length) - 1] ?? null);
+    if (el instanceof HTMLElement && el.classList.contains('eq-line')) {
+      const r = document.createRange();
+      r.selectNodeContents(el);
+      r.setEnd(node, off);
+      return { line: lines.indexOf(el), offset: r.toString().length };
+    }
+    return atEndOf(el); // widget or stray node: attach to the line above it
+  };
+  const range = sel.getRangeAt(0);
+  const a = posOf(range.startContainer, range.startOffset);
+  const b = posOf(range.endContainer, range.endOffset);
+  const [start, end] = a.line < b.line || (a.line === b.line && a.offset <= b.offset) ? [a, b] : [b, a];
+
+  const parts = text.replace(/\r\n?/g, '\n').split(/[\n;]/);
+  const before = equations[start.line]?.text.slice(0, start.offset) ?? '';
+  const after = equations[end.line]?.text.slice(end.offset) ?? '';
+  const first = equations[start.line] ?? addEquation('');
+  const inserted: Equation[] = [first];
+  first.text = before + parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    inserted.push({ id: nextId++, text: parts[i].trim(), colorIndex: (nextId - 2) % PALETTE.length });
+  }
+  const caretOffset = inserted[inserted.length - 1].text.length;
+  inserted[inserted.length - 1].text += after;
+  equations.splice(start.line, end.line - start.line + 1, ...inserted);
+
+  recompileAll();
+  renderAll();
+  setCaret(start.line + inserted.length - 1, caretOffset);
+  saveHash();
+  requestRender();
+}
+
+/** Selected lines as clean newline-joined text — widget content never leaks in. */
+function selectionAsText(): string | null {
+  const sel = getSelection();
+  if (!sel?.rangeCount || sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  const parts: string[] = [];
+  for (const line of lineEls()) {
+    if (!r.intersectsNode(line)) continue;
+    const lr = document.createRange();
+    lr.selectNodeContents(line);
+    // Clamp only when the boundary lies inside this line: a boundary at the
+    // container level or in a widget must never widen lr past line contents.
+    if (line.contains(r.startContainer) && r.compareBoundaryPoints(Range.START_TO_START, lr) > 0) {
+      lr.setStart(r.startContainer, r.startOffset);
+    }
+    if (line.contains(r.endContainer) && r.compareBoundaryPoints(Range.END_TO_END, lr) < 0) {
+      lr.setEnd(r.endContainer, r.endOffset);
+    }
+    parts.push(lr.toString().replace(/ /g, ' '));
+  }
+  return parts.length ? parts.join('\n') : null;
+}
+
+// --- editor events ---
+
+// First beforeinput listener: route undo/redo to our stack and capture the
+// pre-edit caret for the snapshot the upcoming 'input' event will push.
+listEl.addEventListener('beforeinput', e => {
+  if (e.inputType === 'historyUndo') {
+    e.preventDefault();
+    doUndo();
+    return;
+  }
+  if (e.inputType === 'historyRedo') {
+    e.preventDefault();
+    doRedo();
+    return;
+  }
+  pendingCaret = caretPos();
+});
+
+listEl.addEventListener('input', e => {
+  if (e.target !== listEl) return; // slider/bound inputs bubble their 'input' here
+  pushUndo(`edit:${pendingCaret?.line ?? -1}`, pendingCaret ?? caretPos());
+  syncFromDOM();
+  // Typing ';' splits the line into rows, matching the old per-input behavior.
+  if (equations.some(eq => eq.text.includes(';'))) {
+    const caret = caretPos();
+    let caretLine = caret?.line ?? 0;
+    let caretOff = caret?.offset ?? 0;
+    for (let i = equations.length - 1; i >= 0; i--) {
+      const eq = equations[i];
+      if (!eq.text.includes(';')) continue;
+      const parts = eq.text.split(';').map(s => s.trim());
+      if (i === caretLine) {
+        const upto = eq.text.slice(0, caretOff);
+        caretLine += upto.split(';').length - 1;
+        caretOff = parts[Math.min(upto.split(';').length - 1, parts.length - 1)].length;
+      }
+      eq.text = parts[0];
+      parts.slice(1).forEach((p, k) => addEquation(p, i + 1 + k));
+    }
+    recompileAll();
+    renderAll();
+    setCaret(caretLine, caretOff);
+  } else {
+    recompileAll();
+    reconcile();
+  }
+  saveHash();
+  requestRender();
+});
+
+// Enter splits the line in state space rather than letting the browser pick a
+// DOM shape for the new paragraph (div vs br varies across engines). Undo
+// shortcuts are handled here too — keydown wins over beforeinput, and some
+// engines skip the historyUndo beforeinput when their native stack is empty.
+listEl.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.altKey && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) doRedo();
+    else doUndo();
+    return;
+  }
+  if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    doRedo();
+    return;
+  }
+  if (e.key !== 'Enter' || e.isComposing) return;
+  e.preventDefault();
+  insertStatements('\n');
+});
+
+// Backspace/Delete at a widget boundary: the browser would delete the widget
+// block (it reappears on reconcile — an infinite wall). Merge the adjacent
+// lines in state instead.
+listEl.addEventListener('beforeinput', e => {
+  if (e.inputType !== 'deleteContentBackward' && e.inputType !== 'deleteContentForward') return;
+  const sel = getSelection();
+  if (!sel?.isCollapsed) return;
+  const pos = caretPos();
+  if (!pos) return;
+  const lines = lineEls();
+  const back = e.inputType === 'deleteContentBackward';
+  const from = back ? pos.line : pos.line + 1;
+  if (back && (pos.offset !== 0 || pos.line === 0)) return;
+  if (!back && (pos.offset !== equations[pos.line].text.length || pos.line === lines.length - 1)) return;
+  if (lines[from - 1].nextElementSibling === lines[from]) return; // no widget between: native merge is fine
+  e.preventDefault();
+  pushUndo(null);
+  const offset = equations[from - 1].text.length;
+  equations[from - 1].text += equations[from].text;
+  equations.splice(from, 1);
+  recompileAll();
+  renderAll();
+  setCaret(from - 1, offset);
+  saveHash();
+  requestRender();
+});
+
+listEl.addEventListener('paste', e => {
+  e.preventDefault();
+  insertStatements(e.clipboardData?.getData('text/plain') ?? '');
+});
+
+listEl.addEventListener('copy', e => {
+  const text = selectionAsText();
+  if (text === null) return;
+  e.preventDefault();
+  e.clipboardData?.setData('text/plain', text);
+});
+
+listEl.addEventListener('cut', e => {
+  const text = selectionAsText();
+  if (text === null) return;
+  e.preventDefault();
+  e.clipboardData?.setData('text/plain', text);
+  insertStatements('');
+});
+
+// Click on a line's color dot (the ::before in the left gutter) cycles color.
+listEl.addEventListener('pointerdown', e => {
+  const line = e.target instanceof HTMLElement ? e.target.closest('.eq-line') : null;
+  if (!line) return;
+  if (e.clientX - line.getBoundingClientRect().left > 22) return;
+  const eq = equations[lineEls().indexOf(line as HTMLElement)];
+  if (!eq || eq.def) return;
+  e.preventDefault();
+  pushUndo(`color:${eq.id}`);
+  eq.colorIndex = (eq.colorIndex + 1) % PALETTE.length;
+  reconcile();
+  requestRender();
+});
+
+// Highlight the line holding the caret (no per-line focus to key off).
+document.addEventListener('selectionchange', () => {
+  const pos = caretPos();
+  lineEls().forEach((line, i) => line.classList.toggle('focused', i === pos?.line));
+});
 
 // --- examples menu ---
 
@@ -563,17 +933,17 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
 ];
 
 function insertExample(text: string) {
-  // Fill the trailing empty row (or append) so existing equations stay.
+  pushUndo(null);
+  // Fill the trailing empty line (or append) so existing equations stay.
   // Multi-row examples separate rows with ';' (the same separator as the hash).
   for (const part of text.split(';')) {
     let eq = equations[equations.length - 1];
     if (!eq || eq.text.trim()) eq = addEquation('');
     eq.text = part.trim();
   }
-  addEquation('');
   recompileAll();
   saveHash();
-  rebuildList();
+  renderAll();
   requestRender();
 }
 
@@ -724,15 +1094,14 @@ const fromHash = decodeURIComponent(location.hash.slice(1))
   .split(';')
   .map(s => decodeURIComponent(s))
   .filter(s => s.trim());
-if (fromHash.length) fromHash.forEach(addEquation);
+if (fromHash.length) fromHash.forEach(t => addEquation(t));
 else addEquation('y = sin(x)');
-addEquation('');
 recompileAll();
 
 // Initial 2D scale: ~12 math units across the short screen edge.
 view.upp = 12 / (Math.min(window.innerWidth, window.innerHeight) * (window.devicePixelRatio || 1));
 
-rebuildList();
+renderAll();
 buildExamplesMenu();
 resize();
 
