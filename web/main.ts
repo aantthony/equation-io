@@ -11,6 +11,7 @@ import {
 import { evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { splitStatements } from '../lib/statements.ts';
 import { fullscreenQuad } from './gl.ts';
 import {
   type Curve2D,
@@ -649,29 +650,6 @@ function syncFromDOM() {
 }
 
 /**
- * Split multi-statement text on newlines or ';', but only at bracket depth
- * zero: a formula wrapped across lines inside parens (how LLMs and textbooks
- * format them) stays one statement, while ';'-separated lists still split.
- */
-function splitStatements(text: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let cur = '';
-  for (const ch of text.replace(/\r\n?/g, '\n')) {
-    if (ch === '(' || ch === '[' || ch === '{') depth++;
-    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
-    if ((ch === '\n' || ch === ';') && depth === 0) {
-      parts.push(cur);
-      cur = '';
-    } else {
-      cur += ch === '\n' ? ' ' : ch;
-    }
-  }
-  parts.push(cur);
-  return parts;
-}
-
-/**
  * Replace the current selection with pasted/typed multi-statement text,
  * entirely in state space. Statements separate on newlines or ';' (the same
  * separator the examples menu and the URL hash use, so pasted lists and
@@ -784,11 +762,12 @@ listEl.addEventListener('input', e => {
     for (let i = equations.length - 1; i >= 0; i--) {
       const eq = equations[i];
       if (!eq.text.includes(';')) continue;
-      const parts = eq.text.split(';').map(s => s.trim());
+      const parts = splitStatements(eq.text).map(s => s.trim());
+      if (parts.length === 1) continue; // ';' inside brackets: not a separator
       if (i === caretLine) {
-        const upto = eq.text.slice(0, caretOff);
-        caretLine += upto.split(';').length - 1;
-        caretOff = parts[Math.min(upto.split(';').length - 1, parts.length - 1)].length;
+        const sepsBefore = splitStatements(eq.text.slice(0, caretOff)).length - 1;
+        caretLine += sepsBefore;
+        caretOff = parts[Math.min(sepsBefore, parts.length - 1)].length;
       }
       eq.text = parts[0];
       parts.slice(1).forEach((p, k) => addEquation(p, i + 1 + k));
@@ -959,7 +938,7 @@ function insertExample(text: string) {
   pushUndo(null);
   // Fill the trailing empty line (or append) so existing equations stay.
   // Multi-row examples separate rows with ';' (the same separator as the hash).
-  for (const part of text.split(';')) {
+  for (const part of splitStatements(text)) {
     let eq = equations[equations.length - 1];
     if (!eq || eq.text.trim()) eq = addEquation('');
     eq.text = part.trim();
@@ -1113,8 +1092,7 @@ window.addEventListener('resize', resize);
 
 // --- boot ---
 
-const fromHash = decodeURIComponent(location.hash.slice(1))
-  .split(';')
+const fromHash = splitStatements(decodeURIComponent(location.hash.slice(1)))
   .map(s => decodeURIComponent(s))
   .filter(s => s.trim());
 if (fromHash.length) fromHash.forEach(t => addEquation(t));
