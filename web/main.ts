@@ -15,9 +15,8 @@ import { type Classified, classify } from '../lib/plot.ts';
 import { splitStatements } from '../lib/statements.ts';
 import { fullscreenQuad } from './gl.ts';
 import {
-  type Curve2D,
   type GridSpec,
-  type Ineq2D,
+  type Layers2D,
   type Overlay2D,
   Renderer2D,
   type VField2D,
@@ -134,10 +133,17 @@ let renderQueued = false;
 function requestRender() {
   if (renderQueued) return;
   renderQueued = true;
-  requestAnimationFrame(() => {
+  let ran = false;
+  const run = () => {
+    if (ran) return;
+    ran = true;
     renderQueued = false;
     render();
-  });
+  };
+  requestAnimationFrame(run);
+  // rAF stalls entirely in hidden/occluded tabs (embedded previews,
+  // screenshot tooling); a timer backstop keeps frames coming there.
+  setTimeout(run, 200);
 }
 
 const startTime = performance.now();
@@ -250,6 +256,9 @@ function render() {
           break;
         case 'scalar2d':
         case 'complex2d':
+        case 'domain2d':
+        case 'conformal2d':
+        case 'fractal2d':
         case 'ineq2d':
         case 'vfield2d':
           break; // density/complex/region/flow fields have no 3D locus; skipped in 3D scenes
@@ -277,23 +286,27 @@ function render() {
     r3d.render(camera, scene, time, constEnv);
     drawLabels3D(overlayCtx, camera, dpr);
   } else {
-    const curves: Curve2D[] = [];
-    const scalars: Curve2D[] = [];
-    const complexes: Curve2D[] = [];
-    const ineqs: Ineq2D[] = [];
-    const vfields: VField2D[] = [];
+    const layers: Required<Layers2D> = {
+      fractals: [], domains: [], conformals: [], vfields: [],
+      ineqs: [], scalars: [], complexes: [], curves: [],
+    };
     const extras: Overlay2D = { points: [], polylines: [] };
     for (const eq of active) {
       const color = theme.palette[eq.colorIndex];
       const plot = eq.cls!.plot;
       const params = eq.cls!.params;
       switch (plot.type) {
-        case 'implicit2d': curves.push({ field: plot.field, color, params }); break;
-        case 'ineq2d': ineqs.push({ field: plot.field, edges: plot.edges, color, params }); break;
-        case 'scalar2d': scalars.push({ field: plot.field, color, params }); break;
-        case 'complex2d': complexes.push({ field: plot.field, color, params }); break;
+        case 'implicit2d': layers.curves.push({ field: plot.field, color, params }); break;
+        case 'ineq2d': layers.ineqs.push({ field: plot.field, edges: plot.edges, color, params }); break;
+        case 'scalar2d': layers.scalars.push({ field: plot.field, color, params }); break;
+        case 'complex2d': layers.complexes.push({ field: plot.field, color, params }); break;
+        case 'domain2d': layers.domains.push({ field: plot.field, color, params }); break;
+        case 'conformal2d': layers.conformals.push({ field: plot.field, color, params }); break;
+        case 'fractal2d':
+          layers.fractals.push({ step: plot.step, seed: plot.seed, maxIter: plot.maxIter, color, params });
+          break;
         case 'vfield2d': {
-          vfields.push({ fx: plot.fx, fy: plot.fy, color, params });
+          layers.vfields.push({ fx: plot.fx, fy: plot.fy, color, params });
           for (const d of drops) {
             extras.polylines.push({ pts: integralCurve(plot.comps, d.x, d.y, time), color: cssColor(color) });
             extras.points.push({ x: d.x, y: d.y, color: cssColor(color) });
@@ -326,7 +339,7 @@ function render() {
         return { glsl: f.glsl, gradGlsl: f.gradGlsl, params: f.params, major: sp.major, minor: sp.minor };
       });
     }
-    r2d.render(view, curves, scalars, complexes, ineqs, vfields, time, constEnv, gridSpecs);
+    r2d.render(view, layers, time, constEnv, gridSpecs);
     drawLabels2D(overlayCtx, view, dpr, extras, !gridFields.length);
   }
 
@@ -1034,6 +1047,15 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['quadrupole', 'ln(w-2) + ln(w+2) - ln(w-2i) - ln(w+2i)'],
     ['flow past cylinder', 'w + 4/w'],
     ['orbiting charge', 'ln(w-2) - ln(w + 2e^(i t))'],
+    ['domain coloring', 'domain((w^3 - 1)/w)'],
+    ['conformal map', 'conformal(w^2/4)'],
+    ['joukowski airfoil', 'conformal(w + 1/w)'],
+  ]],
+  ['fractals', [
+    ['mandelbrot set', 'iter(z^2 + w)'],
+    ['julia set', 'iter(z^2 - 0.7269 + 0.1889i)'],
+    ['julia orbit', 'iter(z^2 + 0.7885e^(i t/8))'],
+    ['burning ship', 'iter((|re(z)| - i |im(z)|)^2 + w)'],
   ]],
   ['coordinates', [
     ['polar grid', 'r = sqrt(x^2 + y^2); theta = atan2(y, x)'],

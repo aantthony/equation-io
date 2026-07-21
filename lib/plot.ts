@@ -12,9 +12,9 @@
  *   (x', y') = (P, Q) plots the phase-plane field (P, Q) — all as vector fields
  * - t is always allowed and means "animated": bound to seconds since start
  */
-import { compileTyped, usesComplex } from './complex.ts';
+import { SPECIAL_FORMS, compileTyped, usesComplex } from './complex.ts';
 import { diff } from './diff.ts';
-import { builtinFn, type Expr, freeVars, substVars } from './expr.ts';
+import { builtinFn, type Expr, evaluate, freeVars, substVars } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 
 export type Plot =
@@ -30,6 +30,14 @@ export type Plot =
   | { type: 'implicit3d'; field: string; grad?: [string, string, string] }
   /** Complex-valued f(x+iy): level curves of im(f) (field lines) and re(f) (equipotentials). */
   | { type: 'complex2d'; field: string }
+  /** domain(f): domain coloring — hue = arg f, dark at zeros, white at poles. */
+  | { type: 'domain2d'; field: string }
+  /** conformal(f): pullback of the image-plane grid — level curves of re f and im f. */
+  | { type: 'conformal2d'; field: string }
+  /** iter(step[, n]): escape-time fractal iterating z ↦ step(z). seed 'zero'
+   *  when the step references the pixel (w/x/y → parameter plane, Mandelbrot);
+   *  seed 'pixel' otherwise (fixed map → Julia). */
+  | { type: 'fractal2d'; step: string; seed: 'pixel' | 'zero'; maxIter: number }
   | { type: 'point'; dim: 2 | 3; coords: Expr[] }
   /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
    *  comps keep the symbolic components for CPU integration (integral curves). */
@@ -89,11 +97,43 @@ function matchODE(e: Expr): (Expr & { kind: 'vec' }) | null {
   return null;
 }
 
+/** First special-form call at any position other than the root itself. */
+function nestedSpecial(e: Expr, isRoot = false): string | undefined {
+  if (e.kind === 'call' && !isRoot && SPECIAL_FORMS.has(e.name)) return e.name;
+  switch (e.kind) {
+    case 'num':
+    case 'var': return undefined;
+    case 'neg': return nestedSpecial(e.a);
+    case 'bin': return nestedSpecial(e.a) ?? nestedSpecial(e.b);
+    case 'call': {
+      for (const a of e.args) {
+        const f = nestedSpecial(a);
+        if (f) return f;
+      }
+      return undefined;
+    }
+    case 'eq': return nestedSpecial(e.l) ?? nestedSpecial(e.r);
+    case 'ineq': return nestedSpecial(e.l) ?? nestedSpecial(e.r);
+    case 'vec': {
+      for (const a of e.items) {
+        const f = nestedSpecial(a);
+        if (f) return f;
+      }
+      return undefined;
+    }
+  }
+}
+
 export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): Classified {
   const ode = matchODE(expr);
   if (ode) expr = ode;
+  const special = expr.kind === 'call' && SPECIAL_FORMS.has(expr.name) ? expr.name : undefined;
+  const nested = nestedSpecial(expr, true);
+  if (nested) throw new Error(`${nested}(…) must be the whole expression.`);
   const vars = freeVars(expr);
   vars.delete('i');
+  // iter binds z as the iterate: z ↦ step(z) starting from the seed.
+  if (special === 'iter') vars.delete('z');
   if (vars.delete('w')) { vars.add('x'); vars.add('y'); }
   const params: string[] = [];
   for (const v of [...vars]) {
@@ -134,6 +174,40 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   const g = params.length
     ? substVars(expr, Object.fromEntries(params.map(p => [p, { kind: 'var', name: 'u_' + p } as Expr])))
     : expr;
+
+  if (special) {
+    if (vars.has('z')) throw new Error(`Use w (= x + iy) in ${special}(…); z is the 3D axis.`);
+    if (vars.has('u') || vars.has('v')) throw new Error(`Cannot use u/v in ${special}(…).`);
+    const call = g as Expr & { kind: 'call' };
+    if (special === 'iter') {
+      if (call.args.length < 1 || call.args.length > 2) {
+        throw new Error('iter takes iter(step) or iter(step, count).');
+      }
+      let maxIter = 250;
+      if (call.args.length === 2) {
+        try {
+          maxIter = evaluate(call.args[1], {});
+        } catch {
+          throw new Error('The iteration count must be a plain number.');
+        }
+        if (!isFinite(maxIter) || maxIter < 1) throw new Error('The iteration count must be at least 1.');
+        maxIter = Math.min(5000, Math.round(maxIter));
+      }
+      const step = compileTyped(call.args[0], { z: { type: 'complex', code: 'zc' } });
+      const stepCode = step.type === 'complex' ? step.code : `vec2(${step.code}, 0.0)`;
+      // The pixel enters either as a parameter (w/x/y in the step → seed 0,
+      // the Mandelbrot convention) or as the seed (fixed map → Julia set).
+      const bodyVars = freeVars(call.args[0]);
+      const seed = bodyVars.has('w') || bodyVars.has('x') || bodyVars.has('y') ? 'zero' : 'pixel';
+      return done({ type: 'fractal2d', step: stepCode, seed, maxIter });
+    }
+    if (call.args.length !== 1) throw new Error(`${special} takes one argument.`);
+    const typed = compileTyped(call.args[0]);
+    if (typed.type !== 'complex') {
+      throw new Error(`${special}(…) needs a complex expression — use w for x + iy.`);
+    }
+    return done({ type: special === 'domain' ? 'domain2d' : 'conformal2d', field: typed.code });
+  }
 
   if (expr.kind === 'vec') {
     if (usesComplex(expr)) throw new Error('Complex values are not supported in vectors.');

@@ -12,17 +12,25 @@ import { FN_GLSL, toGLSL } from './glsl.ts';
 
 export type Typed = { type: 'real'; code: string } | { type: 'complex'; code: string };
 
-/** Does this expression involve complex values anywhere? */
-export function usesComplex(e: Expr): boolean {
+/**
+ * Special forms handled by classify() as whole-expression plot modes; they
+ * never compile inline (iter needs a shader loop, the others pick a renderer).
+ */
+export const SPECIAL_FORMS = new Set(['domain', 'conformal', 'iter']);
+
+/** Does this expression involve complex values anywhere?
+ *  extra: additional variable names known to be complex-valued (e.g. an
+ *  iteration variable bound by an enclosing special form). */
+export function usesComplex(e: Expr, extra?: ReadonlySet<string>): boolean {
   switch (e.kind) {
     case 'num': return false;
-    case 'var': return e.name === 'i' || e.name === 'w';
-    case 'neg': return usesComplex(e.a);
-    case 'bin': return usesComplex(e.a) || usesComplex(e.b);
-    case 'call': return e.args.some(usesComplex);
-    case 'eq': return usesComplex(e.l) || usesComplex(e.r);
-    case 'ineq': return usesComplex(e.l) || usesComplex(e.r);
-    case 'vec': return e.items.some(usesComplex);
+    case 'var': return e.name === 'i' || e.name === 'w' || !!extra?.has(e.name);
+    case 'neg': return usesComplex(e.a, extra);
+    case 'bin': return usesComplex(e.a, extra) || usesComplex(e.b, extra);
+    case 'call': return e.args.some(a => usesComplex(a, extra));
+    case 'eq': return usesComplex(e.l, extra) || usesComplex(e.r, extra);
+    case 'ineq': return usesComplex(e.l, extra) || usesComplex(e.r, extra);
+    case 'vec': return e.items.some(a => usesComplex(a, extra));
   }
 }
 
@@ -44,13 +52,18 @@ function promote(v: Typed): string {
   return v.type === 'complex' ? v.code : `vec2(${v.code}, 0.0)`;
 }
 
-/** Compile an expression, inferring real vs complex type. */
-export function compileTyped(e: Expr): Typed {
-  if (!usesComplex(e)) {
+/**
+ * Compile an expression, inferring real vs complex type.
+ * env binds variable names to pre-typed values (e.g. iter's iterate z ↦ a
+ * complex GLSL local), overriding the default treatment of that name.
+ */
+export function compileTyped(e: Expr, env: Record<string, Typed> = {}): Typed {
+  const envComplex = new Set(Object.keys(env).filter(k => env[k].type === 'complex'));
+  if (!usesComplex(e, envComplex)) {
     // re/im/arg/conj of a real value still need complex handling below.
     const touchesComplexFns = (function scan(n: Expr): boolean {
       switch (n.kind) {
-        case 'call': return n.name in C_TO_REAL || n.name === 'conj' || n.args.some(scan);
+        case 'call': return n.name in C_TO_REAL || n.name === 'conj' || SPECIAL_FORMS.has(n.name) || n.args.some(scan);
         case 'bin': return scan(n.a) || scan(n.b);
         case 'neg': return scan(n.a);
         case 'eq': return scan(n.l) || scan(n.r);
@@ -65,16 +78,17 @@ export function compileTyped(e: Expr): Typed {
   switch (e.kind) {
     case 'num': return { type: 'real', code: toGLSL(e) };
     case 'var':
+      if (e.name in env) return env[e.name];
       if (e.name === 'i') return { type: 'complex', code: 'vec2(0.0, 1.0)' };
       if (e.name === 'w') return { type: 'complex', code: 'vec2(x, y)' };
       return { type: 'real', code: e.name };
     case 'neg': {
-      const a = compileTyped(e.a);
+      const a = compileTyped(e.a, env);
       return { type: a.type, code: `(-${a.code})` };
     }
     case 'bin': {
-      const a = compileTyped(e.a);
-      const b = compileTyped(e.b);
+      const a = compileTyped(e.a, env);
+      const b = compileTyped(e.b, env);
       if (a.type === 'real' && b.type === 'real') {
         if (e.op === '^') return { type: 'real', code: `eq_pow(${a.code}, ${b.code})` };
         return { type: 'real', code: `(${a.code} ${e.op} ${b.code})` };
@@ -86,12 +100,24 @@ export function compileTyped(e: Expr): Typed {
         case '-': return { type: 'complex', code: `(${ca} - ${cb})` };
         case '*': return { type: 'complex', code: `c_mul(${ca}, ${cb})` };
         case '/': return { type: 'complex', code: `c_div(${ca}, ${cb})` };
-        case '^': return { type: 'complex', code: `c_pow(${ca}, ${cb})` };
+        case '^': {
+          // Small integer powers as repeated c_mul: exact at 0 (c_pow goes
+          // through ln), and much cheaper inside fractal iteration loops.
+          if (e.b.kind === 'num' && Number.isInteger(e.b.value) && e.b.value >= 1 && e.b.value <= 8) {
+            let code = ca;
+            for (let k = 1; k < e.b.value; k++) code = `c_mul(${code}, ${ca})`;
+            return { type: 'complex', code };
+          }
+          return { type: 'complex', code: `c_pow(${ca}, ${cb})` };
+        }
       }
       break;
     }
     case 'call': {
-      const args = e.args.map(compileTyped);
+      if (SPECIAL_FORMS.has(e.name)) {
+        throw new Error(`${e.name}(…) must be the whole expression.`);
+      }
+      const args = e.args.map(a => compileTyped(a, env));
       const anyComplex = args.some(a => a.type === 'complex');
       if (e.name === 'conj') {
         if (args.length !== 1) throw new Error('conj takes one argument.');
@@ -112,8 +138,8 @@ export function compileTyped(e: Expr): Typed {
       return { type: 'complex', code: `${fn}(${promote(args[0])})` };
     }
     case 'eq': {
-      const l = compileTyped(e.l);
-      const r = compileTyped(e.r);
+      const l = compileTyped(e.l, env);
+      const r = compileTyped(e.r, env);
       if (l.type === 'complex' || r.type === 'complex') {
         throw new Error('Complex equation: compare re(…) or im(…) instead.');
       }
