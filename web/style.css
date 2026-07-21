@@ -58,7 +58,12 @@ html, body {
 .eq-line.focused { background: rgba(0, 90, 200, 0.05); }
 .eq-line.invalid { box-shadow: inset 0 -1px #d33; }
 .eq-line[data-ph]::after {
+  /* Overlay the empty line: in-flow it would land after the line's <br>,
+     rendering on a second visual line and doubling the row height. */
   content: attr(data-ph);
+  position: absolute;
+  left: 28px;
+  top: 4px;
   color: #aaa;
   pointer-events: none;
 }
