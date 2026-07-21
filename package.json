@@ -3,15 +3,13 @@
   "version": "1.0.0",
   "description": "",
   "type": "module",
-  "main": "dist/repl.js",
   "scripts": {
-    "build": "tsc",
     "test": "vitest",
     "coverage": "vitest run --coverage",
-    "dev": "env TZ=UTC node --watch lib/repl.ts",
     "web": "vite",
     "web:build": "vite build",
-    "typecheck": "tsc --noEmit && tsc -p web --noEmit"
+    "deploy": "wrangler types && vite build && wrangler deploy",
+    "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit"
   },
   "repository": {
     "type": "git",
@@ -27,9 +25,11 @@
     "node": ">=24"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.45.1",
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wrangler": "^4.112.0"
   }
 }

@@ -18,11 +18,11 @@ A CAS and equation grapher.
 ## Usage
 
 ```sh
-pnpm web        # dev server (grapher)
-pnpm dev        # CAS REPL
+pnpm web        # dev server (grapher + worker API)
 pnpm test       # vitest
-pnpm typecheck  # lib + web
-pnpm web:build  # static build to dist-web/
+pnpm typecheck  # lib + web + worker
+pnpm web:build  # build to dist-web/ (client + worker)
+pnpm deploy     # build and deploy to Cloudflare
 ```
 
 Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+z^2=9`

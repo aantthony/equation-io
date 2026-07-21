@@ -108,3 +108,7 @@ dist-web
 
 # macOS
 .DS_Store
+
+# Cloudflare
+.wrangler/
+worker-configuration.d.ts
