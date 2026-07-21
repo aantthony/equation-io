@@ -41,7 +41,22 @@ export const CONSTANTS: Record<string, number> = {
 /** User-defined function names for the parse in progress (set by parseExpr). */
 let activeUserFns: ReadonlySet<string> = new Set();
 
-const isFnName = (name: string): boolean => FUNCTIONS.has(name) || activeUserFns.has(name);
+/**
+ * Resolve a symbol to a built-in function name, folding case so `Sin`, `SIN`
+ * and `sin` all reach the same builtin. Returns null if it is not a builtin
+ * (user functions, which are case-sensitive, are handled separately).
+ */
+export const builtinFn = (name: string): string | null => {
+  if (FUNCTIONS.has(name)) return name;
+  const lower = name.toLowerCase();
+  return FUNCTIONS.has(lower) ? lower : null;
+};
+
+/** Canonical name for a call: user functions win (exact), then case-folded builtins. */
+const canonicalFn = (name: string): string =>
+  activeUserFns.has(name) ? name : (builtinFn(name) ?? name);
+
+const isFnName = (name: string): boolean => activeUserFns.has(name) || builtinFn(name) !== null;
 
 const num = (value: number): Expr => ({ kind: 'num', value });
 const bin = (op: '+' | '-' | '*' | '/' | '^') => (a: Expr, b: Expr): Expr => ({ kind: 'bin', op, a, b });
@@ -110,7 +125,7 @@ const ops = operators<PNode>({
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
     if (a.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
     const args = b.kind === 'series' ? b.items : [asExpr(b)];
-    return { kind: 'call', name: a.name, args };
+    return { kind: 'call', name: canonicalFn(a.name), args };
   }),
 });
 

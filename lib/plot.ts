@@ -14,7 +14,7 @@
  */
 import { compileTyped, usesComplex } from './complex.ts';
 import { diff } from './diff.ts';
-import { type Expr, freeVars, substVars } from './expr.ts';
+import { builtinFn, type Expr, freeVars, substVars } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 
 export type Plot =
@@ -107,6 +107,8 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
     if (!SPACE_VARS.has(v) && !PARAM_VARS.has(v) && v !== 't') {
       if (v.endsWith("'")) throw new Error(`${v} can only appear on the left of an ODE like y' = x - y.`);
       if (v === 'd' || /^d[A-Za-z]$/.test(v)) throw new Error('Write derivatives as d/dx (…).');
+      const fn = builtinFn(v);
+      if (fn) throw new Error(`${v} is a function — write it with parentheses, e.g. ${fn}(x).`);
       throw new Error(`Unknown variable: ${v}. Define "${v} = 1" to make a slider.`);
     }
   }

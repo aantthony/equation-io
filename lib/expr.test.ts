@@ -160,3 +160,27 @@ describe('hyperbolic functions', () => {
     expect(toGLSL(parseExpr('atanh(x)'))).toBe('atanh(x)');
   });
 });
+
+describe('case-insensitive builtin functions', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('folds function-name case to the canonical builtin', () => {
+    expect(parseExpr('Sin(x)')).toMatchObject({ kind: 'call', name: 'sin' });
+    expect(parseExpr('COS(x)')).toMatchObject({ kind: 'call', name: 'cos' });
+    expect(parseExpr('SQRT(x)')).toMatchObject({ kind: 'call', name: 'sqrt' });
+    expect(parseExpr('Ln(x)')).toMatchObject({ kind: 'call', name: 'ln' });
+    expect(parseExpr('ATAN2(y, x)')).toMatchObject({ kind: 'call', name: 'atan2' });
+  });
+
+  it('evaluates and compiles a folded call as its canonical form', () => {
+    expect(ev('Sin(pi/2)')).toBeCloseTo(1);
+    expect(toGLSL(parseExpr('COS(x)'))).toBe('cos(x)');
+  });
+
+  it('keeps user-defined function names case-sensitive', () => {
+    // F is not a builtin, so with no user fns it is a product F*(x), not a call.
+    expect(parseExpr('F(x)')).toMatchObject({ kind: 'bin', op: '*' });
+    // Declared as a user fn, it parses as a call under its exact name.
+    expect(parseExpr('F(x)', new Set(['F']))).toMatchObject({ kind: 'call', name: 'F' });
+  });
+});
