@@ -416,10 +416,46 @@ function recompileAll() {
   }
 }
 
-function saveHash() {
+function writeHash() {
   const texts = equations.map(e => e.text).filter(t => t.trim());
   history.replaceState(null, '', texts.length ? '#' + texts.map(encodeURIComponent).join(';') : '#');
 }
+
+// Browsers rate-limit replaceState (Safari: 100 per 10s) and throw once it is
+// exceeded, so a fast slider drag must not write the hash on every frame.
+// Leading edge writes immediately; further calls coalesce into one trailing
+// write per second.
+const HASH_INTERVAL = 1000;
+let hashTimer: ReturnType<typeof setTimeout> | null = null;
+let hashPending = false;
+let hashLastWrite = 0;
+
+function saveHash() {
+  hashPending = true;
+  const wait = HASH_INTERVAL - (performance.now() - hashLastWrite);
+  if (wait <= 0) {
+    flushHash();
+    return;
+  }
+  if (hashTimer === null) hashTimer = setTimeout(flushHash, wait);
+}
+
+function flushHash() {
+  if (hashTimer !== null) {
+    clearTimeout(hashTimer);
+    hashTimer = null;
+  }
+  if (!hashPending) return;
+  hashPending = false;
+  hashLastWrite = performance.now();
+  writeHash();
+}
+
+// Don't lose the last edit if the page goes away mid-interval.
+addEventListener('pagehide', flushHash);
+addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushHash();
+});
 
 function addEquation(text: string, at = equations.length): Equation {
   const eq: Equation = { id: nextId++, text, colorIndex: (nextId - 2) % theme.palette.length };
