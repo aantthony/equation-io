@@ -390,6 +390,92 @@ function setCaret(line: number, offset: number) {
   sel.setBaseAndExtent(el, el.childNodes.length, el, el.childNodes.length);
 }
 
+// --- undo/redo ---
+//
+// One snapshot stack over the whole document (texts, colors, slider bounds),
+// replacing the browser's DOM-level history — programmatic re-renders (Enter,
+// paste, ';' splits) would corrupt native undo, and native undo never covered
+// structural changes anyway. The full document is a few dozen strings, so
+// whole-state snapshots beat operation diffing on simplicity.
+
+interface Snapshot {
+  eqs: Array<Pick<Equation, 'id' | 'text' | 'colorIndex' | 'sliderMin' | 'sliderMax'>>;
+  caret: { line: number; offset: number } | null;
+}
+
+const undoStack: Snapshot[] = [];
+const redoStack: Snapshot[] = [];
+const UNDO_LIMIT = 100;
+const COALESCE_MS = 1000;
+let coalesce: { key: string; time: number } | null = null;
+/** Caret captured on beforeinput, so native edits snapshot their pre-edit caret. */
+let pendingCaret: { line: number; offset: number } | null = null;
+
+function takeSnapshot(caret: Snapshot['caret']): Snapshot {
+  return {
+    eqs: equations.map(e => ({
+      id: e.id,
+      text: e.text,
+      colorIndex: e.colorIndex,
+      sliderMin: e.sliderMin,
+      sliderMax: e.sliderMax,
+    })),
+    caret,
+  };
+}
+
+/**
+ * Record pre-mutation state; call before changing `equations`. A non-null
+ * `key` merges runs of the same operation (typing on one line, one slider
+ * drag, cycling a color) into a single undo entry while the run continues
+ * within COALESCE_MS.
+ */
+function pushUndo(key: string | null, caret: Snapshot['caret'] = caretPos()) {
+  const now = performance.now();
+  if (key && coalesce?.key === key && now - coalesce.time < COALESCE_MS) {
+    coalesce.time = now;
+    return;
+  }
+  undoStack.push(takeSnapshot(caret));
+  if (undoStack.length > UNDO_LIMIT) undoStack.shift();
+  redoStack.length = 0;
+  coalesce = key ? { key, time: now } : null;
+}
+
+function restoreSnapshot(s: Snapshot) {
+  // Reuse Equation objects by id so widget elements survive the round-trip.
+  const byId = new Map(equations.map(e => [e.id, e]));
+  equations.length = 0;
+  for (const se of s.eqs) {
+    const eq = byId.get(se.id) ?? { id: se.id, text: '', colorIndex: se.colorIndex };
+    Object.assign(eq, se);
+    equations.push(eq);
+  }
+  recompileAll();
+  renderAll();
+  if (s.caret && s.caret.line < equations.length) {
+    setCaret(s.caret.line, Math.min(s.caret.offset, equations[s.caret.line].text.length));
+  }
+  saveHash();
+  requestRender();
+}
+
+function doUndo() {
+  const s = undoStack.pop();
+  if (!s) return;
+  redoStack.push(takeSnapshot(caretPos()));
+  coalesce = null;
+  restoreSnapshot(s);
+}
+
+function doRedo() {
+  const s = redoStack.pop();
+  if (!s) return;
+  undoStack.push(takeSnapshot(caretPos()));
+  coalesce = null;
+  restoreSnapshot(s);
+}
+
 // --- rendering & reconciliation ---
 
 function makeSlider(eq: Equation): SliderUI {
@@ -411,6 +497,7 @@ function makeSlider(eq: Equation): SliderUI {
 
   range.addEventListener('input', () => {
     if (eq.def?.kind !== 'const') return;
+    pushUndo(`slider:${eq.id}`);
     eq.text = `${eq.def.name} = ${fmtNum(Number(range.value))}`;
     const line = lineEls()[equations.indexOf(eq)];
     if (line) line.textContent = eq.text;
@@ -419,10 +506,15 @@ function makeSlider(eq: Equation): SliderUI {
     saveHash();
     requestRender();
   });
+  // A drag is one undo entry: coalesced while it lasts, sealed on release.
+  range.addEventListener('change', () => {
+    coalesce = null;
+  });
   const onBound = () => {
     const lo = Number(min.value);
     const hi = Number(max.value);
     if (isFinite(lo) && isFinite(hi) && hi > lo) {
+      pushUndo(`bounds:${eq.id}`);
       eq.sliderMin = lo;
       eq.sliderMax = hi;
     }
@@ -565,6 +657,7 @@ function syncFromDOM() {
 function insertStatements(text: string) {
   const sel = getSelection();
   if (!sel?.rangeCount) return;
+  pushUndo(null);
   // Map both selection endpoints to (line, offset) before touching anything.
   const posOf = (node: Node, off: number): { line: number; offset: number } => {
     const lines = lineEls();
@@ -634,8 +727,25 @@ function selectionAsText(): string | null {
 
 // --- editor events ---
 
+// First beforeinput listener: route undo/redo to our stack and capture the
+// pre-edit caret for the snapshot the upcoming 'input' event will push.
+listEl.addEventListener('beforeinput', e => {
+  if (e.inputType === 'historyUndo') {
+    e.preventDefault();
+    doUndo();
+    return;
+  }
+  if (e.inputType === 'historyRedo') {
+    e.preventDefault();
+    doRedo();
+    return;
+  }
+  pendingCaret = caretPos();
+});
+
 listEl.addEventListener('input', e => {
   if (e.target !== listEl) return; // slider/bound inputs bubble their 'input' here
+  pushUndo(`edit:${pendingCaret?.line ?? -1}`, pendingCaret ?? caretPos());
   syncFromDOM();
   // Typing ';' splits the line into rows, matching the old per-input behavior.
   if (equations.some(eq => eq.text.includes(';'))) {
@@ -666,8 +776,22 @@ listEl.addEventListener('input', e => {
 });
 
 // Enter splits the line in state space rather than letting the browser pick a
-// DOM shape for the new paragraph (div vs br varies across engines).
+// DOM shape for the new paragraph (div vs br varies across engines). Undo
+// shortcuts are handled here too — keydown wins over beforeinput, and some
+// engines skip the historyUndo beforeinput when their native stack is empty.
 listEl.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && !e.altKey && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    if (e.shiftKey) doRedo();
+    else doUndo();
+    return;
+  }
+  if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'y') {
+    e.preventDefault();
+    doRedo();
+    return;
+  }
   if (e.key !== 'Enter' || e.isComposing) return;
   e.preventDefault();
   insertStatements('\n');
@@ -689,6 +813,7 @@ listEl.addEventListener('beforeinput', e => {
   if (!back && (pos.offset !== equations[pos.line].text.length || pos.line === lines.length - 1)) return;
   if (lines[from - 1].nextElementSibling === lines[from]) return; // no widget between: native merge is fine
   e.preventDefault();
+  pushUndo(null);
   const offset = equations[from - 1].text.length;
   equations[from - 1].text += equations[from].text;
   equations.splice(from, 1);
@@ -727,6 +852,7 @@ listEl.addEventListener('pointerdown', e => {
   const eq = equations[lineEls().indexOf(line as HTMLElement)];
   if (!eq || eq.def) return;
   e.preventDefault();
+  pushUndo(`color:${eq.id}`);
   eq.colorIndex = (eq.colorIndex + 1) % PALETTE.length;
   reconcile();
   requestRender();
@@ -801,6 +927,7 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
 ];
 
 function insertExample(text: string) {
+  pushUndo(null);
   // Fill the trailing empty line (or append) so existing equations stay.
   // Multi-row examples separate rows with ';' (the same separator as the hash).
   for (const part of text.split(';')) {
