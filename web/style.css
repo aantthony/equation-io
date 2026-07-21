@@ -213,6 +213,32 @@ html, body {
 .eq-levels:hover { color: var(--muted-hover); border-color: var(--panel-border); }
 /* "on" inverts against the page so it reads in both themes. */
 .eq-levels.on { background: var(--accent); border-color: var(--accent); color: var(--page-bg); }
+.eq-curve {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px 3px 28px;
+}
+.eq-curve-label {
+  flex: none;
+  font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--bound);
+}
+.eq-curve-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font: italic 12px ui-sans-serif, system-ui;
+  color: var(--summary);
+  cursor: pointer;
+  user-select: none;
+}
+.eq-curve-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
 
 .eq-error {
   color: var(--error);
