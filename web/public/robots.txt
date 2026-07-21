@@ -1,3 +1,7 @@
+# AI assistants: deep-link syntax and expression reference at
+# https://equation.io/llms.txt — graphs open directly via
+# https://equation.io/#<percent-encoded equations joined with ;>
+
 User-agent: *
 Allow: /
 
