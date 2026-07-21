@@ -75,6 +75,12 @@ describe('classify', () => {
     expect(() => cls('y = q')).toThrow(/Unknown variable/);
     expect(() => cls('(x, u, v)')).toThrow(/mix/);
   });
+
+  it('directs a bare function name to parentheses instead of a slider', () => {
+    // `sin x` parses as sin*x; the leftover `sin` var should hint at parens.
+    expect(() => cls('sin x')).toThrow(/sin is a function/);
+    expect(() => cls('Cos y')).toThrow(/write it with parentheses/);
+  });
 });
 
 describe('vector evaluate', () => {
