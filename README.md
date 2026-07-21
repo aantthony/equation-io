@@ -1,10 +1,9 @@
 # equation
 
-A CAS and equation grapher.
+An equation grapher, deployed as a Cloudflare Worker.
 
-- `lib/` — the CAS core: tokenizer, shunting-yard parser, multiset-based evaluator
-  (`syntax.ts`/`ops.ts`), plus a symbolic expression path (`expr.ts`) and a
-  GLSL compiler (`glsl.ts`) used for plotting.
+- `lib/` — tokenizer, shunting-yard parser, symbolic expression core (`expr.ts`),
+  and a GLSL compiler (`glsl.ts`) used for plotting.
 - `web/` — the grapher. Every equation is compiled to a GLSL scalar field F whose
   zero set is the graph:
   - **2D**: fullscreen-quad fragment shader; the curve is drawn where the
@@ -51,20 +50,5 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
 Equations persist in the URL hash. Drag to pan/orbit, wheel to zoom,
 right-drag (or shift) to pan in 3D, click a color dot to cycle colors.
 
-## Notes (multiset representation)
-
-How can x^2^32 (i.e. x^4294967296) be stored?
-
-[4294967296[1]]
-
-### x^10000
-[[1]]^10000 = [10000[1]]
-
-base=[[1]]
-exponent=10000
-
-res = Times(multiplyPair(exponent, Singleton(base)))
-
-2^32=4294967296
-
-(x+y)^32
+`worker/` — the Cloudflare Worker entry: serves the built app and handles
+`/api/*` routes.

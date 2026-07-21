@@ -23,23 +23,6 @@ export const BinaryRightInfix = <T>(fn: (a: T, b: T) => T): OperatorSpec<T> => (
   right: true,
 });
 
-export const Infix = <T>(fn: (nodes: T[]) => T): OperatorSpec<T> => {
-  // Example RPN stack 3 1 * 2 *
-  // Example RPN stack 3 1 2 * *
-  // The difference is that the first one is right associative, the second is left associative.
-  // Left associative: (3*1)*2 +1, should be executed on "+"
-  // Right associative: 3*(1*2) +1, should executee on "+"
-  // That means that the * operator cannot know when to execute `fn` or when to create an internal
-  // node.
-
-  return {
-    n: 2,
-    fn: (a, b) => {
-      return fn([a, b]);
-    },
-    right: true,
-  };
-};
 
 export const Prefix = <T>(fn: (a: T) => T): OperatorSpec<T> => ({
   n: 1,

@@ -1,7 +1,6 @@
 {
   "name": "equation",
   "version": "1.0.0",
-  "description": "",
   "type": "module",
   "scripts": {
     "test": "vitest",
@@ -15,7 +14,6 @@
     "type": "git",
     "url": "git+https://github.com/aantthony/equation.git"
   },
-  "author": "",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/aantthony/equation/issues"
