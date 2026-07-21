@@ -27,31 +27,50 @@ html, body {
   padding: 8px;
 }
 
-.eq-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 2px;
+#equations {
+  outline: none;
+  font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  padding: 2px 0;
+  caret-color: #222;
 }
-.eq-color {
+.eq-line {
+  position: relative;
+  padding: 4px 6px 4px 28px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-height: 1.5em;
+}
+.eq-line::before {
+  /* color dot; clicks in the left gutter cycle the color */
+  content: '';
+  position: absolute;
+  left: 6px;
+  top: 8.5px;
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  flex: none;
-  cursor: pointer;
+  background: var(--eq-color, #ccc);
   border: 1px solid rgba(0, 0, 0, 0.15);
+  cursor: pointer;
 }
-.eq-col {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
+.eq-line.is-def::before { visibility: hidden; }
+.eq-line.focused { background: rgba(0, 90, 200, 0.05); }
+.eq-line.invalid { box-shadow: inset 0 -1px #d33; }
+.eq-line[data-ph]::after {
+  content: attr(data-ph);
+  color: #aaa;
+  pointer-events: none;
+}
+.eq-widget {
+  user-select: none;
+  -webkit-user-select: none;
 }
 .eq-slider {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 2px 3px;
+  padding: 0 6px 3px 28px;
 }
 .eq-slider-range {
   flex: 1;
@@ -81,34 +100,11 @@ html, body {
 }
 
 .eq-error {
-  display: none;
   color: #c0392b;
   font-size: 11px;
-  padding: 1px 4px 2px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  padding: 0 6px 3px 28px;
 }
-.eq-input {
-  width: 100%;
-  font: 15px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
-  border: none;
-  outline: none;
-  background: transparent;
-  padding: 3px 4px;
-  border-bottom: 1px solid transparent;
-}
-.eq-row:focus-within { background: rgba(0, 90, 200, 0.05); border-radius: 6px; }
-.eq-input.invalid { border-bottom: 1px solid #d33; }
-.eq-remove {
-  flex: none;
-  border: none;
-  background: none;
-  color: #999;
-  font-size: 15px;
-  cursor: pointer;
-  padding: 0 4px;
-  visibility: hidden;
-}
-.eq-row:hover .eq-remove { visibility: visible; }
-.eq-remove:hover { color: #d33; }
 
 #panel { position: relative; }
 
