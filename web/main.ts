@@ -649,6 +649,29 @@ function syncFromDOM() {
 }
 
 /**
+ * Split multi-statement text on newlines or ';', but only at bracket depth
+ * zero: a formula wrapped across lines inside parens (how LLMs and textbooks
+ * format them) stays one statement, while ';'-separated lists still split.
+ */
+function splitStatements(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth = Math.max(0, depth - 1);
+    if ((ch === '\n' || ch === ';') && depth === 0) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += ch === '\n' ? ' ' : ch;
+    }
+  }
+  parts.push(cur);
+  return parts;
+}
+
+/**
  * Replace the current selection with pasted/typed multi-statement text,
  * entirely in state space. Statements separate on newlines or ';' (the same
  * separator the examples menu and the URL hash use, so pasted lists and
@@ -688,7 +711,7 @@ function insertStatements(text: string) {
   const b = posOf(range.endContainer, range.endOffset);
   const [start, end] = a.line < b.line || (a.line === b.line && a.offset <= b.offset) ? [a, b] : [b, a];
 
-  const parts = text.replace(/\r\n?/g, '\n').split(/[\n;]/);
+  const parts = splitStatements(text);
   const before = equations[start.line]?.text.slice(0, start.offset) ?? '';
   const after = equations[end.line]?.text.slice(end.offset) ?? '';
   const first = equations[start.line] ?? addEquation('');
