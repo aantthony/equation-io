@@ -853,9 +853,18 @@ function selectionAsText(): string | null {
 
 // --- editor events ---
 
+// Sliders and error messages sit inside the contentEditable as
+// `contenteditable=false` widgets, so their inputs bubble key, clipboard and
+// beforeinput events to the host. Document editing must ignore those: while
+// focus is in a widget input the document selection still points at whatever
+// line the caret last touched, so acting on it edits an unrelated equation.
+const fromWidget = (e: Event): boolean =>
+  e.target instanceof Element && e.target.closest('.eq-widget') !== null;
+
 // First beforeinput listener: route undo/redo to our stack and capture the
 // pre-edit caret for the snapshot the upcoming 'input' event will push.
 listEl.addEventListener('beforeinput', e => {
+  if (fromWidget(e)) return;
   if (e.inputType === 'historyUndo') {
     e.preventDefault();
     doUndo();
@@ -907,6 +916,7 @@ listEl.addEventListener('input', e => {
 // shortcuts are handled here too — keydown wins over beforeinput, and some
 // engines skip the historyUndo beforeinput when their native stack is empty.
 listEl.addEventListener('keydown', e => {
+  if (fromWidget(e)) return; // let bound inputs handle their own keys natively
   const mod = e.metaKey || e.ctrlKey;
   if (mod && !e.altKey && e.key.toLowerCase() === 'z') {
     e.preventDefault();
@@ -924,10 +934,18 @@ listEl.addEventListener('keydown', e => {
   insertStatements('\n');
 });
 
-// Backspace/Delete at a widget boundary: the browser would delete the widget
-// block (it reappears on reconcile — an infinite wall). Merge the adjacent
-// lines in state instead.
+// Structural edits the browser would get wrong on its own: newlines that
+// bypass the Enter keydown path (mobile IME commits, dictation, autocomplete),
+// and Backspace/Delete at a widget boundary — there the browser deletes the
+// widget block, which reappears on reconcile as an infinite wall, so the
+// adjacent lines are merged in state instead.
 listEl.addEventListener('beforeinput', e => {
+  if (fromWidget(e)) return;
+  if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
+    e.preventDefault();
+    insertStatements('\n');
+    return;
+  }
   if (e.inputType !== 'deleteContentBackward' && e.inputType !== 'deleteContentForward') return;
   const sel = getSelection();
   if (!sel?.isCollapsed) return;
@@ -952,11 +970,13 @@ listEl.addEventListener('beforeinput', e => {
 });
 
 listEl.addEventListener('paste', e => {
+  if (fromWidget(e)) return; // pasting a number into a slider bound
   e.preventDefault();
   insertStatements(e.clipboardData?.getData('text/plain') ?? '');
 });
 
 listEl.addEventListener('copy', e => {
+  if (fromWidget(e)) return;
   const text = selectionAsText();
   if (text === null) return;
   e.preventDefault();
@@ -964,6 +984,7 @@ listEl.addEventListener('copy', e => {
 });
 
 listEl.addEventListener('cut', e => {
+  if (fromWidget(e)) return;
   const text = selectionAsText();
   if (text === null) return;
   e.preventDefault();

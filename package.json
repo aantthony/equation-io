@@ -9,7 +9,8 @@
     "web:build": "vite build",
     "shots": "node scripts/screenshots.ts",
     "deploy": "wrangler types && vite build && wrangler deploy",
-    "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit"
+    "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit",
+    "test:editor": "node scripts/editor-test.ts"
   },
   "private": true,
   "license": "UNLICENSED",
