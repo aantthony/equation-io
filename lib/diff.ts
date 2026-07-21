@@ -106,6 +106,10 @@ export function diff(e: Expr, v: string): Expr {
         case 'sinh': return chain(call('cosh', a));
         case 'cosh': return chain(call('sinh', a));
         case 'tanh': return chain(div(ONE, pow(call('cosh', a), num(2))));
+        case 'sech': return neg(chain(mul(call('sech', a), call('tanh', a))));
+        case 'asinh': return chain(div(ONE, call('sqrt', add(pow(a, num(2)), ONE))));
+        case 'acosh': return chain(div(ONE, call('sqrt', sub(pow(a, num(2)), ONE))));
+        case 'atanh': return chain(div(ONE, sub(ONE, pow(a, num(2)))));
         case 'exp': return chain(call('exp', a));
         case 'ln': return div(da, a);
         case 'log': return div(da, mul(a, num(Math.LN10)));

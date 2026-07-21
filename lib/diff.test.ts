@@ -29,6 +29,15 @@ describe('diff', () => {
     expect(ddx('cos(2pi v)', { v: 0.3 }, 'u')).toBe(0);
   });
 
+  it('differentiates sech and inverse hyperbolics', () => {
+    const fd = (f: (x: number) => number, x: number) => (f(x + 1e-6) - f(x - 1e-6)) / 2e-6;
+    expect(ddx('sech(x)', { x: 0.7 })).toBeCloseTo(fd(x => 1 / Math.cosh(x), 0.7));
+    expect(ddx('asinh(x)', { x: 0.7 })).toBeCloseTo(fd(Math.asinh, 0.7));
+    expect(ddx('acosh(x)', { x: 1.7 })).toBeCloseTo(fd(Math.acosh, 1.7), 4);
+    expect(ddx('atanh(x)', { x: 0.7 })).toBeCloseTo(fd(Math.atanh, 0.7), 4);
+    expect(ddx('|x^2-1|', { x: 0.5 })).toBe(-1); // sign(x^2-1)*2x = -1
+  });
+
   it('throws for non-smooth functions', () => {
     expect(() => diff(parseExpr('min(x, 1)'), 'x')).toThrow(/differentiate/);
     expect(() => diff(parseExpr('floor(x)'), 'x')).toThrow(/differentiate/);

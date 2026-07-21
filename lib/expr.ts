@@ -26,7 +26,7 @@ export type Expr =
 /** Functions available in expressions (all map to GLSL builtins or helpers). */
 export const FUNCTIONS = new Set([
   'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
-  'sinh', 'cosh', 'tanh',
+  'sinh', 'cosh', 'tanh', 'sech', 'asinh', 'acosh', 'atanh',
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
   're', 'im', 'arg', 'conj',
@@ -122,6 +122,7 @@ const syntax: PatternDict = {
   parenopen: /^[\(\{\[]$/,
   parenclose: /^[\)\}\]]$/,
   number: /^\d+\.?\d*$/,
+  bar: /^\|$/,
   whitespace: /\s$/,
   symbol: /^[A-Za-z_][A-Za-z_0-9]*$/,
   operator: x => !!ops[x] || MULTI_CHAR_OPS.some(m => m.startsWith(x)),
@@ -140,10 +141,31 @@ function op(str: string): Token {
  */
 function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   let last: Token | null = null;
+  let barDepth = 0;
   for (const token of bare) {
     if (token.type === 'whitespace') continue;
 
     const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol' || last.type === 'parenclose');
+
+    if (token.type === 'bar') {
+      // |x| is abs(x): a bar after a value closes the innermost open bar;
+      // any other bar opens one (with implicit multiplication, as in 2|x|).
+      if (barDepth > 0 && afterValue) {
+        barDepth--;
+        const close: Token = { ...token, type: 'parenclose', str: ')' };
+        yield close;
+        last = close;
+      } else {
+        barDepth++;
+        if (afterValue) yield op('[impl]');
+        yield { ...token, type: 'symbol', str: 'abs' };
+        yield op('[apply]');
+        const open: Token = { ...token, type: 'parenopen', str: '(' };
+        yield open;
+        last = open;
+      }
+      continue;
+    }
 
     if (token.type === 'operator' && (token.str === '-' || token.str === '−' || token.str === '+')) {
       if (!afterValue) {
@@ -220,6 +242,8 @@ const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
   sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+  sech: x => 1 / Math.cosh(x),
+  asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
   sqrt: Math.sqrt, abs: Math.abs, exp: Math.exp, ln: Math.log, log: Math.log10,
   floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign,
   min: Math.min, max: Math.max,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Expr, freeVars, parseExpr } from './expr.ts';
+import { evaluate, Expr, freeVars, parseExpr } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 
 function evalExpr(e: Expr, env: Record<string, number>): number {
@@ -109,5 +109,48 @@ describe('toGLSL', () => {
 
   it('compiles equations to a difference', () => {
     expect(toGLSL(parseExpr('y=x'))).toBe('(y - (x))');
+  });
+});
+
+describe('absolute value bars', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('parses |x| as abs(x)', () => {
+    expect(ev('|x|', { x: -3 })).toBe(3);
+    expect(ev('|x-5|', { x: 2 })).toBe(3);
+  });
+
+  it('multiplies implicitly around bars', () => {
+    expect(ev('2|x|', { x: -3 })).toBe(6);
+    expect(ev('|x||y|', { x: -2, y: -3 })).toBe(6);
+    expect(ev('|x|y', { x: -2, y: 3 })).toBe(6);
+  });
+
+  it('handles nested bars', () => {
+    expect(ev('||x|-4|', { x: 1 })).toBe(3);
+    expect(ev('|x-|y||', { x: 1, y: -4 })).toBe(3);
+  });
+
+  it('compiles to GLSL abs', () => {
+    expect(toGLSL(parseExpr('|x|+1'))).toBe('(abs(x) + 1.0)');
+  });
+});
+
+describe('hyperbolic functions', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('evaluates sech and inverse hyperbolics', () => {
+    expect(ev('sech(0)')).toBe(1);
+    expect(ev('sech(x)', { x: 2 })).toBeCloseTo(1 / Math.cosh(2));
+    expect(ev('asinh(x)', { x: Math.sinh(1.5) })).toBeCloseTo(1.5);
+    expect(ev('acosh(x)', { x: Math.cosh(1.5) })).toBeCloseTo(1.5);
+    expect(ev('atanh(x)', { x: Math.tanh(0.5) })).toBeCloseTo(0.5);
+  });
+
+  it('compiles sech via helper and inverse hyperbolics to builtins', () => {
+    expect(toGLSL(parseExpr('sech(x)'))).toBe('eq_sech(x)');
+    expect(toGLSL(parseExpr('asinh(x)'))).toBe('asinh(x)');
+    expect(toGLSL(parseExpr('acosh(x)'))).toBe('acosh(x)');
+    expect(toGLSL(parseExpr('atanh(x)'))).toBe('atanh(x)');
   });
 });
