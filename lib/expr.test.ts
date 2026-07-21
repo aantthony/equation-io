@@ -83,6 +83,12 @@ describe('parseExpr', () => {
     expect(evalExpr(e, { x: 3, y: 10 })).toBe(1);
   });
 
+  it('rejects incomplete expressions with a parse error', () => {
+    for (const s of ['f(x) = x^3 - 2x,', 'x,', '2,', 'x+', ',x', 'sin()']) {
+      expect(() => parseExpr(s)).toThrow('Incomplete expression.');
+    }
+  });
+
   it('collects free variables', () => {
     expect([...freeVars(parseExpr('x^2+y^2=1'))].sort()).toEqual(['x', 'y']);
     expect([...freeVars(parseExpr('z = sin(x)cos(y)'))].sort()).toEqual(['x', 'y', 'z']);

@@ -1,4 +1,4 @@
-import type { OperatorDict } from './parser.ts';
+import { ParseError, type OperatorDict } from './parser.ts';
 import type { Token } from './tokenizer.ts';
 
 /**
@@ -19,7 +19,9 @@ export function walk<T>(
 
       // Pop off op.n operands:
       const args = pop(op.n);
-      
+      if (args.length < op.n) throw new ParseError('Incomplete expression.', tok);
+
+
       // Push the result of applying the operator:
       const result = op.fn(...args);
 
