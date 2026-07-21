@@ -217,8 +217,22 @@ export function curveFrames(
 export interface TubeMesh {
   positions: Float32Array;
   normals: Float32Array;
+  /**
+   * Material coordinates per vertex: x = arclength fraction along the curve,
+   * y = angle fraction around the ring (in the rotation-minimizing frame, so
+   * the coordinate does not spiral with torsion).
+   */
+  uvs: Float32Array;
   indices: Uint32Array;
+  /**
+   * Checker cell counts along (length, circumference) giving roughly square
+   * cells in world units — a pattern painted on the material, not on the
+   * parameter.
+   */
+  cells: [number, number];
 }
+
+const ANGULAR_CELLS = 8;
 
 /** Sweep a circle of `radius` along the curve using the rotation-minimizing frame. */
 export function buildTube(
@@ -228,21 +242,37 @@ export function buildTube(
   segments = 24,
 ): TubeMesh {
   const n = pts.length / 3;
-  const { normal, binormal } = frames;
-  const positions = new Float32Array(n * segments * 3);
-  const normals = new Float32Array(n * segments * 3);
-  const cos = new Float64Array(segments);
-  const sin = new Float64Array(segments);
-  for (let s = 0; s < segments; s++) {
-    cos[s] = Math.cos(2 * Math.PI * s / segments);
-    sin[s] = Math.sin(2 * Math.PI * s / segments);
+  const { normal, binormal, closed } = frames;
+  // Rings carry a duplicated seam column (angle 0 again as angle 1) so the
+  // material coordinate interpolates cleanly across the wrap.
+  const stride = segments + 1;
+  const positions = new Float32Array(n * stride * 3);
+  const normals = new Float32Array(n * stride * 3);
+  const uvs = new Float32Array(n * stride * 2);
+
+  // Cumulative arclength; steps through invalid samples contribute nothing.
+  const arc = new Float64Array(n);
+  for (let i = 1; i < n; i++) {
+    const j = i * 3;
+    const d = Math.hypot(pts[j] - pts[j - 3], pts[j + 1] - pts[j - 2], pts[j + 2] - pts[j - 1]);
+    arc[i] = arc[i - 1] + (isFinite(d) ? d : 0);
+  }
+  const total = arc[n - 1] > 0 ? arc[n - 1] : 1;
+
+  const cos = new Float64Array(stride);
+  const sin = new Float64Array(stride);
+  for (let s = 0; s < stride; s++) {
+    // s % segments keeps the seam column bit-identical to column 0.
+    cos[s] = Math.cos(2 * Math.PI * (s % segments) / segments);
+    sin[s] = Math.sin(2 * Math.PI * (s % segments) / segments);
   }
   const valid: boolean[] = new Array(n);
   for (let i = 0; i < n; i++) {
     const j = i * 3;
     valid[i] = finite3(pts, i) && finite3(normal, i) && finite3(binormal, i);
-    for (let s = 0; s < segments; s++) {
-      const o = (i * segments + s) * 3;
+    const u = arc[i] / total;
+    for (let s = 0; s < stride; s++) {
+      const o = (i * stride + s) * 3;
       const rx = cos[s] * normal[j] + sin[s] * binormal[j];
       const ry = cos[s] * normal[j + 1] + sin[s] * binormal[j + 1];
       const rz = cos[s] * normal[j + 2] + sin[s] * binormal[j + 2];
@@ -252,20 +282,33 @@ export function buildTube(
       positions[o] = pts[j] + radius * rx;
       positions[o + 1] = pts[j + 1] + radius * ry;
       positions[o + 2] = pts[j + 2] + radius * rz;
+      const q = (i * stride + s) * 2;
+      uvs[q] = u;
+      uvs[q + 1] = s / segments;
     }
   }
   const idx: number[] = [];
   for (let i = 0; i + 1 < n; i++) {
     if (!valid[i] || !valid[i + 1]) continue;
     for (let s = 0; s < segments; s++) {
-      const a = i * segments + s;
-      const b = i * segments + (s + 1) % segments;
-      const c = (i + 1) * segments + s;
-      const d = (i + 1) * segments + (s + 1) % segments;
-      idx.push(a, b, c, b, d, c);
+      const a = i * stride + s;
+      const c = (i + 1) * stride + s;
+      idx.push(a, a + 1, c, a + 1, c + 1, c);
     }
   }
-  return { positions, normals, indices: Uint32Array.from(idx) };
+
+  // Along-length cell size matched to the angular cell (2πr / ANGULAR_CELLS);
+  // on closed curves an even count makes the checker parity continue across
+  // the loop seam.
+  let lenCells = Math.max(2, Math.round(total / (2 * Math.PI * radius / ANGULAR_CELLS)));
+  if (closed && lenCells % 2) lenCells += 1;
+  return {
+    positions,
+    normals,
+    uvs,
+    indices: Uint32Array.from(idx),
+    cells: [lenCells, ANGULAR_CELLS],
+  };
 }
 
 export interface Comb {

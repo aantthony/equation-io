@@ -248,16 +248,21 @@ void main() {
 `;
 }
 
-/** CPU-built tube meshes (curve framing): plain position+normal lighting. */
+/** CPU-built tube meshes (curve framing): position+normal lighting with a
+ * material checker in (arclength × ring angle) coordinates, the same faint
+ * grid parametric surfaces get — but painted on the tube's own material. */
 const TUBE_VERT = `#version 300 es
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
+layout(location=2) in vec2 aUV;
 uniform mat4 uVP;
 out vec3 vPos;
 out vec3 vNormal;
+out vec2 vUV;
 void main() {
   vPos = aPos;
   vNormal = aNormal;
+  vUV = aUV;
   gl_Position = uVP * vec4(aPos, 1.0);
 }
 `;
@@ -266,8 +271,10 @@ const TUBE_FRAG = `#version 300 es
 precision highp float;
 uniform vec3 uColor;
 uniform vec3 uEye;
+uniform vec2 uCells;
 in vec3 vPos;
 in vec3 vNormal;
+in vec2 vUV;
 out vec4 outColor;
 void main() {
   vec3 n = normalize(vNormal);
@@ -282,7 +289,17 @@ void main() {
   float spec = pow(max(dot(n, halfway), 0.0), 96.0);
   float fresnel = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
 
-  vec3 col = uColor * (0.26 + 0.22 * sky + 0.46 * diffuse)
+  // Material checker: cells are square-ish in world units and follow the
+  // rotation-minimizing frame, so the pattern reads as painted on the tube.
+  float checker = mod(floor(min(vUV.x, 0.9999) * uCells.x) + floor(min(vUV.y, 0.9999) * uCells.y), 2.0);
+  // Fade to the average shade once cells shrink toward pixel size, so distant
+  // or thin tubes don't moiré.
+  vec2 cw = fwidth(vUV * uCells);
+  checker = mix(checker, 0.5, clamp(max(cw.x, cw.y) * 1.5 - 0.25, 0.0, 1.0));
+  // Slightly stronger than the psurface checker: tube cells are far smaller.
+  vec3 base = uColor * (0.88 + 0.12 * checker);
+
+  vec3 col = base * (0.26 + 0.22 * sky + 0.46 * diffuse)
            + vec3(1.0) * spec * 0.7
            + vec3(0.35, 0.4, 0.5) * fresnel * 0.3;
   outColor = vec4(col, 1.0);
@@ -393,11 +410,15 @@ export interface Scene3D {
   curves: Array<{ pts: Float32Array; color: [number, number, number] }>;
   /** Disconnected segments (comb teeth), drawn as gl.LINES vertex pairs. */
   segments: Array<{ pts: Float32Array; color: [number, number, number] }>;
-  /** Indexed position+normal meshes (curve tubes). */
+  /** Indexed position+normal meshes (curve tubes) with material UVs. */
   tubes: Array<{
     positions: Float32Array;
     normals: Float32Array;
+    /** Per-vertex (arclength fraction, ring-angle fraction). */
+    uvs: Float32Array;
     indices: Uint32Array;
+    /** Checker cell counts along (length, circumference). */
+    cells: [number, number];
     color: [number, number, number];
   }>;
   points: Array<{ pos: [number, number, number]; color: [number, number, number] }>;
@@ -417,6 +438,7 @@ export class Renderer3D {
   private tubeVao: WebGLVertexArrayObject;
   private tubePosBuf: WebGLBuffer;
   private tubeNrmBuf: WebGLBuffer;
+  private tubeUvBuf: WebGLBuffer;
   private tubeIdxBuf: WebGLBuffer;
   private gridVao: WebGLVertexArrayObject;
   private gridIndexCount: number;
@@ -434,11 +456,12 @@ export class Renderer3D {
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
 
-    // Dynamic indexed mesh (curve tubes): separate position/normal buffers.
+    // Dynamic indexed mesh (curve tubes): separate position/normal/uv buffers.
     this.tubeProgram = compileProgram(gl, TUBE_VERT, TUBE_FRAG);
     this.tubeVao = gl.createVertexArray()!;
     this.tubePosBuf = gl.createBuffer()!;
     this.tubeNrmBuf = gl.createBuffer()!;
+    this.tubeUvBuf = gl.createBuffer()!;
     this.tubeIdxBuf = gl.createBuffer()!;
     gl.bindVertexArray(this.tubeVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.tubePosBuf);
@@ -447,6 +470,9 @@ export class Renderer3D {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeNrmBuf);
     gl.enableVertexAttribArray(1);
     gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeUvBuf);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, 0);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.tubeIdxBuf);
     gl.bindVertexArray(null);
 
@@ -576,11 +602,14 @@ export class Renderer3D {
       setCommon(this.tubeProgram);
       gl.uniform3f(gl.getUniformLocation(this.tubeProgram, 'uColor'), ...tube.color);
       gl.uniform3f(gl.getUniformLocation(this.tubeProgram, 'uEye'), ...eye);
+      gl.uniform2f(gl.getUniformLocation(this.tubeProgram, 'uCells'), ...tube.cells);
       gl.bindVertexArray(this.tubeVao);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.tubePosBuf);
       gl.bufferData(gl.ARRAY_BUFFER, tube.positions, gl.DYNAMIC_DRAW);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeNrmBuf);
       gl.bufferData(gl.ARRAY_BUFFER, tube.normals, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeUvBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, tube.uvs, gl.DYNAMIC_DRAW);
       gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tube.indices, gl.DYNAMIC_DRAW);
       gl.drawElements(gl.TRIANGLES, tube.indices.length, gl.UNSIGNED_INT, 0);
       gl.bindVertexArray(null);
