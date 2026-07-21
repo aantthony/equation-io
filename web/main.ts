@@ -55,6 +55,8 @@ function cssColor([r, g, b]: [number, number, number]): string {
 const CURVE_SAMPLES = 400;
 /** RK4 steps in each direction for a dropped integral curve. */
 const ODE_STEPS = 1400;
+/** Most integral-curve seeds kept at once; older seeds evict first. */
+const MAX_DROPS = 12;
 
 // --- state ---
 
@@ -1156,13 +1158,16 @@ const endPointer = (e: PointerEvent) => {
 };
 canvas.addEventListener('pointerup', e => {
   endPointer(e);
-  // A motionless click in 2D drops an integral-curve seed on vector fields.
-  if (dragMoved || pointers.size || mode !== '2d') return;
+  // A motionless primary-button click in 2D drops an integral-curve seed on
+  // vector fields; right/shift clicks are pan gestures, not seeds.
+  if (dragMoved || pointers.size || mode !== '2d' || e.button !== 0 || e.shiftKey) return;
   if (!equations.some(q => !q.error && q.cls?.plot.type === 'vfield2d')) return;
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
   const px = (e.clientX - rect.left - rect.width / 2) * dpr;
   const py = (rect.height / 2 - (e.clientY - rect.top)) * dpr;
+  // Each seed costs an RK4 integration per field per frame; keep the newest.
+  if (drops.length >= MAX_DROPS) drops.shift();
   drops.push({ x: view.cx + px * view.upp, y: view.cy + py * view.upp });
   requestRender();
 });
