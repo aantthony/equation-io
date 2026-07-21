@@ -23,15 +23,7 @@ import {
   niceSpacing,
 } from './render2d.ts';
 import { type Camera3D, Renderer3D, type Scene3D, drawLabels3D } from './render3d.ts';
-
-const PALETTE: [number, number, number][] = [
-  [0.176, 0.439, 0.702], // blue
-  [0.780, 0.267, 0.251], // red
-  [0.220, 0.549, 0.275], // green
-  [0.376, 0.259, 0.651], // purple
-  [0.980, 0.494, 0.098], // orange
-  [0.000, 0.000, 0.000], // black
-];
+import { initTheme, onThemeChange, theme, toggleTheme } from './theme.ts';
 
 interface Equation {
   id: number;
@@ -129,7 +121,7 @@ function render() {
     constEnv = {};
   }
 
-  gl.clearColor(1, 1, 1, 1);
+  gl.clearColor(theme.bg[0], theme.bg[1], theme.bg[2], 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // CPU sampling of parametric curves / points, with t bound to seconds.
@@ -161,7 +153,7 @@ function render() {
   if (mode === '3d') {
     const scene: Scene3D = { implicits: [], psurfaces: [], curves: [], points: [] };
     for (const eq of active) {
-      const color = PALETTE[eq.colorIndex];
+      const color = theme.palette[eq.colorIndex];
       const plot = eq.cls!.plot;
       const params = eq.cls!.params;
       switch (plot.type) {
@@ -205,7 +197,7 @@ function render() {
     const ineqs: Ineq2D[] = [];
     const extras: Overlay2D = { points: [], polylines: [] };
     for (const eq of active) {
-      const color = PALETTE[eq.colorIndex];
+      const color = theme.palette[eq.colorIndex];
       const plot = eq.cls!.plot;
       const params = eq.cls!.params;
       switch (plot.type) {
@@ -338,7 +330,7 @@ function saveHash() {
 }
 
 function addEquation(text: string, at = equations.length): Equation {
-  const eq: Equation = { id: nextId++, text, colorIndex: (nextId - 2) % PALETTE.length };
+  const eq: Equation = { id: nextId++, text, colorIndex: (nextId - 2) % theme.palette.length };
   equations.splice(at, 0, eq);
   return eq;
 }
@@ -536,7 +528,7 @@ function reconcile() {
     const eq = equations[i];
     if (!eq) return;
     line.dataset.id = String(eq.id);
-    line.style.setProperty('--eq-color', cssColor(PALETTE[eq.colorIndex]));
+    line.style.setProperty('--eq-color', cssColor(theme.palette[eq.colorIndex]));
     line.classList.toggle('invalid', !!eq.error);
     line.classList.toggle('is-def', !!eq.def);
     line.title = eq.error ?? '';
@@ -637,7 +629,7 @@ function syncFromDOM() {
     const id = line.dataset.id;
     let eq = id && !seen.has(id) ? byId.get(id) : undefined;
     if (!eq) {
-      eq = { id: nextId++, text: '', colorIndex: (nextId - 2) % PALETTE.length };
+      eq = { id: nextId++, text: '', colorIndex: (nextId - 2) % theme.palette.length };
       line.dataset.id = String(eq.id);
     }
     seen.add(String(eq.id));
@@ -695,7 +687,7 @@ function insertStatements(text: string) {
   const inserted: Equation[] = [first];
   first.text = before + parts[0];
   for (let i = 1; i < parts.length; i++) {
-    inserted.push({ id: nextId++, text: parts[i].trim(), colorIndex: (nextId - 2) % PALETTE.length });
+    inserted.push({ id: nextId++, text: parts[i].trim(), colorIndex: (nextId - 2) % theme.palette.length });
   }
   const caretOffset = inserted[inserted.length - 1].text.length;
   inserted[inserted.length - 1].text += after;
@@ -859,7 +851,7 @@ listEl.addEventListener('pointerdown', e => {
   if (!eq || eq.def) return;
   e.preventDefault();
   pushUndo(`color:${eq.id}`);
-  eq.colorIndex = (eq.colorIndex + 1) % PALETTE.length;
+  eq.colorIndex = (eq.colorIndex + 1) % theme.palette.length;
   reconcile();
   requestRender();
 });
@@ -1087,6 +1079,26 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false });
 
 window.addEventListener('resize', resize);
+
+// --- theme ---
+
+const themeToggle = document.getElementById('theme-toggle') as HTMLButtonElement | null;
+function syncThemeToggle() {
+  if (!themeToggle) return;
+  themeToggle.textContent = theme.dark ? '☀' : '☾';
+  const next = theme.dark ? 'light' : 'dark';
+  themeToggle.setAttribute('aria-label', `Switch to ${next} mode`);
+  themeToggle.title = `Switch to ${next} mode`;
+}
+initTheme();
+// Color dots and every WebGL pass read `theme` live; redraw both on a switch.
+onThemeChange(() => {
+  syncThemeToggle();
+  reconcile();
+  requestRender();
+});
+syncThemeToggle();
+themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 

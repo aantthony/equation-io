@@ -6,6 +6,7 @@
  */
 import { GLSL_PRELUDE } from '../lib/glsl.ts';
 import { ProgramCache, QUAD_VERT } from './gl.ts';
+import { glslVec3, theme } from './theme.ts';
 
 export interface View2D {
   cx: number;
@@ -96,14 +97,14 @@ float gridLine(float c, float lg, float spacing, float halfWidthPx) {
 }
 void main() {
   vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
-  vec3 col = vec3(1.0);
+  vec3 col = ${glslVec3(theme.bg)};
   float minorA = 0.0;
   float majorA = 0.0;
   float axisA = 0.0;
 ${blocks}
-  col = mix(col, vec3(0.91), minorA);
-  col = mix(col, vec3(0.80), majorA);
-  col = mix(col, vec3(0.25), axisA);
+  col = mix(col, ${glslVec3(theme.gridMinor)}, minorA);
+  col = mix(col, ${glslVec3(theme.gridMajor)}, majorA);
+  col = mix(col, ${glslVec3(theme.axis)}, axisA);
   outColor = vec4(col, 1.0);
 }
 `;
@@ -366,7 +367,7 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
   ctx.font = '11px ui-sans-serif, system-ui';
-  ctx.fillStyle = '#555';
+  ctx.fillStyle = theme.label;
 
   const upp = view.upp * dpr; // math units per CSS pixel
   const { major } = niceSpacing(view.upp, 90);
@@ -423,7 +424,7 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
       ctx.fillStyle = pt.color;
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = '#fff';
+      ctx.strokeStyle = theme.pointOutline;
       ctx.stroke();
     }
   }

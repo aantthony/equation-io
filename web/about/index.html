@@ -13,6 +13,17 @@
   <meta property="og:url" content="https://equation.io/about/">
   <meta property="og:image" content="https://equation.io/shots/hero.png">
   <link rel="stylesheet" href="./about.css">
+  <script>
+    // Match the grapher's theme (same localStorage key), falling back to the OS.
+    (function () {
+      try {
+        var s = localStorage.getItem('eq-theme');
+        var dark = s === 'dark' ||
+          (s !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+      } catch (e) {}
+    })();
+  </script>
 </head>
 <body>
   <header class="nav">
