@@ -25,6 +25,11 @@ export interface Curve2D {
 export const paramDecls = (params: string[] = []): string =>
   params.map(p => `uniform float u_${p};`).join('\n');
 
+export interface Ineq2D extends Curve2D {
+  /** Fields whose zero sets get a solid boundary line (the <= / >= parts). */
+  edges: string[];
+}
+
 /** Pick a "nice" grid spacing (1, 2, or 5 × 10^k) at least minPx pixels apart. */
 export function niceSpacing(upp: number, minPx: number): { major: number; minor: number } {
   const target = upp * minPx;
@@ -177,6 +182,54 @@ void main() {
 `;
 }
 
+function ineqFrag(field: string, edges: string[], params?: string[]): string {
+  // Each non-strict comparison draws its boundary with the same two-scale
+  // distance estimate as curveFrag, gated to the region's edge so a chain's
+  // bound lines stop where the other comparisons cut them off.
+  const edgeBlocks = edges.map((_, i) => `
+  {
+    float ev = E${i}(p.x, p.y);
+    if (!isnan(ev) && !isinf(ev) && v < 2.5 * aa) {
+      vec2 g1 = vec2(E${i}(p.x + h, p.y) - E${i}(p.x - h, p.y),
+                     E${i}(p.x, p.y + h) - E${i}(p.x, p.y - h)) / (2.0 * h);
+      vec2 g2 = vec2(E${i}(p.x + 0.5 * h, p.y) - E${i}(p.x - 0.5 * h, p.y),
+                     E${i}(p.x, p.y + 0.5 * h) - E${i}(p.x, p.y - 0.5 * h)) / h;
+      float e1 = abs(ev) / max(length(g1) * h, 1e-24);
+      float e2 = abs(ev) / max(length(g2) * h, 1e-24);
+      if (!(isnan(e1) || isinf(e1) || isnan(e2) || isinf(e2))
+        && !(e2 > 1.6 * e1 || e1 > 1.6 * e2)) {
+        edge = max(edge, 1.0 - smoothstep(1.1, 2.1, max(e1, e2)));
+      }
+    }
+  }`).join('');
+  return `#version 300 es
+precision highp float;
+uniform vec2 uCenter;
+uniform float uUpp;
+uniform vec2 uRes;
+uniform vec3 uColor;
+uniform float t;
+${paramDecls(params)}
+out vec4 outColor;
+${GLSL_PRELUDE}
+float F(float x, float y) { return ${field}; }
+${edges.map((e, i) => `float E${i}(float x, float y) { return ${e}; }`).join('\n')}
+void main() {
+  vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
+  float v = F(p.x, p.y);
+  if (isnan(v) || isinf(v)) discard;
+  float aa = max(fwidth(v), 1e-24);
+  float fill = (1.0 - smoothstep(-aa, aa, v)) * 0.22;
+  float edge = 0.0;
+  float h = uUpp;
+${edgeBlocks}
+  float alpha = max(fill, edge * 0.9);
+  if (alpha < 0.004) discard;
+  outColor = vec4(uColor, alpha);
+}
+`;
+}
+
 export class Renderer2D {
   private cache: ProgramCache;
   constructor(private gl: WebGL2RenderingContext, private quad: { draw(): void }) {
@@ -188,6 +241,7 @@ export class Renderer2D {
     curves: Curve2D[],
     scalars: Curve2D[] = [],
     complexes: Curve2D[] = [],
+    ineqs: Ineq2D[] = [],
     time = 0,
     env: Record<string, number> = {},
   ): void {
@@ -232,6 +286,7 @@ export class Renderer2D {
       this.quad.draw();
     };
 
+    for (const q of ineqs) drawField(q, (f, ps) => ineqFrag(f, q.edges, ps));
     for (const s of scalars) drawField(s, scalarFrag);
     for (const c of complexes) drawField(c, complexFrag);
     for (const c of curves) drawField(c, curveFrag);

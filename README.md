@@ -29,6 +29,9 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
 · `a = 2` (a named constant with a slider; other equations can use `a`, and it
   compiles to a uniform so dragging never rebuilds a shader; `b = a^2 + t`
   defines a computed/animated constant)
+· `y < x/2 + 1` (inequalities shade their region; strict `<`/`>` have no
+  border, `<=`/`>=` draw the boundary line, and chains like
+  `4 <= x^2 + y^2 <= 9` intersect with an edge per non-strict bound)
 · `f(x) = x^3 - a x` (user-defined functions, inlined symbolically)
 · `y = d/dx f(x)` / `d^2/dx^2 (x^4)` (symbolic Leibniz derivatives — works for
   any single-letter variable, nests, and flows through function definitions:

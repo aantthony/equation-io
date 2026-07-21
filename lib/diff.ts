@@ -117,6 +117,7 @@ export function diff(e: Expr, v: string): Expr {
       }
     }
     case 'eq': return sub(diff(e.l, v), diff(e.r, v));
+    case 'ineq': throw new Error('Cannot differentiate an inequality.');
     case 'vec': throw new Error('Differentiate vector components individually.');
   }
   throw new Error('Unreachable');

@@ -11,7 +11,7 @@ import {
 import { evaluate, parseExpr } from '../lib/expr.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { fullscreenQuad } from './gl.ts';
-import { type Curve2D, type Overlay2D, Renderer2D, type View2D, drawLabels2D } from './render2d.ts';
+import { type Curve2D, type Ineq2D, type Overlay2D, Renderer2D, type View2D, drawLabels2D } from './render2d.ts';
 import { type Camera3D, Renderer3D, type Scene3D, drawLabels3D } from './render3d.ts';
 
 const PALETTE: [number, number, number][] = [
@@ -59,7 +59,9 @@ const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, p
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement;
 const overlay = document.getElementById('overlay') as HTMLCanvasElement;
-const glCtx = canvas.getContext('webgl2', { antialias: true });
+// alpha: false — passes blend with low src alpha, and a non-opaque buffer
+// would be composited over the page as premultiplied, washing fills white.
+const glCtx = canvas.getContext('webgl2', { antialias: true, alpha: false });
 if (!glCtx) {
   document.body.innerHTML = '<p style="padding:2em">WebGL2 is required.</p>';
   throw new Error('WebGL2 unavailable');
@@ -151,7 +153,8 @@ function render() {
           break;
         case 'scalar2d':
         case 'complex2d':
-          break; // density/complex fields have no 3D locus; skipped in 3D scenes
+        case 'ineq2d':
+          break; // density/complex/region fields have no 3D locus; skipped in 3D scenes
         case 'psurface':
           scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
@@ -179,6 +182,7 @@ function render() {
     const curves: Curve2D[] = [];
     const scalars: Curve2D[] = [];
     const complexes: Curve2D[] = [];
+    const ineqs: Ineq2D[] = [];
     const extras: Overlay2D = { points: [], polylines: [] };
     for (const eq of active) {
       const color = PALETTE[eq.colorIndex];
@@ -186,6 +190,7 @@ function render() {
       const params = eq.cls!.params;
       switch (plot.type) {
         case 'implicit2d': curves.push({ field: plot.field, color, params }); break;
+        case 'ineq2d': ineqs.push({ field: plot.field, edges: plot.edges, color, params }); break;
         case 'scalar2d': scalars.push({ field: plot.field, color, params }); break;
         case 'complex2d': complexes.push({ field: plot.field, color, params }); break;
         case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
@@ -196,7 +201,7 @@ function render() {
         }
       }
     }
-    r2d.render(view, curves, scalars, complexes, time, constEnv);
+    r2d.render(view, curves, scalars, complexes, ineqs, time, constEnv);
     drawLabels2D(overlayCtx, view, dpr, extras);
   }
 
@@ -431,6 +436,12 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['quadrupole', 'ln(w-2) + ln(w+2) - ln(w-2i) - ln(w+2i)'],
     ['flow past cylinder', 'w + 4/w'],
     ['orbiting charge', 'ln(w-2) - ln(w + 2e^(i t))'],
+  ]],
+  ['regions', [
+    ['open half-plane', 'y < x/2 + 1'],
+    ['closed disc', 'x^2 + y^2 <= 4'],
+    ['annulus', '4 <= x^2 + y^2 <= 9'],
+    ['band under a wave', '-1 <= y - sin(x) < 1'],
   ]],
   ['sliders + calculus', [
     ['slider', 'a = 2; y = sin(a x)/a'],

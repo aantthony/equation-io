@@ -16,6 +16,12 @@ import { toGLSL } from './glsl.ts';
 
 export type Plot =
   | { type: 'implicit2d'; field: string }
+  /**
+   * Shaded region F < 0. Strict comparisons fill with no border; each
+   * non-strict comparison contributes an edge field whose zero set is drawn
+   * as a solid line. Chains combine via max(), so F < 0 ⇔ all parts hold.
+   */
+  | { type: 'ineq2d'; field: string; edges: string[] }
   | { type: 'scalar2d'; field: string }
   /** grad: symbolic ∇F for shading normals; absent → finite differences. */
   | { type: 'implicit3d'; field: string; grad?: [string, string, string] }
@@ -111,6 +117,36 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   }
 
   if (hasParam) throw new Error('u/v need a vector expression like (cos(u), sin(u), v).');
+
+  if (g.kind === 'ineq') {
+    if (vars.has('z')) throw new Error('Inequalities are 2D only.');
+    // Flatten a left-nested chain ((0 <= y) < x) into its comparisons;
+    // comparison k compares the previous comparison's right side.
+    const chain: Array<Expr & { kind: 'ineq' }> = [];
+    let node: Expr = g;
+    while (node.kind === 'ineq') {
+      chain.unshift(node);
+      node = node.l;
+    }
+    const comps = chain.map((c, k) => ({
+      op: c.op,
+      l: k === 0 ? c.l : chain[k - 1].r,
+      r: c.r,
+    }));
+    if (new Set(comps.map(c => c.op[0])).size > 1) {
+      throw new Error('Chained inequalities must point the same way.');
+    }
+    const fields = comps.map(c => {
+      // Normalize to F < 0: l < r gives l - r, l > r gives r - l.
+      const [lo, hi] = c.op[0] === '<' ? [c.l, c.r] : [c.r, c.l];
+      const typed = compileTyped({ kind: 'bin', op: '-', a: lo, b: hi });
+      if (typed.type === 'complex') throw new Error('Complex inequality: compare re(…) or im(…) instead.');
+      return { code: typed.code, edge: c.op.length === 2 };
+    });
+    let combined = fields[0].code;
+    for (let k = 1; k < fields.length; k++) combined = `max(${combined}, ${fields[k].code})`;
+    return done({ type: 'ineq2d', field: combined, edges: fields.filter(f => f.edge).map(f => f.code) });
+  }
 
   const gradOf = (f: Expr): [string, string, string] | undefined => {
     try {

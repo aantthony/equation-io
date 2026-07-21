@@ -146,6 +146,7 @@ export function resolveExpr(e: Expr, getFn: GetFn): Expr {
       return { kind: 'call', name: e.name, args };
     }
     case 'eq': return { kind: 'eq', l: resolveExpr(e.l, getFn), r: resolveExpr(e.r, getFn) };
+    case 'ineq': return { kind: 'ineq', op: e.op, l: resolveExpr(e.l, getFn), r: resolveExpr(e.r, getFn) };
     case 'vec': return { kind: 'vec', items: e.items.map(x => resolveExpr(x, getFn)) };
   }
 }

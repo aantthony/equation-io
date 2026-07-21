@@ -40,6 +40,37 @@ describe('classify', () => {
     expect(cls('y = sin(x)').animated).toBe(false);
   });
 
+  it('routes inequalities to shaded regions', () => {
+    const strict = cls('y < x^2');
+    expect(strict.plot).toMatchObject({ type: 'ineq2d', edges: [] });
+
+    const closed = cls('x^2 + y^2 <= 4');
+    expect(closed.plot.type).toBe('ineq2d');
+    expect((closed.plot as { edges: string[] }).edges).toHaveLength(1);
+
+    // > normalizes to F < 0 by flipping sides.
+    expect(cls('y > x').plot).toMatchObject({ type: 'ineq2d', edges: [] });
+    expect((cls('y ≥ x').plot as { edges: string[] }).edges).toHaveLength(1);
+  });
+
+  it('flattens chained inequalities into max() with per-bound edges', () => {
+    const c = cls('4 <= x^2 + y^2 <= 9');
+    const plot = c.plot as { type: string; field: string; edges: string[] };
+    expect(plot.type).toBe('ineq2d');
+    expect(plot.field).toContain('max(');
+    expect(plot.edges).toHaveLength(2);
+
+    // Mixed strictness keeps only the non-strict bound's edge.
+    const mixed = cls('-1 <= y - sin(x) < 1');
+    expect((mixed.plot as { edges: string[] }).edges).toHaveLength(1);
+  });
+
+  it('rejects malformed inequalities', () => {
+    expect(() => cls('1 < y > x')).toThrow(/same way/);
+    expect(() => cls('z < 1')).toThrow(/2D only/);
+    expect(() => cls('ln(w) < 1')).toThrow(/re\(/);
+  });
+
   it('rejects unknown variables and u/v mixing', () => {
     expect(() => cls('y = q')).toThrow(/Unknown variable/);
     expect(() => cls('(x, u, v)')).toThrow(/mix/);

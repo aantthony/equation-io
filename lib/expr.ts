@@ -9,6 +9,8 @@ import { BinaryInfix, BinaryRightInfix, operators, Postfix, Prefix, shunting } f
 import Tokenizer, { type PatternDict, type Token } from './lang/tokenizer.ts';
 import { walk } from './lang/ast.ts';
 
+export type IneqOp = '<' | '<=' | '>' | '>=';
+
 export type Expr =
   | { kind: 'num'; value: number }
   | { kind: 'var'; name: string }
@@ -16,6 +18,8 @@ export type Expr =
   | { kind: 'neg'; a: Expr }
   | { kind: 'call'; name: string; args: Expr[] }
   | { kind: 'eq'; l: Expr; r: Expr }
+  /** An inequality; chains like 0 < y < x nest left: ((0 < y) < x). */
+  | { kind: 'ineq'; op: IneqOp; l: Expr; r: Expr }
   /** A vector literal like (2, 3) or (cos(u), sin(u), v). Top-level only. */
   | { kind: 'vec'; items: Expr[] };
 
@@ -56,6 +60,9 @@ function asExpr(n: PNode): Expr {
 const asBin = (op: '+' | '-' | '*' | '/' | '^') =>
   BinaryInfix<PNode>((a, b) => bin(op)(asExpr(a), asExpr(b)));
 
+const asIneq = (op: IneqOp) =>
+  BinaryInfix<PNode>((a, b): Expr => ({ kind: 'ineq', op, l: asExpr(a), r: asExpr(b) }));
+
 const ops = operators<PNode>({
   EOF: Postfix(a => a),
 
@@ -65,6 +72,13 @@ const ops = operators<PNode>({
   ']': BinaryInfix<PNode>(inner => inner),
 
   '=': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'eq', l: asExpr(a), r: asExpr(b) })),
+
+  '<': asIneq('<'),
+  '<=': asIneq('<='),
+  '≤': asIneq('<='),
+  '>': asIneq('>'),
+  '>=': asIneq('>='),
+  '≥': asIneq('>='),
 
   ',': BinaryInfix<PNode>((a, b) => {
     const items = (n: PNode): Expr[] => (n.kind === 'series' ? n.items : [n]);
@@ -97,6 +111,10 @@ const ops = operators<PNode>({
 // Unary minus and '^' must share a precedence level (both right-associative):
 // '-x^2' parses as -(x^2) and 'x^-1' as x^(-1) without either popping the other.
 ops['[neg]'].prec = ops['^'].prec;
+
+// All comparators share one precedence level so chains like 0 <= y < x
+// associate left: ((0 <= y) < x), the shape classify flattens.
+for (const k of ['<=', '≤', '>', '>=', '≥']) ops[k].prec = ops['<'].prec;
 
 const MULTI_CHAR_OPS = Object.keys(ops).filter(o => o.length > 1);
 
@@ -193,6 +211,7 @@ export function substVars(e: Expr, env: Record<string, Expr>): Expr {
     case 'bin': return { kind: 'bin', op: e.op, a: substVars(e.a, env), b: substVars(e.b, env) };
     case 'call': return { kind: 'call', name: e.name, args: e.args.map(a => substVars(a, env)) };
     case 'eq': return { kind: 'eq', l: substVars(e.l, env), r: substVars(e.r, env) };
+    case 'ineq': return { kind: 'ineq', op: e.op, l: substVars(e.l, env), r: substVars(e.r, env) };
     case 'vec': return { kind: 'vec', items: e.items.map(a => substVars(a, env)) };
   }
 }
@@ -234,6 +253,7 @@ export function evaluate(e: Expr, env: Record<string, number>): number {
       return fn(...e.args.map(a => evaluate(a, env)));
     }
     case 'eq': return evaluate(e.l, env) - evaluate(e.r, env);
+    case 'ineq': throw new Error('Cannot evaluate an inequality.');
     case 'vec': throw new Error('Vector in scalar context.');
   }
 }
@@ -247,6 +267,7 @@ export function freeVars(e: Expr, out = new Set<string>()): Set<string> {
     case 'neg': freeVars(e.a, out); break;
     case 'call': e.args.forEach(a => freeVars(a, out)); break;
     case 'eq': freeVars(e.l, out); freeVars(e.r, out); break;
+    case 'ineq': freeVars(e.l, out); freeVars(e.r, out); break;
     case 'vec': e.items.forEach(a => freeVars(a, out)); break;
   }
   return out;

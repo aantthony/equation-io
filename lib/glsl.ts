@@ -80,6 +80,8 @@ export function toGLSL(e: Expr): string {
     }
     case 'eq':
       return `(${toGLSL(e.l)} - (${toGLSL(e.r)}))`;
+    case 'ineq':
+      throw new Error('Inequality in scalar context.');
     case 'vec':
       throw new Error('Vector in scalar context.');
   }

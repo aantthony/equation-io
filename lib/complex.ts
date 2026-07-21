@@ -21,6 +21,7 @@ export function usesComplex(e: Expr): boolean {
     case 'bin': return usesComplex(e.a) || usesComplex(e.b);
     case 'call': return e.args.some(usesComplex);
     case 'eq': return usesComplex(e.l) || usesComplex(e.r);
+    case 'ineq': return usesComplex(e.l) || usesComplex(e.r);
     case 'vec': return e.items.some(usesComplex);
   }
 }
@@ -53,6 +54,7 @@ export function compileTyped(e: Expr): Typed {
         case 'bin': return scan(n.a) || scan(n.b);
         case 'neg': return scan(n.a);
         case 'eq': return scan(n.l) || scan(n.r);
+        case 'ineq': return scan(n.l) || scan(n.r);
         case 'vec': return n.items.some(scan);
         default: return false;
       }
@@ -117,6 +119,10 @@ export function compileTyped(e: Expr): Typed {
       }
       return { type: 'real', code: `(${l.code} - (${r.code}))` };
     }
+    case 'ineq':
+      // classify compiles each comparison's l - r separately; a nested
+      // inequality here means something like a = (x < 2) or a < (b < c).
+      throw new Error('Unexpected inequality.');
     case 'vec':
       throw new Error('Vector in scalar context.');
   }
