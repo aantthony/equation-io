@@ -718,8 +718,14 @@ function selectionAsText(): string | null {
     if (!r.intersectsNode(line)) continue;
     const lr = document.createRange();
     lr.selectNodeContents(line);
-    if (r.compareBoundaryPoints(Range.START_TO_START, lr) > 0) lr.setStart(r.startContainer, r.startOffset);
-    if (r.compareBoundaryPoints(Range.END_TO_END, lr) < 0) lr.setEnd(r.endContainer, r.endOffset);
+    // Clamp only when the boundary lies inside this line: a boundary at the
+    // container level or in a widget must never widen lr past line contents.
+    if (line.contains(r.startContainer) && r.compareBoundaryPoints(Range.START_TO_START, lr) > 0) {
+      lr.setStart(r.startContainer, r.startOffset);
+    }
+    if (line.contains(r.endContainer) && r.compareBoundaryPoints(Range.END_TO_END, lr) < 0) {
+      lr.setEnd(r.endContainer, r.endOffset);
+    }
     parts.push(lr.toString().replace(/ /g, ' '));
   }
   return parts.length ? parts.join('\n') : null;
