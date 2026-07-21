@@ -11,6 +11,7 @@ import {
 import { type Expr, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { splitStatements } from '../lib/statements.ts';
 import { fullscreenQuad } from './gl.ts';
 import {
   type Curve2D,
@@ -771,7 +772,7 @@ function insertStatements(text: string) {
   const b = posOf(range.endContainer, range.endOffset);
   const [start, end] = a.line < b.line || (a.line === b.line && a.offset <= b.offset) ? [a, b] : [b, a];
 
-  const parts = text.replace(/\r\n?/g, '\n').split(/[\n;]/);
+  const parts = splitStatements(text);
   const before = equations[start.line]?.text.slice(0, start.offset) ?? '';
   const after = equations[end.line]?.text.slice(end.offset) ?? '';
   const first = equations[start.line] ?? addEquation('');
@@ -844,11 +845,12 @@ listEl.addEventListener('input', e => {
     for (let i = equations.length - 1; i >= 0; i--) {
       const eq = equations[i];
       if (!eq.text.includes(';')) continue;
-      const parts = eq.text.split(';').map(s => s.trim());
+      const parts = splitStatements(eq.text).map(s => s.trim());
+      if (parts.length === 1) continue; // ';' inside brackets: not a separator
       if (i === caretLine) {
-        const upto = eq.text.slice(0, caretOff);
-        caretLine += upto.split(';').length - 1;
-        caretOff = parts[Math.min(upto.split(';').length - 1, parts.length - 1)].length;
+        const sepsBefore = splitStatements(eq.text.slice(0, caretOff)).length - 1;
+        caretLine += sepsBefore;
+        caretOff = parts[Math.min(sepsBefore, parts.length - 1)].length;
       }
       eq.text = parts[0];
       parts.slice(1).forEach((p, k) => addEquation(p, i + 1 + k));
@@ -1030,7 +1032,7 @@ function insertExample(text: string) {
   pushUndo(null);
   // Fill the trailing empty line (or append) so existing equations stay.
   // Multi-row examples separate rows with ';' (the same separator as the hash).
-  for (const part of text.split(';')) {
+  for (const part of splitStatements(text)) {
     let eq = equations[equations.length - 1];
     if (!eq || eq.text.trim()) eq = addEquation('');
     eq.text = part.trim();
@@ -1236,8 +1238,7 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 
-const fromHash = decodeURIComponent(location.hash.slice(1))
-  .split(';')
+const fromHash = splitStatements(decodeURIComponent(location.hash.slice(1)))
   .map(s => decodeURIComponent(s))
   .filter(s => s.trim());
 if (fromHash.length) fromHash.forEach(t => addEquation(t));
