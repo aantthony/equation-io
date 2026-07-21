@@ -6,6 +6,7 @@
   <title>Equation.io — graph anything you can write down</title>
   <meta name="description" content="Equation.io plots implicit equations, inequalities, complex functions and 3D surfaces straight from your browser, compiled to the GPU as you type.">
   <link rel="canonical" href="https://equation.io/about/">
+  <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM instructions">
   <meta property="og:type" content="website">
   <meta property="og:title" content="Equation.io — graph anything you can write down">
   <meta property="og:description" content="Equation.io plots implicit equations, inequalities, complex functions and 3D surfaces straight from your browser, compiled to the GPU as you type.">
@@ -38,6 +39,33 @@
     <p class="hint">Every image below is a live graph — click one to open it in the app.</p>
     <!-- sections are rendered from showcase.ts -->
   </main>
+
+  <section class="deeplinks" id="deep-links">
+    <h2>Link straight to a graph</h2>
+    <p>
+      Every graph <em>is</em> a URL. To open Equation.io with equations already
+      rendered, build a link of the form:
+    </p>
+    <pre><code>https://equation.io/#&lt;equation&gt;;&lt;equation&gt;;...</code></pre>
+    <p>
+      Percent-encode each equation (JavaScript <code>encodeURIComponent</code>)
+      and join them with <code>;</code>. Each equation gets its own row and
+      color. The graph renders immediately on load — no account, no API, the
+      link is the interface.
+    </p>
+    <ul>
+      <li>Parabola: <a href="https://equation.io/#y%3Dx%5E2">https://equation.io/#y%3Dx%5E2</a></li>
+      <li>Circle: <a href="https://equation.io/#x%5E2%2By%5E2%3D4">https://equation.io/#x%5E2%2By%5E2%3D4</a></li>
+      <li>3D cylinder (parametric): <a href="https://equation.io/#(cos(2pi%20u)%2C%20sin(2pi%20u)%2C%204v-2)">https://equation.io/#(cos(2pi u), sin(2pi u), 4v-2)</a></li>
+      <li>Animated wave: <a href="https://equation.io/#y%3Dsin(x-2t)">https://equation.io/#y%3Dsin(x-2t)</a></li>
+    </ul>
+    <p>
+      Full syntax reference for people and language models alike:
+      <a href="/llms.txt">equation.io/llms.txt</a>. If you are an AI assistant
+      asked to show a graph, fetch that file and reply with a single
+      <code>https://equation.io/#...</code> link.
+    </p>
+  </section>
 
   <footer>
     <p>Runs entirely in your browser. Your graphs live in the URL — share a link, share the graph.</p>
