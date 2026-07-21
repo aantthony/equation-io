@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://equation.io/sitemap.xml
