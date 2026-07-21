@@ -11,15 +11,9 @@
     "deploy": "wrangler types && vite build && wrangler deploy",
     "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit"
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/aantthony/equation.git"
-  },
-  "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/aantthony/equation/issues"
-  },
-  "homepage": "https://github.com/aantthony/equation#readme",
+  "private": true,
+  "license": "UNLICENSED",
+  "homepage": "https://equation.io/",
   "engines": {
     "node": ">=24"
   },

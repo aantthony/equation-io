@@ -94,4 +94,3 @@ Examples (paste-ready):
 
 - App: https://equation.io/
 - About (feature gallery with screenshots): https://equation.io/about/
-- Source: https://github.com/aantthony/equation
