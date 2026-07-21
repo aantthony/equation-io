@@ -5,6 +5,26 @@
   --muted: #5a6675;
   --line: rgba(0, 0, 0, 0.08);
   --bg: #fafbfc;
+  --surface: #fff;
+  --surface-2: #f1f3f5;
+  --dot: #d5d9de;
+  --addr: #99a1ab;
+  --code: #7a8494;
+  --fine: #9aa3ad;
+}
+
+:root[data-theme="dark"] {
+  --accent: #5a9bf0;
+  --ink: #e6e8ea;
+  --muted: #9aa3b0;
+  --line: rgba(255, 255, 255, 0.1);
+  --bg: #14161a;
+  --surface: #1b1e24;
+  --surface-2: #23272e;
+  --dot: #3a4048;
+  --addr: #7f8894;
+  --code: #8b95a6;
+  --fine: #7f8894;
 }
 html { scroll-behavior: smooth; }
 body {
@@ -43,7 +63,7 @@ a { color: var(--accent); }
   border-radius: 8px;
   transition: background 0.15s;
 }
-.cta:hover { background: #245d96; }
+.cta:hover { filter: brightness(0.9); }
 .cta.big { font-size: 17px; padding: 12px 26px; border-radius: 10px; }
 
 .hero {
@@ -75,27 +95,27 @@ a { color: var(--accent); }
   overflow: hidden;
   border: 1px solid var(--line);
   box-shadow: 0 24px 70px rgba(20, 40, 80, 0.16), 0 4px 14px rgba(20, 40, 80, 0.08);
-  background: #fff;
+  background: var(--surface);
 }
 .browser-frame .chrome {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 9px 12px;
-  background: #f1f3f5;
+  background: var(--surface-2);
   border-bottom: 1px solid var(--line);
 }
 .browser-frame .chrome i {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #d5d9de;
+  background: var(--dot);
 }
 .browser-frame .chrome .addr {
   flex: 1;
   text-align: center;
   font-size: 11.5px;
-  color: #99a1ab;
+  color: var(--addr);
   /* balance the traffic lights so the address reads centered */
   margin-right: 42px;
 }
@@ -132,7 +152,7 @@ a { color: var(--accent); }
 .card {
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
   overflow: hidden;
@@ -151,7 +171,7 @@ a { color: var(--accent); }
   aspect-ratio: 3 / 2;
   object-fit: cover;
   border-bottom: 1px solid var(--line);
-  background: #fff;
+  background: var(--surface);
 }
 .card-body { padding: 12px 14px 14px; }
 .card-body h3 { margin: 0 0 4px; font-size: 15.5px; letter-spacing: -0.01em; }
@@ -159,7 +179,7 @@ a { color: var(--accent); }
 .card-body code {
   display: block;
   font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-  color: #7a8494;
+  color: var(--code);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -182,7 +202,7 @@ a { color: var(--accent); }
   line-height: 1.6;
 }
 .deeplinks pre {
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 12px 16px;
@@ -203,6 +223,6 @@ footer {
   color: var(--muted);
   font-size: 14.5px;
 }
-footer .fine { font-size: 12.5px; color: #9aa3ad; }
+footer .fine { font-size: 12.5px; color: var(--fine); }
 footer .fine a { color: inherit; text-decoration: underline; }
 footer .fine a:hover { color: var(--accent); }

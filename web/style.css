@@ -1,8 +1,63 @@
 * { box-sizing: border-box; }
+
+/* Light theme (default). The dark overrides live in [data-theme="dark"] below;
+   the JS theme switch flips data-theme on <html>, so every panel color moves
+   with the WebGL background in one place. */
+:root {
+  --page-bg: #fff;
+  --panel-bg: rgba(255, 255, 255, 0.92);
+  --panel-border: rgba(0, 0, 0, 0.1);
+  --panel-shadow: rgba(0, 0, 0, 0.12);
+  --text: #222;
+  --dot-border: rgba(0, 0, 0, 0.15);
+  --eq-focus: rgba(0, 90, 200, 0.05);
+  --error-line: #d33;
+  --error: #c0392b;
+  --placeholder: #aaa;
+  --accent: #2d70b3;
+  --bound: #999;
+  --bound-focus: #333;
+  --divider: rgba(0, 0, 0, 0.06);
+  --muted: #888;
+  --muted-hover: #444;
+  --summary: #555;
+  --summary-hover: #000;
+  --ex-text: #333;
+  --ex-hover-bg: rgba(0, 90, 200, 0.08);
+  --ex-code: #999;
+  --ex-code-hover: #667;
+}
+
+:root[data-theme="dark"] {
+  --page-bg: #171a1f;
+  --panel-bg: rgba(24, 27, 33, 0.92);
+  --panel-border: rgba(255, 255, 255, 0.12);
+  --panel-shadow: rgba(0, 0, 0, 0.5);
+  --text: #e6e8ea;
+  --dot-border: rgba(255, 255, 255, 0.22);
+  --eq-focus: rgba(90, 150, 255, 0.14);
+  --error-line: #f0575c;
+  --error: #f0797d;
+  --placeholder: #5f6672;
+  --accent: #5a9bf0;
+  --bound: #767c88;
+  --bound-focus: #cfd3da;
+  --divider: rgba(255, 255, 255, 0.08);
+  --muted: #868d99;
+  --muted-hover: #c3c8d0;
+  --summary: #a8aeba;
+  --summary-hover: #fff;
+  --ex-text: #cfd3da;
+  --ex-hover-bg: rgba(90, 150, 255, 0.14);
+  --ex-code: #767c88;
+  --ex-code-hover: #97a3b8;
+}
+
 html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  background: var(--page-bg);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 #gl, #overlay {
@@ -19,19 +74,39 @@ html, body {
   top: 12px;
   left: 12px;
   width: 300px;
-  background: rgba(255, 255, 255, 0.92);
+  background: var(--panel-bg);
   backdrop-filter: blur(8px);
-  border: 1px solid rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--panel-border);
   border-radius: 10px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 20px var(--panel-shadow);
   padding: 8px;
 }
 
+#theme-toggle {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+}
+#theme-toggle:hover { background: var(--eq-focus); color: var(--muted-hover); }
+
 #equations {
   outline: none;
+  color: var(--text);
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   padding: 2px 0;
-  caret-color: #222;
+  caret-color: var(--text);
 }
 .eq-line {
   position: relative;
@@ -51,12 +126,12 @@ html, body {
   height: 14px;
   border-radius: 50%;
   background: var(--eq-color, #ccc);
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--dot-border);
   cursor: pointer;
 }
 .eq-line.is-def::before { visibility: hidden; }
-.eq-line.focused { background: rgba(0, 90, 200, 0.05); }
-.eq-line.invalid { box-shadow: inset 0 -1px #d33; }
+.eq-line.focused { background: var(--eq-focus); }
+.eq-line.invalid { box-shadow: inset 0 -1px var(--error-line); }
 .eq-line[data-ph]::after {
   /* Overlay the empty line: in-flow it would land after the line's <br>,
      rendering on a second visual line and doubling the row height. */
@@ -64,7 +139,7 @@ html, body {
   position: absolute;
   left: 28px;
   top: 4px;
-  color: #aaa;
+  color: var(--placeholder);
   pointer-events: none;
 }
 .eq-widget {
@@ -82,7 +157,7 @@ html, body {
   min-width: 0;
   height: 16px;
   margin: 0;
-  accent-color: #2d70b3;
+  accent-color: var(--accent);
   cursor: pointer;
 }
 .eq-slider-bound {
@@ -92,12 +167,12 @@ html, body {
   outline: none;
   background: none;
   font: 11px ui-monospace, "SF Mono", Menlo, monospace;
-  color: #999;
+  color: var(--bound);
   text-align: center;
   appearance: textfield;
   -moz-appearance: textfield;
 }
-.eq-slider-bound:focus { color: #333; }
+.eq-slider-bound:focus { color: var(--bound-focus); }
 .eq-slider-bound::-webkit-outer-spin-button,
 .eq-slider-bound::-webkit-inner-spin-button {
   -webkit-appearance: none;
@@ -105,7 +180,7 @@ html, body {
 }
 
 .eq-error {
-  color: #c0392b;
+  color: var(--error);
   font-size: 11px;
   font-family: ui-sans-serif, system-ui, sans-serif;
   padding: 0 6px 3px 28px;
@@ -114,7 +189,7 @@ html, body {
 #panel { position: relative; }
 
 #examples {
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-top: 1px solid var(--divider);
   margin-top: 4px;
   padding: 4px;
   font-size: 12px;
@@ -125,29 +200,29 @@ html, body {
   /* sits on the examples summary row (panel padding + summary padding) */
   bottom: 14px;
   font-size: 12px;
-  color: #888;
+  color: var(--muted);
   text-decoration: none;
 }
-#about-link:hover { color: #444; text-decoration: underline; }
+#about-link:hover { color: var(--muted-hover); text-decoration: underline; }
 #examples[open] ~ #about-link { display: none; }
 #examples > summary {
-  color: #888;
+  color: var(--muted);
   cursor: pointer;
   user-select: none;
   padding: 2px;
 }
-#examples > summary:hover { color: #444; }
+#examples > summary:hover { color: var(--muted-hover); }
 #examples details {
   margin: 2px 0 2px 8px;
 }
 #examples details > summary {
-  color: #555;
+  color: var(--summary);
   cursor: pointer;
   user-select: none;
   padding: 2px;
   font-weight: 500;
 }
-#examples details > summary:hover { color: #000; }
+#examples details > summary:hover { color: var(--summary-hover); }
 .ex-item {
   display: block;
   width: 100%;
@@ -157,16 +232,16 @@ html, body {
   cursor: pointer;
   padding: 3px 4px 3px 14px;
   border-radius: 4px;
-  color: #333;
+  color: var(--ex-text);
   font-size: 12px;
 }
-.ex-item:hover { background: rgba(0, 90, 200, 0.08); }
+.ex-item:hover { background: var(--ex-hover-bg); }
 .ex-item code {
   display: block;
-  color: #999;
+  color: var(--ex-code);
   font: 10.5px ui-monospace, Menlo, monospace;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ex-item:hover code { color: #667; }
+.ex-item:hover code { color: var(--ex-code-hover); }

@@ -11,6 +11,7 @@ import { GLSL_PRELUDE } from '../lib/glsl.ts';
 import { ProgramCache, QUAD_VERT, compileProgram } from './gl.ts';
 import { type Mat4, invert, lookAt, multiply, perspective } from './mat4.ts';
 import { niceSpacing, paramDecls } from './render2d.ts';
+import { glslVec3, theme } from './theme.ts';
 
 export interface Camera3D {
   target: [number, number, number];
@@ -284,7 +285,7 @@ void main() {
 `;
 
 /** The z=0 reference plane with the same adaptive grid as the 2D view. */
-const PLANE_FRAG = `#version 300 es
+const planeFrag = (): string => `#version 300 es
 precision highp float;
 uniform float uMajor;
 uniform float uMinor;
@@ -315,7 +316,7 @@ void main() {
   float a = max(max(minor * 0.18, major * 0.34), axis * 0.6);
   float fade = 1.0 - smoothstep(uBoxR * 0.6, uBoxR, length(p.xy));
   if (a * fade < 0.01) discard;
-  outColor = vec4(vec3(0.25), a * fade);
+  outColor = vec4(${glslVec3(theme.plane)}, a * fade);
   gl_FragDepth = depthOf(p);
 }
 `;
@@ -519,7 +520,7 @@ export class Renderer3D {
     // Reference grid plane at z=0, last and without writing depth so its
     // translucent lines never occlude surfaces.
     const spacing = niceSpacing(boxR / 300, 60);
-    const plane = this.cache.get(QUAD_VERT, PLANE_FRAG);
+    const plane = this.cache.get(QUAD_VERT, planeFrag());
     setCommon(plane);
     gl.uniform1f(gl.getUniformLocation(plane, 'uMajor'), spacing.major);
     gl.uniform1f(gl.getUniformLocation(plane, 'uMinor'), spacing.minor);
