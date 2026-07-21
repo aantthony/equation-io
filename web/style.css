@@ -13,6 +13,7 @@
   --eq-focus: rgba(0, 90, 200, 0.05);
   --error-line: #d33;
   --error: #c0392b;
+  --info: #557;
   --placeholder: #aaa;
   --accent: #2d70b3;
   --bound: #999;
@@ -38,6 +39,7 @@
   --eq-focus: rgba(90, 150, 255, 0.14);
   --error-line: #f0575c;
   --error: #f0797d;
+  --info: #97a3b8;
   --placeholder: #5f6672;
   --accent: #5a9bf0;
   --bound: #767c88;
@@ -181,6 +183,12 @@ html, body {
 
 .eq-error {
   color: var(--error);
+  font-size: 11px;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  padding: 0 6px 3px 28px;
+}
+.eq-info {
+  color: var(--info);
   font-size: 11px;
   font-family: ui-sans-serif, system-ui, sans-serif;
   padding: 0 6px 3px 28px;

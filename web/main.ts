@@ -1,6 +1,7 @@
 import {
   type Definition,
   type Defs,
+  RESERVED,
   animatedConstNames,
   buildDefs,
   constsAnimated,
@@ -9,7 +10,17 @@ import {
   resolveExpr,
   scanDefinition,
 } from '../lib/defs.ts';
-import { type Expr, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import {
+  type DistDef,
+  densityExpr,
+  matchProbability,
+  parseDistribution,
+  probabilityValue,
+  regionExpr,
+  scanDistribution,
+  toProbability,
+} from '../lib/dist.ts';
+import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { splitStatements } from '../lib/statements.ts';
@@ -33,6 +44,8 @@ interface Equation {
   colorIndex: number;
   cls?: Classified;
   error?: string;
+  /** Extra readout under the line (e.g. the numeric value of a P(…) row). */
+  info?: string;
   /** Set when the row is a definition (`a = 2`, `f(x) = …`) rather than a plot. */
   def?: Definition;
   sliderMin?: number;
@@ -40,6 +53,7 @@ interface Equation {
   /** Interleaved non-editable widgets, created lazily and kept across edits. */
   sliderUI?: SliderUI;
   errorEl?: HTMLElement;
+  infoEl?: HTMLElement;
 }
 
 interface SliderUI {
@@ -370,6 +384,7 @@ function recompileAll() {
   for (const eq of equations) {
     eq.cls = undefined;
     eq.error = undefined;
+    eq.info = undefined;
     eq.def = undefined;
     const text = eq.text.trim();
     if (!text) continue;
@@ -424,12 +439,55 @@ function recompileAll() {
     constVals = evalConstEnv(defs, 0);
   } catch { /* a broken definition; bounds using it will report the error */ }
   for (const name of animatedConstNames(defs)) delete constVals[name];
+  const ropts = { consts: constVals, boundConsts: sumBoundNames };
+
+  // Random-variable rows (`X ~ Normal(0, a)`) resolve first so P(…) rows can
+  // reference them regardless of row order.
+  const dists = new Map<string, DistDef>();
+  const distRows = new Set<Equation>();
   for (const eq of equations) {
     if (eq.def) continue;
     const text = eq.text.trim();
     if (!text) continue;
+    const scan = scanDistribution(text);
+    if (!scan) continue;
+    distRows.add(eq);
     try {
-      let parsed = resolveExpr(parseExpr(text, fnNames), getFn, { consts: constVals, boundConsts: sumBoundNames });
+      if (RESERVED.has(scan.name) || builtinFn(scan.name)) {
+        throw new Error(`Cannot use ${scan.name} as a random variable name.`);
+      }
+      if (dists.has(scan.name) || defs.consts.has(scan.name) || defs.fns.has(scan.name) || defs.fields.has(scan.name)) {
+        throw new Error(`${scan.name} is already defined.`);
+      }
+      const d = parseDistribution(scan.name, scan.rhs, fnNames);
+      d.mean = resolveExpr(d.mean, getFn, ropts);
+      d.sd = resolveExpr(d.sd, getFn, ropts);
+      dists.set(scan.name, d);
+      eq.cls = classify(densityExpr(d), constNames);
+    } catch (e) {
+      eq.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  for (const eq of equations) {
+    if (eq.def || distRows.has(eq)) continue;
+    const text = eq.text.trim();
+    if (!text) continue;
+    try {
+      const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(text);
+      if (probBody !== null) {
+        if (!dists.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn, ropts), dists);
+        eq.cls = classify(regionExpr(p), constNames);
+        try {
+          const value = probabilityValue(p, evalConstEnv(defs, 0));
+          if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
+        } catch {
+          // Not numerically computable right now (e.g. animated); no readout.
+        }
+        continue;
+      }
+      let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
       // Coordinate fields substitute in as functions of the plane, so
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
@@ -707,6 +765,16 @@ function reconcile() {
       range.step = sumBoundNames.has(eq.def!.name) ? '1' : String((eq.sliderMax - eq.sliderMin) / 400);
       range.value = String(v);
       wanted.push(eq.sliderUI.box);
+    }
+    if (eq.info) {
+      eq.infoEl ??= (() => {
+        const el = document.createElement('div');
+        el.className = 'eq-widget eq-info';
+        el.contentEditable = 'false';
+        return el;
+      })();
+      eq.infoEl.textContent = eq.info;
+      wanted.push(eq.infoEl);
     }
     if (eq.error) {
       eq.errorEl ??= (() => {
@@ -1085,6 +1153,11 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['log-polar', 'rho = ln(x^2 + y^2)/2; theta = atan2(y, x)'],
     ['hyperbolic grid', 'p = x y; q = (x^2 - y^2)/2'],
     ['spinning polar', 'r = sqrt(x^2 + y^2); theta = atan2(y, x) + t/4'],
+  ]],
+  ['probability', [
+    ['normal density', 'X ~ Normal(0, 1)'],
+    ['P(X < b)', 'a = 1; b = 0.5; X ~ Normal(0, a); P(X < b)'],
+    ['between two bounds', 'X ~ Normal(0, 1); P(-1 < X < 2)'],
   ]],
   ['regions', [
     ['open half-plane', 'y < x/2 + 1'],
