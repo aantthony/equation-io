@@ -1,0 +1,37 @@
+{
+  "pan-2d": {
+    "compilesAfterLoad": 7,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 8.33,
+    "p95FrameMs": 8.6,
+    "longFrames": 0
+  },
+  "zoom-2d": {
+    "compilesAfterLoad": 6,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 8.33,
+    "p95FrameMs": 8.5,
+    "longFrames": 0
+  },
+  "slider-drag": {
+    "compilesAfterLoad": 6,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 10.37,
+    "p95FrameMs": 16.7,
+    "longFrames": 0
+  },
+  "orbit-3d": {
+    "compilesAfterLoad": 5,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 35.62,
+    "p95FrameMs": 100,
+    "longFrames": 40
+  },
+  "animated-t": {
+    "compilesAfterLoad": 6,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 8.33,
+    "p95FrameMs": 8.4,
+    "longFrames": 0
+  }
+}

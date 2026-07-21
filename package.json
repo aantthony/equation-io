@@ -11,7 +11,10 @@
     "icons": "node scripts/icons.ts",
     "deploy": "wrangler types && vite build && wrangler deploy",
     "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit",
-    "test:editor": "node scripts/editor-test.ts"
+    "test:editor": "node scripts/editor-test.ts",
+    "bench": "vitest bench --run",
+    "perf": "node scripts/perf.ts",
+    "perf:update": "node scripts/perf.ts --update"
   },
   "private": true,
   "license": "UNLICENSED",
