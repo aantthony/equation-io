@@ -31,6 +31,14 @@ export interface Ineq2D extends Curve2D {
   edges: string[];
 }
 
+export interface VField2D {
+  /** GLSL expressions for the components (Vx, Vy) in terms of floats x, y. */
+  fx: string;
+  fy: string;
+  color: [number, number, number];
+  params?: string[];
+}
+
 /** Pick a "nice" grid spacing (1, 2, or 5 × 10^k) at least minPx pixels apart. */
 export function niceSpacing(upp: number, minPx: number): { major: number; minor: number } {
   const target = upp * minPx;
@@ -222,6 +230,82 @@ void main() {
 `;
 }
 
+function vfieldFrag(fx: string, fy: string, params?: string[]): string {
+  return `#version 300 es
+precision highp float;
+uniform vec2 uCenter;
+uniform float uUpp;
+uniform vec2 uRes;
+uniform vec3 uColor;
+uniform float t;
+${paramDecls(params)}
+out vec4 outColor;
+${GLSL_PRELUDE}
+vec2 V(float x, float y) { return vec2(${fx}, ${fy}); }
+
+// White noise on a small screen-space grid; the convolution below smears it
+// along streamlines so coherent streaks appear in the flow direction.
+float vfNoise(vec2 spx) {
+  return fract(sin(dot(floor(spx / 2.0), vec2(127.1, 311.7))) * 43758.5453);
+}
+
+const int   N      = 24;    // integration steps each direction
+const float STEP   = 1.6;   // step length in pixels
+const float LAMBDA = 34.0;  // drift-wave length in pixels
+const float OMEGA  = 4.0;   // drift-wave angular speed (rad/s)
+
+// Kernel weight at signed arc length s px: a Hann window times a traveling
+// wave. The +OMEGA*t phase pulls the peak upstream over time, so the visible
+// pattern advects downstream, in the direction the field points.
+float weight(float s) {
+  float hann = 0.5 + 0.5 * cos(3.14159265 * s / (float(N) * STEP));
+  return hann * (0.62 + 0.38 * cos(6.2831853 * s / LAMBDA + OMEGA * t));
+}
+
+void main() {
+  vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
+  vec2 v0 = V(p.x, p.y);
+  if (any(isnan(v0)) || any(isinf(v0))) discard;
+
+  float w0 = weight(0.0);
+  float sum = w0 * vfNoise(gl_FragCoord.xy);
+  float wsum = w0;
+  float travel = 0.0;
+  float h = STEP * uUpp;
+
+  // Line integral convolution: midpoint-rule streamline integration forward
+  // and backward from p, accumulating noise along the path.
+  for (int side = 0; side < 2; side++) {
+    float sgn = side == 0 ? 1.0 : -1.0;
+    vec2 q = p;
+    for (int i = 1; i <= N; i++) {
+      vec2 v = V(q.x, q.y);
+      float m = length(v);
+      if (isnan(m) || isinf(m) || m < 1e-24) break;
+      vec2 d = (sgn / m) * v;
+      vec2 qm = q + 0.5 * h * d;
+      vec2 vm = V(qm.x, qm.y);
+      float mm = length(vm);
+      if (!isnan(mm) && !isinf(mm) && mm > 1e-24) d = (sgn / mm) * vm;
+      q += h * d;
+      float w = weight(sgn * float(i) * STEP);
+      sum += w * vfNoise((q - uCenter) / uUpp + 0.5 * uRes);
+      wsum += w;
+      travel += STEP;
+    }
+  }
+
+  // Contrast-stretch the low-variance LIC mean; fade where streaks were cut
+  // short (critical points, domain edges) rather than showing raw noise.
+  float v = sum / max(wsum, 1e-6);
+  float a = clamp(0.5 + (v - 0.5) * 6.0, 0.0, 1.0);
+  a *= 0.45 * smoothstep(0.1, 0.55, travel / (2.0 * float(N) * STEP));
+  if (a < 0.004) discard;
+  outColor = vec4(uColor, a);
+}
+`;
+}
+
 function ineqFrag(field: string, edges: string[], params?: string[]): string {
   // Each non-strict comparison draws its boundary with the same two-scale
   // distance estimate as curveFrag, gated to the region's edge so a chain's
@@ -282,6 +366,7 @@ export class Renderer2D {
     scalars: Curve2D[] = [],
     complexes: Curve2D[] = [],
     ineqs: Ineq2D[] = [],
+    vfields: VField2D[] = [],
     time = 0,
     env: Record<string, number> = {},
     gridSpecs?: GridSpec[],
@@ -323,10 +408,10 @@ export class Renderer2D {
       console.error(e);
     }
 
-    const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) => {
+    const drawProgram = (frag: string, color: [number, number, number], params?: string[]) => {
       let prog: WebGLProgram;
       try {
-        prog = this.cache.get(QUAD_VERT, frag(item.field, item.params));
+        prog = this.cache.get(QUAD_VERT, frag);
       } catch (e) {
         console.error(e);
         return;
@@ -335,16 +420,19 @@ export class Renderer2D {
       gl.uniform2f(gl.getUniformLocation(prog, 'uCenter'), view.cx, view.cy);
       gl.uniform1f(gl.getUniformLocation(prog, 'uUpp'), view.upp);
       gl.uniform2f(gl.getUniformLocation(prog, 'uRes'), w, h);
-      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...item.color);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...color);
       const tLoc = gl.getUniformLocation(prog, 't');
       if (tLoc) gl.uniform1f(tLoc, time);
-      for (const p of item.params ?? []) {
+      for (const p of params ?? []) {
         const loc = gl.getUniformLocation(prog, 'u_' + p);
         if (loc) gl.uniform1f(loc, env[p] ?? 0);
       }
       this.quad.draw();
     };
+    const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) =>
+      drawProgram(frag(item.field, item.params), item.color, item.params);
 
+    for (const f of vfields) drawProgram(vfieldFrag(f.fx, f.fy, f.params), f.color, f.params);
     for (const q of ineqs) drawField(q, (f, ps) => ineqFrag(f, q.edges, ps));
     for (const s of scalars) drawField(s, scalarFrag);
     for (const c of complexes) drawField(c, complexFrag);

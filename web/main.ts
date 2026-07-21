@@ -8,7 +8,7 @@ import {
   resolveExpr,
   scanDefinition,
 } from '../lib/defs.ts';
-import { evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { type Expr, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { fullscreenQuad } from './gl.ts';
@@ -18,6 +18,7 @@ import {
   type Ineq2D,
   type Overlay2D,
   Renderer2D,
+  type VField2D,
   type View2D,
   drawLabels2D,
   niceSpacing,
@@ -52,6 +53,8 @@ function cssColor([r, g, b]: [number, number, number]): string {
 }
 
 const CURVE_SAMPLES = 400;
+/** RK4 steps in each direction for a dropped integral curve. */
+const ODE_STEPS = 1400;
 
 // --- state ---
 
@@ -63,6 +66,8 @@ let defsAnimated = false;
 let constEnv: Record<string, number> = {};
 /** Compiled coordinate fields; non-empty replaces the Cartesian grid. */
 let gridFields: GridField[] = [];
+/** Click-dropped seeds for integral curves through vector fields / ODEs. */
+const drops: Array<{ x: number; y: number }> = [];
 
 const view: View2D = { cx: 0, cy: 0, upp: 0.01 };
 const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, phi: Math.PI / 5.5 };
@@ -140,6 +145,57 @@ function render() {
     }
     return out;
   };
+  // RK4 streamline of the normalized field through (x0, y0), both directions.
+  // Normalizing makes it a direction field: uniform arc-length steps, and the
+  // same trajectories (dy/dx = f slope fields integrate as (1, f) normalized).
+  const integralCurve = (comps: [Expr, Expr], x0: number, y0: number, time: number): number[] => {
+    const env: Record<string, number> = { ...constEnv, t: time, x: 0, y: 0 };
+    const f = (x: number, y: number): [number, number] | null => {
+      env.x = x;
+      env.y = y;
+      let vx: number, vy: number;
+      try {
+        vx = evaluate(comps[0], env);
+        vy = evaluate(comps[1], env);
+      } catch {
+        return null;
+      }
+      const m = Math.hypot(vx, vy);
+      if (!isFinite(m) || m < 1e-12) return null;
+      return [vx / m, vy / m];
+    };
+    const h = 2.5 * view.upp; // ~2.5 px of arc per step
+    const boundW = 1.5 * gl.drawingBufferWidth * view.upp;
+    const boundH = 1.5 * gl.drawingBufferHeight * view.upp;
+    const side = (sgn: number): number[] => {
+      const out: number[] = [];
+      let x = x0;
+      let y = y0;
+      for (let i = 0; i < ODE_STEPS; i++) {
+        const k1 = f(x, y);
+        if (!k1) break;
+        const k2 = f(x + sgn * (h / 2) * k1[0], y + sgn * (h / 2) * k1[1]);
+        if (!k2) break;
+        const k3 = f(x + sgn * (h / 2) * k2[0], y + sgn * (h / 2) * k2[1]);
+        if (!k3) break;
+        const k4 = f(x + sgn * h * k3[0], y + sgn * h * k3[1]);
+        if (!k4) break;
+        x += sgn * (h / 6) * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]);
+        y += sgn * (h / 6) * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]);
+        if (!isFinite(x) || !isFinite(y)) break;
+        out.push(x, y);
+        if (Math.abs(x - view.cx) > boundW || Math.abs(y - view.cy) > boundH) break;
+      }
+      return out;
+    };
+    const back = side(-1);
+    const pts: number[] = [];
+    for (let i = back.length - 2; i >= 0; i -= 2) pts.push(back[i], back[i + 1]);
+    pts.push(x0, y0);
+    pts.push(...side(1));
+    return pts;
+  };
+
   const samplePoint = (eq: Equation): number[] | null => {
     const { coords } = eq.cls!.plot as { coords: import('../lib/expr.ts').Expr[] };
     try {
@@ -166,7 +222,8 @@ function render() {
         case 'scalar2d':
         case 'complex2d':
         case 'ineq2d':
-          break; // density/complex/region fields have no 3D locus; skipped in 3D scenes
+        case 'vfield2d':
+          break; // density/complex/region/flow fields have no 3D locus; skipped in 3D scenes
         case 'psurface':
           scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
@@ -195,6 +252,7 @@ function render() {
     const scalars: Curve2D[] = [];
     const complexes: Curve2D[] = [];
     const ineqs: Ineq2D[] = [];
+    const vfields: VField2D[] = [];
     const extras: Overlay2D = { points: [], polylines: [] };
     for (const eq of active) {
       const color = theme.palette[eq.colorIndex];
@@ -205,6 +263,14 @@ function render() {
         case 'ineq2d': ineqs.push({ field: plot.field, edges: plot.edges, color, params }); break;
         case 'scalar2d': scalars.push({ field: plot.field, color, params }); break;
         case 'complex2d': complexes.push({ field: plot.field, color, params }); break;
+        case 'vfield2d': {
+          vfields.push({ fx: plot.fx, fy: plot.fy, color, params });
+          for (const d of drops) {
+            extras.polylines.push({ pts: integralCurve(plot.comps, d.x, d.y, time), color: cssColor(color) });
+            extras.points.push({ x: d.x, y: d.y, color: cssColor(color) });
+          }
+          break;
+        }
         case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
         case 'point': {
           const p = samplePoint(eq);
@@ -231,7 +297,7 @@ function render() {
         return { glsl: f.glsl, gradGlsl: f.gradGlsl, params: f.params, major: sp.major, minor: sp.minor };
       });
     }
-    r2d.render(view, curves, scalars, complexes, ineqs, time, constEnv, gridSpecs);
+    r2d.render(view, curves, scalars, complexes, ineqs, vfields, time, constEnv, gridSpecs);
     drawLabels2D(overlayCtx, view, dpr, extras, !gridFields.length);
   }
 
@@ -876,6 +942,17 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['interference', 'sin(x)cos(y)'],
     ['ripples', 'sin(x^2 + y^2 - 4t)/2'],
   ]],
+  ['vector fields', [
+    ['rotation', '(-y, x)'],
+    ['saddle', '(x, -y)'],
+    ['shear + swirl', '(sin(y), sin(x))'],
+  ]],
+  ['odes (click to trace)', [
+    ['slope field', "y' = x - y"],
+    ['logistic growth', "dy/dx = y(1 - y/4)"],
+    ['pendulum phase portrait', "(x', y') = (y, -sin(x))"],
+    ['van der pol', "(x', y') = (y, (1 - x^2)y - x)"],
+  ]],
   ['complex', [
     ['point charge', 'ln(w)'],
     ['dipole', 'ln(w-2) - ln(w+2)'],
@@ -968,6 +1045,9 @@ let lastY = 0;
 let panning = false;
 const pointers = new Map<number, { x: number; y: number }>();
 let pinchDist = 0;
+let downX = 0;
+let downY = 0;
+let dragMoved = false;
 
 /** Zoom by `factor` keeping the math point under (clientX, clientY) fixed. */
 function zoomAt(clientX: number, clientY: number, factor: number) {
@@ -997,9 +1077,13 @@ canvas.addEventListener('pointerdown', e => {
     panning = e.button === 2 || e.shiftKey;
     lastX = e.clientX;
     lastY = e.clientY;
+    downX = e.clientX;
+    downY = e.clientY;
+    dragMoved = false;
   } else if (pointers.size === 2) {
     // Second finger: switch from drag to pinch, anchored at the midpoint.
     dragging = false;
+    dragMoved = true; // a pinch is never a seed-dropping click
     const [a, b] = [...pointers.values()];
     pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
     lastX = (a.x + b.x) / 2;
@@ -1033,6 +1117,7 @@ canvas.addEventListener('pointermove', e => {
     return;
   }
   if (!dragging) return;
+  if (Math.hypot(e.clientX - downX, e.clientY - downY) > 3) dragMoved = true;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
   lastX = e.clientX;
@@ -1069,8 +1154,24 @@ const endPointer = (e: PointerEvent) => {
     dragging = false;
   }
 };
-canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointerup', e => {
+  endPointer(e);
+  // A motionless click in 2D drops an integral-curve seed on vector fields.
+  if (dragMoved || pointers.size || mode !== '2d') return;
+  if (!equations.some(q => !q.error && q.cls?.plot.type === 'vfield2d')) return;
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const px = (e.clientX - rect.left - rect.width / 2) * dpr;
+  const py = (rect.height / 2 - (e.clientY - rect.top)) * dpr;
+  drops.push({ x: view.cx + px * view.upp, y: view.cy + py * view.upp });
+  requestRender();
+});
 canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('dblclick', () => {
+  if (!drops.length) return;
+  drops.length = 0;
+  requestRender();
+});
 
 canvas.addEventListener('wheel', e => {
   e.preventDefault();

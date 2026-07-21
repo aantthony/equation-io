@@ -7,6 +7,9 @@
  * - bare scalar in x,y → 2D scalar field (density)
  * - vector literal with no free vars → a point
  * - vector with free u (and v) → parametric curve (u) / surface (u,v), u,v ∈ (0,1)
+ * - vector with free x/y → 2D vector field, drawn as animated streamlines (LIC)
+ * - ODEs: dy/dx = f and y' = f plot the direction field (1, f); a system
+ *   (x', y') = (P, Q) plots the phase-plane field (P, Q) — all as vector fields
  * - t is always allowed and means "animated": bound to seconds since start
  */
 import { compileTyped, usesComplex } from './complex.ts';
@@ -28,6 +31,9 @@ export type Plot =
   /** Complex-valued f(x+iy): level curves of im(f) (field lines) and re(f) (equipotentials). */
   | { type: 'complex2d'; field: string }
   | { type: 'point'; dim: 2 | 3; coords: Expr[] }
+  /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
+   *  comps keep the symbolic components for CPU integration (integral curves). */
+  | { type: 'vfield2d'; fx: string; fy: string; comps: [Expr, Expr] }
   | { type: 'pcurve'; dim: 2 | 3; comps: Expr[] }
   /** du/dv: symbolic tangents ∂P/∂u, ∂P/∂v for lighting; absent → finite differences. */
   | { type: 'psurface'; comps: [string, string, string]; du?: [string, string, string]; dv?: [string, string, string] };
@@ -57,7 +63,35 @@ export interface Classified {
 const SPACE_VARS = new Set(['x', 'y', 'z']);
 const PARAM_VARS = new Set(['u', 'v']);
 
+const isVarNamed = (e: Expr, name: string): boolean => e.kind === 'var' && e.name === name;
+
+/**
+ * Match an equation that spells an ODE — dy/dx = f, y' = f, or a system
+ * (x', y') = (P, Q) — and return its direction field as a tuple.
+ */
+function matchODE(e: Expr): (Expr & { kind: 'vec' }) | null {
+  if (e.kind !== 'eq') return null;
+  const { l, r } = e;
+  const one: Expr = { kind: 'num', value: 1 };
+  const vec = (items: Expr[]): Expr & { kind: 'vec' } => ({ kind: 'vec', items });
+  if (l.kind === 'bin' && l.op === '/') {
+    if (isVarNamed(l.a, 'dy') && isVarNamed(l.b, 'dx')) return vec([one, r]);
+    if (isVarNamed(l.a, 'dx') && isVarNamed(l.b, 'dy')) return vec([r, one]);
+  }
+  if (isVarNamed(l, "y'")) return vec([one, r]);
+  if (l.kind === 'vec' && l.items.length === 2
+    && isVarNamed(l.items[0], "x'") && isVarNamed(l.items[1], "y'")) {
+    if (r.kind !== 'vec' || r.items.length !== 2) {
+      throw new Error("A system needs two components on the right: (x', y') = (P, Q).");
+    }
+    return r;
+  }
+  return null;
+}
+
 export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): Classified {
+  const ode = matchODE(expr);
+  if (ode) expr = ode;
   const vars = freeVars(expr);
   vars.delete('i');
   if (vars.delete('w')) { vars.add('x'); vars.add('y'); }
@@ -71,6 +105,7 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   params.sort();
   for (const v of vars) {
     if (!SPACE_VARS.has(v) && !PARAM_VARS.has(v) && v !== 't') {
+      if (v.endsWith("'")) throw new Error(`${v} can only appear on the left of an ODE like y' = x - y.`);
       if (v === 'd' || /^d[A-Za-z]$/.test(v)) throw new Error('Write derivatives as d/dx (…).');
       throw new Error(`Unknown variable: ${v}. Define "${v} = 1" to make a slider.`);
     }
@@ -85,7 +120,8 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
 
   const done = (plot: Plot): Classified => ({
     plot,
-    animated,
+    // Vector-field streamlines drift continuously, so they always animate.
+    animated: animated || plot.type === 'vfield2d',
     needs3D: plot.type === 'implicit3d' || plot.type === 'psurface'
       || ((plot.type === 'point' || plot.type === 'pcurve') && plot.dim === 3),
     params,
@@ -100,6 +136,18 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   if (expr.kind === 'vec') {
     if (usesComplex(expr)) throw new Error('Complex values are not supported in vectors.');
     const dim = expr.items.length as 2 | 3;
+    if (hasSpace || ode) {
+      if (hasParam) throw new Error('Vector fields cannot use u or v.');
+      if (vars.has('z')) throw new Error('Vector fields are 2D only (components in x, y).');
+      if (dim !== 2) throw new Error('A vector field needs exactly 2 components.');
+      const [a, b] = (g as Expr & { kind: 'vec' }).items;
+      return done({
+        type: 'vfield2d',
+        fx: toGLSL(a),
+        fy: toGLSL(b),
+        comps: [expr.items[0], expr.items[1]],
+      });
+    }
     if (vars.has('v') && !vars.has('u')) throw new Error('Parametric surfaces use u (and v).');
     if (vars.has('u') && vars.has('v')) {
       if (dim !== 3) throw new Error('A parametric surface needs 3 components.');
