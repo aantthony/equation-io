@@ -110,12 +110,25 @@ html, body {
 .eq-row:hover .eq-remove { visibility: visible; }
 .eq-remove:hover { color: #d33; }
 
+#panel { position: relative; }
+
 #examples {
   border-top: 1px solid rgba(0, 0, 0, 0.06);
   margin-top: 4px;
   padding: 4px;
   font-size: 12px;
 }
+#about-link {
+  position: absolute;
+  right: 14px;
+  /* sits on the examples summary row (panel padding + summary padding) */
+  bottom: 14px;
+  font-size: 12px;
+  color: #888;
+  text-decoration: none;
+}
+#about-link:hover { color: #444; text-decoration: underline; }
+#examples[open] ~ #about-link { display: none; }
 #examples > summary {
   color: #888;
   cursor: pointer;

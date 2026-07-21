@@ -1,0 +1,177 @@
+* { box-sizing: border-box; }
+:root {
+  --accent: #2d70b3;
+  --ink: #1a2230;
+  --muted: #5a6675;
+  --line: rgba(0, 0, 0, 0.08);
+  --bg: #fafbfc;
+}
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+a { color: var(--accent); }
+
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 18px 24px;
+}
+.brand {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.brand span { color: var(--accent); }
+
+.cta {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.cta:hover { background: #245d96; }
+.cta.big { font-size: 17px; padding: 12px 26px; border-radius: 10px; }
+
+.hero {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 40px 24px 8px;
+  text-align: center;
+}
+.hero h1 {
+  font-size: clamp(32px, 5.5vw, 52px);
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+  margin: 0 auto 14px;
+  max-width: 17em;
+}
+.hero h1 em { font-style: normal; color: var(--accent); }
+.tagline {
+  font-size: 18px;
+  color: var(--muted);
+  max-width: 42em;
+  margin: 0 auto 26px;
+}
+.hero-actions { margin-bottom: 44px; }
+
+.browser-frame {
+  margin: 0 auto;
+  max-width: 960px;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  box-shadow: 0 24px 70px rgba(20, 40, 80, 0.16), 0 4px 14px rgba(20, 40, 80, 0.08);
+  background: #fff;
+}
+.browser-frame .chrome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  background: #f1f3f5;
+  border-bottom: 1px solid var(--line);
+}
+.browser-frame .chrome i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #d5d9de;
+}
+.browser-frame .chrome .addr {
+  flex: 1;
+  text-align: center;
+  font-size: 11.5px;
+  color: #99a1ab;
+  /* balance the traffic lights so the address reads centered */
+  margin-right: 42px;
+}
+.browser-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+#gallery {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 26px 24px 30px;
+}
+.hint {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14.5px;
+  margin: 26px 0 6px;
+}
+
+.group { margin-top: 40px; }
+.group h2 {
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  margin: 0 0 14px 4px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  text-decoration: none;
+  color: inherit;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(20, 40, 80, 0.13);
+}
+.card img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 3 / 2;
+  object-fit: cover;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+.card-body { padding: 12px 14px 14px; }
+.card-body h3 { margin: 0 0 4px; font-size: 15.5px; letter-spacing: -0.01em; }
+.card-body p { margin: 0 0 8px; font-size: 13.5px; color: var(--muted); }
+.card-body code {
+  display: block;
+  font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  color: #7a8494;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card:hover .card-body code { color: var(--accent); }
+
+footer {
+  border-top: 1px solid var(--line);
+  margin-top: 30px;
+  padding: 30px 24px 40px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 14.5px;
+}
+footer .fine { font-size: 12.5px; color: #9aa3ad; }

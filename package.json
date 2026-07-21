@@ -7,6 +7,7 @@
     "coverage": "vitest run --coverage",
     "web": "vite",
     "web:build": "vite build",
+    "shots": "node scripts/screenshots.ts",
     "deploy": "wrangler types && vite build && wrangler deploy",
     "typecheck": "wrangler types && tsc --noEmit && tsc -p web --noEmit && tsc -p worker --noEmit"
   },
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.45.1",
     "@types/node": "^24.0.0",
+    "playwright": "^1.61.1",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.10",
