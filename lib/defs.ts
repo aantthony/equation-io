@@ -25,9 +25,17 @@ export interface FnDef {
 export interface Defs {
   consts: Map<string, Expr>;
   fns: Map<string, FnDef>;
+  /**
+   * Coordinate fields: definitions like `r = sqrt(x^2+y^2)` whose value
+   * depends on the plane. Fully resolved to free vars in {x, y, t, consts}.
+   * Each field is a grid family (its level sets) and substitutes into plots,
+   * so `theta = atan2(y,x); r = 1 + cos(theta)` draws a polar grid and a
+   * cardioid.
+   */
+  fields: Map<string, Expr>;
 }
 
-export const emptyDefs = (): Defs => ({ consts: new Map(), fns: new Map() });
+export const emptyDefs = (): Defs => ({ consts: new Map(), fns: new Map(), fields: new Map() });
 
 /** Names with built-in meaning that definitions may not shadow. */
 export const RESERVED = new Set(['x', 'y', 'z', 'u', 'v', 't', 'w', 'i', 'd', 'e', 'pi', 'tau']);
@@ -203,8 +211,76 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
     }
   }
 
+  // A definition whose value depends on the plane — x or y, directly or via
+  // another such definition — is a coordinate field, not a constant.
+  const fieldNames = new Set<string>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [name, e] of defs.consts) {
+      if (fieldNames.has(name)) continue;
+      for (const fv of freeVars(e)) {
+        if (fv === 'x' || fv === 'y' || fieldNames.has(fv)) {
+          fieldNames.add(name);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  const constNames = new Set(raw.filter(d => d.kind === 'const' && !fieldNames.has(d.name)).map(d => d.name));
+
+  const pendingFields = new Map<string, Expr>();
+  for (const [name, e] of defs.consts) {
+    if (fieldNames.has(name)) pendingFields.set(name, e);
+  }
+  for (const name of pendingFields.keys()) defs.consts.delete(name);
+
+  // Resolve field-to-field references so each field is a closed expression
+  // in x, y, t, and constants.
+  const fieldVisiting = new Set<string>();
+  const resolveField = (name: string): Expr => {
+    const hit = defs.fields.get(name);
+    if (hit) return hit;
+    if (fieldVisiting.has(name)) throw new Error(`${name} is defined in terms of itself.`);
+    fieldVisiting.add(name);
+    try {
+      let e = pendingFields.get(name)!;
+      const sub: Record<string, Expr> = {};
+      for (const fv of freeVars(e)) {
+        if (pendingFields.has(fv)) sub[fv] = resolveField(fv);
+      }
+      if (Object.keys(sub).length) e = substVars(e, sub);
+      for (const fv of freeVars(e)) {
+        if (fv !== 'x' && fv !== 'y' && fv !== 't' && !constNames.has(fv)) {
+          throw new Error(`${name} defines a coordinate (it uses x/y), so it may only use x, y, t, and constants (found ${fv}).`);
+        }
+      }
+      // Trial-evaluate to surface unsupported calls (re, im, …) now.
+      const env: Record<string, number> = { x: 0.7, y: 0.4, t: 0 };
+      for (const fv of freeVars(e)) env[fv] ??= 1;
+      evaluate(e, env);
+      defs.fields.set(name, e);
+      return e;
+    } finally {
+      fieldVisiting.delete(name);
+    }
+  };
+  for (const name of pendingFields.keys()) {
+    try {
+      resolveField(name);
+    } catch (e) {
+      errors.set(name, msg(e));
+    }
+  }
+  // Grid families draw in definition order, not dependency-resolution order.
+  const orderedFields = new Map<string, Expr>();
+  for (const name of pendingFields.keys()) {
+    const e = defs.fields.get(name);
+    if (e) orderedFields.set(name, e);
+  }
+  defs.fields = orderedFields;
+
   // Constants may only depend on other constants and time.
-  const constNames = new Set(raw.filter(d => d.kind === 'const').map(d => d.name));
   for (const [name, e] of defs.consts) {
     for (const fv of freeVars(e)) {
       if (fv !== 't' && !constNames.has(fv)) {

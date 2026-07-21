@@ -8,10 +8,20 @@ import {
   resolveExpr,
   scanDefinition,
 } from '../lib/defs.ts';
-import { evaluate, parseExpr } from '../lib/expr.ts';
+import { evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { fullscreenQuad } from './gl.ts';
-import { type Curve2D, type Ineq2D, type Overlay2D, Renderer2D, type View2D, drawLabels2D } from './render2d.ts';
+import {
+  type Curve2D,
+  type GridSpec,
+  type Ineq2D,
+  type Overlay2D,
+  Renderer2D,
+  type View2D,
+  drawLabels2D,
+  niceSpacing,
+} from './render2d.ts';
 import { type Camera3D, Renderer3D, type Scene3D, drawLabels3D } from './render3d.ts';
 
 const PALETTE: [number, number, number][] = [
@@ -51,6 +61,8 @@ let mode: '2d' | '3d' = '2d';
 let defs: Defs = emptyDefs();
 let defsAnimated = false;
 let constEnv: Record<string, number> = {};
+/** Compiled coordinate fields; non-empty replaces the Cartesian grid. */
+let gridFields: GridField[] = [];
 
 const view: View2D = { cx: 0, cy: 0, upp: 0.01 };
 const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, phi: Math.PI / 5.5 };
@@ -201,11 +213,31 @@ function render() {
         }
       }
     }
-    r2d.render(view, curves, scalars, complexes, ineqs, time, constEnv);
-    drawLabels2D(overlayCtx, view, dpr, extras);
+    // Spacing per grid family: sample |∇c| around the view to convert the
+    // target pixel gap into coordinate units (π-based for angles).
+    let gridSpecs: GridSpec[] | undefined;
+    if (gridFields.length) {
+      const halfW = (gl.drawingBufferWidth / 2) * view.upp;
+      const halfH = (gl.drawingBufferHeight / 2) * view.upp;
+      const pts: Array<[number, number]> = [
+        [view.cx, view.cy],
+        [view.cx - halfW / 2, view.cy], [view.cx + halfW / 2, view.cy],
+        [view.cx, view.cy - halfH / 2], [view.cx, view.cy + halfH / 2],
+      ];
+      const env = { ...constEnv, t: time };
+      gridSpecs = gridFields.map(f => {
+        const cupp = sampleGradMag(f, pts, env, view.upp * 4) * view.upp;
+        const sp = f.angular ? angularSpacing(cupp, 90) : niceSpacing(cupp, 90);
+        return { glsl: f.glsl, gradGlsl: f.gradGlsl, params: f.params, major: sp.major, minor: sp.minor };
+      });
+    }
+    r2d.render(view, curves, scalars, complexes, ineqs, time, constEnv, gridSpecs);
+    drawLabels2D(overlayCtx, view, dpr, extras, !gridFields.length);
   }
 
-  if (active.some(e => e.cls!.animated || (defsAnimated && e.cls!.params.length > 0))) requestRender();
+  const gridAnimated = mode === '2d'
+    && gridFields.some(f => freeVars(f.expr).has('t') || (defsAnimated && f.params.length > 0));
+  if (gridAnimated || active.some(e => e.cls!.animated || (defsAnimated && e.cls!.params.length > 0))) requestRender();
 }
 
 // --- equation list UI ---
@@ -220,6 +252,7 @@ const listEl = document.getElementById('equations')!;
 function recompileAll() {
   const raw: Definition[] = [];
   const defRows = new Map<string, Equation>();
+  const dupRows: Equation[] = [];
   for (const eq of equations) {
     eq.cls = undefined;
     eq.error = undefined;
@@ -230,7 +263,7 @@ function recompileAll() {
     if (!d) continue;
     eq.def = d;
     if (defRows.has(d.name)) {
-      eq.error = `${d.name} is already defined.`;
+      dupRows.push(eq);
       continue;
     }
     defRows.set(d.name, eq);
@@ -245,7 +278,24 @@ function recompileAll() {
     if (row) row.error = message;
   }
 
+  // A second `r = …` row where r is a coordinate field is a plot in that
+  // coordinate system (r = 1 + cos(theta)), not a redefinition.
+  for (const eq of dupRows) {
+    if (defs.fields.has(eq.def!.name)) eq.def = undefined;
+    else eq.error = `${eq.def!.name} is already defined.`;
+  }
+
   const constNames = new Set(defs.consts.keys());
+  gridFields = [];
+  for (const [name, e] of defs.fields) {
+    try {
+      gridFields.push(buildGridField(name, e, constNames));
+    } catch (e) {
+      const row = defRows.get(name);
+      if (row && !row.error) row.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+  const fieldEnv = Object.fromEntries(defs.fields);
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
   const getFn = (name: string) => {
     const fn = defs.fns.get(name);
@@ -257,7 +307,11 @@ function recompileAll() {
     const text = eq.text.trim();
     if (!text) continue;
     try {
-      eq.cls = classify(resolveExpr(parseExpr(text, fnNames), getFn), constNames);
+      let parsed = resolveExpr(parseExpr(text, fnNames), getFn);
+      // Coordinate fields substitute in as functions of the plane, so
+      // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
+      if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
+      eq.cls = classify(parsed, constNames);
     } catch (e) {
       eq.error = e instanceof Error ? e.message : String(e);
     }
@@ -436,6 +490,14 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['quadrupole', 'ln(w-2) + ln(w+2) - ln(w-2i) - ln(w+2i)'],
     ['flow past cylinder', 'w + 4/w'],
     ['orbiting charge', 'ln(w-2) - ln(w + 2e^(i t))'],
+  ]],
+  ['coordinates', [
+    ['polar grid', 'r = sqrt(x^2 + y^2); theta = atan2(y, x)'],
+    ['cardioid in polar', 'r = sqrt(x^2 + y^2); theta = atan2(y, x); r = 2(1 + cos(theta))'],
+    ['polar spiral', 'r = sqrt(x^2 + y^2); theta = atan2(y, x); r = theta + pi'],
+    ['log-polar', 'rho = ln(x^2 + y^2)/2; theta = atan2(y, x)'],
+    ['hyperbolic grid', 'p = x y; q = (x^2 - y^2)/2'],
+    ['spinning polar', 'r = sqrt(x^2 + y^2); theta = atan2(y, x) + t/4'],
   ]],
   ['regions', [
     ['open half-plane', 'y < x/2 + 1'],

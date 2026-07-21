@@ -41,34 +41,73 @@ export function niceSpacing(upp: number, minPx: number): { major: number; minor:
   return { major: 10 * base, minor: 2 * base };
 }
 
-const GRID_FRAG = `#version 300 es
+/** One grid family: level sets of a coordinate field c(x, y). */
+export interface GridSpec {
+  /** GLSL for c(x, y) (constants as u_<name> uniforms). */
+  glsl: string;
+  /** GLSL for ∇c in math units; absent → screen derivatives (dFdx/dFdy). */
+  gradGlsl?: [string, string];
+  params: string[];
+  major: number;
+  minor: number;
+}
+
+/**
+ * The grid is itself a field renderer: each family draws the level sets
+ * c = k·spacing with width from the distance estimate |c - k·s| / |∇c|,
+ * fading out where lines crowd toward subpixel spacing (singularities,
+ * extreme zoom). The Cartesian grid is the identity pair (x, y).
+ */
+function gridFrag(specs: GridSpec[]): string {
+  const params = [...new Set(specs.flatMap(s => s.params))];
+  const decls = specs.map((s, k) => {
+    const grad = s.gradGlsl
+      ? `vec2 grad${k}(float x, float y) { return vec2(${s.gradGlsl[0]}, ${s.gradGlsl[1]}); }\n`
+      : '';
+    return `float coord${k}(float x, float y) { return ${s.glsl}; }\n${grad}`
+      + `uniform float uMajor${k};\nuniform float uMinor${k};\n`;
+  }).join('');
+  const blocks = specs.map((s, k) => `
+  {
+    float c = coord${k}(p.x, p.y);
+    if (!isnan(c) && !isinf(c)) {
+      float lg = ${s.gradGlsl ? `length(grad${k}(p.x, p.y)) * uUpp` : 'length(vec2(dFdx(c), dFdy(c)))'};
+      minorA = max(minorA, gridLine(c, lg, uMinor${k}, 0.5));
+      majorA = max(majorA, gridLine(c, lg, uMajor${k}, 0.5));
+      axisA = max(axisA, 1.0 - smoothstep(0.9, 1.9, abs(c) / max(lg, 1e-24)));
+    }
+  }`).join('');
+  return `#version 300 es
 precision highp float;
 uniform vec2 uCenter;
 uniform float uUpp;
 uniform vec2 uRes;
-uniform float uMajor;
-uniform float uMinor;
+uniform float t;
+${paramDecls(params)}
 out vec4 outColor;
-
-float lineAlpha(float coord, float spacing, float halfWidthPx) {
-  float distPx = abs(coord - spacing * round(coord / spacing)) / uUpp;
-  return 1.0 - smoothstep(halfWidthPx, halfWidthPx + 1.0, distPx);
+${GLSL_PRELUDE}
+${decls}
+float gridLine(float c, float lg, float spacing, float halfWidthPx) {
+  float lgv = max(lg / spacing, 1e-24);  // |∇(c/spacing)| per pixel
+  float v = c / spacing;
+  float distPx = abs(v - round(v)) / lgv;
+  float a = 1.0 - smoothstep(halfWidthPx, halfWidthPx + 1.0, distPx);
+  return a * clamp((0.35 - lgv) / 0.25, 0.0, 1.0);
 }
-
 void main() {
   vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
   vec3 col = vec3(1.0);
-  float minor = max(lineAlpha(p.x, uMinor, 0.5), lineAlpha(p.y, uMinor, 0.5));
-  float major = max(lineAlpha(p.x, uMajor, 0.5), lineAlpha(p.y, uMajor, 0.5));
-  col = mix(col, vec3(0.91), minor);
-  col = mix(col, vec3(0.80), major);
-  float axis = max(
-    (1.0 - smoothstep(0.9, 1.9, abs(p.x) / uUpp)),
-    (1.0 - smoothstep(0.9, 1.9, abs(p.y) / uUpp)));
-  col = mix(col, vec3(0.25), axis);
+  float minorA = 0.0;
+  float majorA = 0.0;
+  float axisA = 0.0;
+${blocks}
+  col = mix(col, vec3(0.91), minorA);
+  col = mix(col, vec3(0.80), majorA);
+  col = mix(col, vec3(0.25), axisA);
   outColor = vec4(col, 1.0);
 }
 `;
+}
 
 function curveFrag(field: string, params?: string[]): string {
   return `#version 300 es
@@ -244,6 +283,7 @@ export class Renderer2D {
     ineqs: Ineq2D[] = [],
     time = 0,
     env: Record<string, number> = {},
+    gridSpecs?: GridSpec[],
   ): void {
     const { gl } = this;
     const w = gl.drawingBufferWidth;
@@ -253,16 +293,34 @@ export class Renderer2D {
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    const spacing = niceSpacing(view.upp, 90);
-
-    const grid = this.cache.get(QUAD_VERT, GRID_FRAG);
-    gl.useProgram(grid);
-    gl.uniform2f(gl.getUniformLocation(grid, 'uCenter'), view.cx, view.cy);
-    gl.uniform1f(gl.getUniformLocation(grid, 'uUpp'), view.upp);
-    gl.uniform2f(gl.getUniformLocation(grid, 'uRes'), w, h);
-    gl.uniform1f(gl.getUniformLocation(grid, 'uMajor'), spacing.major);
-    gl.uniform1f(gl.getUniformLocation(grid, 'uMinor'), spacing.minor);
-    this.quad.draw();
+    let specs = gridSpecs;
+    if (!specs?.length) {
+      const spacing = niceSpacing(view.upp, 90);
+      specs = [
+        { glsl: 'x', gradGlsl: ['1.0', '0.0'], params: [], major: spacing.major, minor: spacing.minor },
+        { glsl: 'y', gradGlsl: ['0.0', '1.0'], params: [], major: spacing.major, minor: spacing.minor },
+      ];
+    }
+    try {
+      const grid = this.cache.get(QUAD_VERT, gridFrag(specs));
+      gl.useProgram(grid);
+      gl.uniform2f(gl.getUniformLocation(grid, 'uCenter'), view.cx, view.cy);
+      gl.uniform1f(gl.getUniformLocation(grid, 'uUpp'), view.upp);
+      gl.uniform2f(gl.getUniformLocation(grid, 'uRes'), w, h);
+      const tLoc = gl.getUniformLocation(grid, 't');
+      if (tLoc) gl.uniform1f(tLoc, time);
+      specs.forEach((s, k) => {
+        gl.uniform1f(gl.getUniformLocation(grid, `uMajor${k}`), s.major);
+        gl.uniform1f(gl.getUniformLocation(grid, `uMinor${k}`), s.minor);
+        for (const p of s.params) {
+          const loc = gl.getUniformLocation(grid, 'u_' + p);
+          if (loc) gl.uniform1f(loc, env[p] ?? 0);
+        }
+      });
+      this.quad.draw();
+    } catch (e) {
+      console.error(e);
+    }
 
     const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) => {
       let prog: WebGLProgram;
@@ -298,8 +356,10 @@ export interface Overlay2D {
   polylines: Array<{ pts: number[]; color: string }>;
 }
 
-/** Axis labels plus CPU-sampled geometry (points, parametric curves). */
-export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: number, extras?: Overlay2D): void {
+/** Axis labels plus CPU-sampled geometry (points, parametric curves).
+ *  numbers=false skips the axis numerals (custom coordinate grids have no
+ *  straight axes to label them along). */
+export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: number, extras?: Overlay2D, numbers = true): void {
   const w = ctx.canvas.width / dpr;
   const h = ctx.canvas.height / dpr;
   ctx.save();
@@ -320,20 +380,22 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
     return String(parseFloat(v.toPrecision(10)));
   };
 
-  const axisY = Math.min(Math.max(toScreenY(0), 12), h - 6);
-  const axisX = Math.min(Math.max(toScreenX(0), 4), w - 30);
+  if (numbers) {
+    const axisY = Math.min(Math.max(toScreenY(0), 12), h - 6);
+    const axisX = Math.min(Math.max(toScreenX(0), 4), w - 30);
 
-  const x0 = Math.ceil((view.cx - (w / 2) * upp) / major) * major;
-  const x1 = view.cx + (w / 2) * upp;
-  for (let x = x0; x <= x1; x += major) {
-    if (Math.abs(x) < major / 2) continue;
-    ctx.fillText(fmt(x), toScreenX(x) + 2, axisY + 13 <= h ? axisY + 13 : axisY - 4);
-  }
-  const y0 = Math.ceil((view.cy - (h / 2) * upp) / major) * major;
-  const y1 = view.cy + (h / 2) * upp;
-  for (let y = y0; y <= y1; y += major) {
-    if (Math.abs(y) < major / 2) continue;
-    ctx.fillText(fmt(y), axisX + 4, toScreenY(y) - 3);
+    const x0 = Math.ceil((view.cx - (w / 2) * upp) / major) * major;
+    const x1 = view.cx + (w / 2) * upp;
+    for (let x = x0; x <= x1; x += major) {
+      if (Math.abs(x) < major / 2) continue;
+      ctx.fillText(fmt(x), toScreenX(x) + 2, axisY + 13 <= h ? axisY + 13 : axisY - 4);
+    }
+    const y0 = Math.ceil((view.cy - (h / 2) * upp) / major) * major;
+    const y1 = view.cy + (h / 2) * upp;
+    for (let y = y0; y <= y1; y += major) {
+      if (Math.abs(y) < major / 2) continue;
+      ctx.fillText(fmt(y), axisX + 4, toScreenY(y) - 3);
+    }
   }
 
   if (extras) {

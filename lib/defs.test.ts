@@ -99,9 +99,16 @@ describe('buildDefs', () => {
     expect(fns.errors.get('f')).toMatch(/itself/);
   });
 
-  it('rejects constants that depend on plot variables', () => {
+  it('turns x/y-dependent definitions into coordinate fields, not constants', () => {
     const { errors, defs } = buildDefs([cdef('a', 'x + 1')]);
-    expect(errors.get('a')).toMatch(/found x/);
+    expect(errors.size).toBe(0);
+    expect(defs.consts.size).toBe(0);
+    expect(defs.fields.has('a')).toBe(true);
+  });
+
+  it('rejects constants that depend on other plot variables', () => {
+    const { errors, defs } = buildDefs([cdef('a', 'z + 1')]);
+    expect(errors.get('a')).toMatch(/found z/);
     expect(defs.consts.size).toBe(0);
   });
 
