@@ -604,16 +604,72 @@ let dragging = false;
 let lastX = 0;
 let lastY = 0;
 let panning = false;
+const pointers = new Map<number, { x: number; y: number }>();
+let pinchDist = 0;
+
+/** Zoom by `factor` keeping the math point under (clientX, clientY) fixed. */
+function zoomAt(clientX: number, clientY: number, factor: number) {
+  if (mode === '2d') {
+    const dpr = window.devicePixelRatio || 1;
+    const rect = canvas.getBoundingClientRect();
+    const px = (clientX - rect.left - rect.width / 2) * dpr;
+    const py = (rect.height / 2 - (clientY - rect.top)) * dpr;
+    const mx = view.cx + px * view.upp;
+    const my = view.cy + py * view.upp;
+    view.upp *= factor;
+    view.cx = mx - px * view.upp;
+    view.cy = my - py * view.upp;
+  } else {
+    camera.radius = Math.min(1e6, Math.max(1e-4, camera.radius * factor));
+  }
+  requestRender();
+}
 
 canvas.addEventListener('pointerdown', e => {
-  dragging = true;
-  panning = e.button === 2 || e.shiftKey;
-  lastX = e.clientX;
-  lastY = e.clientY;
-  canvas.setPointerCapture(e.pointerId);
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  try {
+    canvas.setPointerCapture(e.pointerId);
+  } catch {} // synthetic events have no active pointer to capture
+  if (pointers.size === 1) {
+    dragging = true;
+    panning = e.button === 2 || e.shiftKey;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  } else if (pointers.size === 2) {
+    // Second finger: switch from drag to pinch, anchored at the midpoint.
+    dragging = false;
+    const [a, b] = [...pointers.values()];
+    pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
+    lastX = (a.x + b.x) / 2;
+    lastY = (a.y + b.y) / 2;
+  }
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 canvas.addEventListener('pointermove', e => {
+  const p = pointers.get(e.pointerId);
+  if (p) {
+    p.x = e.clientX;
+    p.y = e.clientY;
+  }
+  if (pointers.size === 2) {
+    const [a, b] = [...pointers.values()];
+    const dist = Math.hypot(a.x - b.x, a.y - b.y);
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+    const dx = mx - lastX;
+    const dy = my - lastY;
+    const dpr = window.devicePixelRatio || 1;
+    if (mode === '2d') {
+      view.cx -= dx * dpr * view.upp;
+      view.cy += dy * dpr * view.upp;
+    }
+    if (dist > 0 && pinchDist > 0) zoomAt(mx, my, pinchDist / dist);
+    pinchDist = dist;
+    lastX = mx;
+    lastY = my;
+    requestRender();
+    return;
+  }
   if (!dragging) return;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
@@ -638,26 +694,26 @@ canvas.addEventListener('pointermove', e => {
   }
   requestRender();
 });
-canvas.addEventListener('pointerup', () => { dragging = false; });
+const endPointer = (e: PointerEvent) => {
+  pointers.delete(e.pointerId);
+  if (pointers.size === 1) {
+    // Pinch ended with one finger still down: resume dragging from it.
+    const [p] = pointers.values();
+    dragging = true;
+    panning = false;
+    lastX = p.x;
+    lastY = p.y;
+  } else if (pointers.size === 0) {
+    dragging = false;
+  }
+};
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
 
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
   const factor = Math.exp(Math.max(-60, Math.min(60, e.deltaY)) * 0.002);
-  if (mode === '2d') {
-    // Zoom toward the cursor.
-    const dpr = window.devicePixelRatio || 1;
-    const rect = canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left - rect.width / 2) * dpr;
-    const py = (rect.height / 2 - (e.clientY - rect.top)) * dpr;
-    const mx = view.cx + px * view.upp;
-    const my = view.cy + py * view.upp;
-    view.upp *= factor;
-    view.cx = mx - px * view.upp;
-    view.cy = my - py * view.upp;
-  } else {
-    camera.radius = Math.min(1e6, Math.max(1e-4, camera.radius * factor));
-  }
-  requestRender();
+  zoomAt(e.clientX, e.clientY, factor);
 }, { passive: false });
 
 window.addEventListener('resize', resize);
@@ -679,3 +735,6 @@ view.upp = 12 / (Math.min(window.innerWidth, window.innerHeight) * (window.devic
 rebuildList();
 buildExamplesMenu();
 resize();
+
+// Dev-only handle for driving/inspecting the view in automated tests.
+if (import.meta.env.DEV) (window as any).__eq = { view, camera };
