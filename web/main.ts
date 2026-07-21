@@ -91,16 +91,38 @@ const r2d = new Renderer2D(gl, quad);
 const r3d = new Renderer3D(gl, quad);
 const overlayCtx = overlay.getContext('2d')!;
 
-function resize() {
+/** True until the canvas has been measured once and the opening zoom picked. */
+let awaitingFirstSize = true;
+
+/** Point the drawing buffers at the canvas's real CSS box. Returns false while
+ *  the element has no box yet (not laid out, hidden), in which case the old
+ *  buffer is left alone rather than blanked. Called before every frame as well
+ *  as on resize: a buffer whose aspect drifts from the box gets stretched by
+ *  CSS, which is what made shared links open squashed and at a random zoom. */
+function syncCanvasSize(): boolean {
   const dpr = window.devicePixelRatio || 1;
   const w = Math.round(canvas.clientWidth * dpr);
   const h = Math.round(canvas.clientHeight * dpr);
+  if (!w || !h) return false;
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
     overlay.width = w;
     overlay.height = h;
   }
+  // The opening scale comes from the buffer we just sized, not from
+  // window.innerWidth * devicePixelRatio — those agree only once the page has
+  // settled, and a link opened mid-transition would otherwise keep whatever
+  // zoom the guess produced.
+  if (awaitingFirstSize) {
+    awaitingFirstSize = false;
+    view.upp = 12 / Math.min(w, h); // ~12 math units across the short edge
+  }
+  return true;
+}
+
+function resize() {
+  syncCanvasSize();
   requestRender();
 }
 
@@ -117,6 +139,7 @@ function requestRender() {
 const startTime = performance.now();
 
 function render() {
+  if (!syncCanvasSize()) return;
   const dpr = window.devicePixelRatio || 1;
   const time = (performance.now() - startTime) / 1000;
   const active = equations.filter(e => e.cls && !e.error);
@@ -1184,7 +1207,12 @@ canvas.addEventListener('wheel', e => {
   zoomAt(e.clientX, e.clientY, factor);
 }, { passive: false });
 
+// The canvas box changes without a window resize event on mobile (URL bar
+// collapsing, safe-area shifts, an in-app browser animating to full height),
+// so observe the element itself. The window listener stays for devicePixelRatio
+// changes, which move no box at all.
 window.addEventListener('resize', resize);
+new ResizeObserver(resize).observe(canvas);
 
 // --- theme ---
 
@@ -1216,12 +1244,10 @@ if (fromHash.length) fromHash.forEach(t => addEquation(t));
 else addEquation('y = sin(x)');
 recompileAll();
 
-// Initial 2D scale: ~12 math units across the short screen edge.
-view.upp = 12 / (Math.min(window.innerWidth, window.innerHeight) * (window.devicePixelRatio || 1));
-
+// Size the canvas (which also picks the opening zoom) before the first frame.
+resize();
 renderAll();
 buildExamplesMenu();
-resize();
 
 // Dev-only handle for driving/inspecting the view in automated tests.
 if (import.meta.env.DEV) (window as any).__eq = { view, camera };
