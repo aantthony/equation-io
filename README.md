@@ -14,10 +14,16 @@ An equation grapher, deployed as a Cloudflare Worker.
     finite-difference normals, `gl_FragDepth` so multiple surfaces intersect
     correctly. Equations without `z` extrude to their true locus in R³.
 
-The whole graph state lives in the URL fragment (`#eq1;eq2;…`, each equation
-percent-encoded), so any set of equations is linkable.
-[`web/public/llms.txt`](web/public/llms.txt) (served at `/llms.txt`) documents
-the link format and expression syntax for LLMs/agents.
+The whole graph state lives in the URL (`/#eq1;eq2;…`, each equation
+percent-encoded), so any set of equations is linkable. Agent-facing surface:
+
+- `/llms.txt` — link format + expression syntax reference
+  ([`web/public/llms.txt`](web/public/llms.txt))
+- `/g/<eqs>` — share form of a graph link; the worker injects og:/twitter:
+  meta tags and `/api/og/<eqs>` renders the preview PNG on the CPU
+  (expressions compile to a stack machine — no WebGL in Workers)
+- `/mcp` — stateless MCP server (Streamable HTTP) with `create_graph`
+  (validates rows, returns links) and `read_graph` (decodes links for editing)
 
 ## Usage
 

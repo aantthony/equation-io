@@ -30,7 +30,9 @@
   <meta name="theme-color" id="theme-color" content="#ffffff">
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <link rel="stylesheet" href="./style.css">
+  <!-- Root-relative: this page is also served at /g/<equations> share URLs,
+       where a relative href would resolve against /g/ and 404. -->
+  <link rel="stylesheet" href="/style.css">
   <script>
     // Set the theme before first paint so dark users never see a white flash.
     // main.ts re-applies this (idempotent) and wires up the toggle + OS listener.
@@ -81,6 +83,6 @@
       gallery: <a href="/about/">https://equation.io/about/</a>
     </p>
   </noscript>
-  <script type="module" src="./main.ts"></script>
+  <script type="module" src="/main.ts"></script>
 </body>
 </html>

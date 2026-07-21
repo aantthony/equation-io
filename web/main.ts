@@ -1574,7 +1574,19 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 
-const fromHash = splitStatements(decodeURIComponent(location.hash.slice(1)))
+// Equations come from the #-fragment, or from the /g/ share form (which the
+// worker serves with link-preview meta tags). Normalize /g/ back to /#… so
+// subsequent edits (saveHash) and reloads agree on where state lives.
+let initialPayload = location.hash.slice(1);
+if (!initialPayload && location.pathname.startsWith('/g/')) {
+  initialPayload = location.pathname.slice('/g/'.length);
+}
+if (location.pathname !== '/') {
+  history.replaceState(null, '', initialPayload ? '/#' + initialPayload : '/');
+}
+// Splitting stays bracket-aware (splitStatements), so a ';' inside brackets
+// does not start a new row — the same rule the editor's paste path uses.
+const fromHash = splitStatements(decodeURIComponent(initialPayload))
   .map(s => decodeURIComponent(s))
   .filter(s => s.trim());
 if (fromHash.length) fromHash.forEach(t => addEquation(t));
