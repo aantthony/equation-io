@@ -151,6 +151,13 @@ export const SHOWCASE: ShowcaseItem[] = [
     group: 'Calculus & sliders',
   },
   {
+    slug: 'fourier-series',
+    title: 'Sums and series',
+    blurb: 'Σ expands symbolically before compiling — drag N to add harmonics.',
+    eqs: ['N = 8', 'y = 2 sum[n=1..N] (-1)^(n+1) sin(n x)/n'],
+    group: 'Calculus & sliders',
+  },
+  {
     slug: 'lissajous',
     title: 'Parametric motion',
     blurb: 'Curves in u, moving points in t — on the same axes.',

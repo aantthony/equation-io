@@ -27,6 +27,7 @@ Examples (paste-ready):
 - Circle: https://equation.io/#x%5E2%2By%5E2%3D4
 - Sine + tangent line: https://equation.io/#f(x)%3Dx%5E3-2x;g(x)%3Dd%2Fdx%20f(x);a%3D1;y%3Df(x);y%3Df(a)%2Bg(a)(x-a)
 - Slider-controlled wave: https://equation.io/#a%3D2;y%3Dsin(a%20x)%2Fa
+- Fourier series (drag N for more harmonics): https://equation.io/#N%20%3D%208;y%20%3D%202%20sum%5Bn%3D1..N%5D%20(-1)%5E(n%2B1)%20sin(n%20x)%2Fn
 - Animated ripples: https://equation.io/#sin(x%5E2%2By%5E2-4t)%2F2
 - 3D saddle: https://equation.io/#z%3D(x%5E2-y%5E2)%2F4
 - Torus (parametric 3D): https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))
@@ -49,6 +50,12 @@ Examples (paste-ready):
   use parentheses for arguments — write `sin(x)`, not `sin x`.
 - Derivatives: `d/dx (x^3)` differentiates symbolically; higher order
   `d^2/dx^2 (...)`; works for any single-letter variable, e.g. `d/dq (q^2)`.
+- Sums and products: `sum(n=1..N, sin(n x)/n)` and `prod(k=1..N, k)`, also
+  written `Σ`/`Π`. The bracket form `sum[n=1..N] sin(n x)/n` takes everything
+  after it in the product chain as the body (`2 sum[n=1..N] ...` keeps the 2
+  outside). Bounds must be numbers or constants defined in another row (not
+  `t`), because the sum is expanded symbolically before compiling — which makes
+  `N` a slider that adds terms as you drag it.
 
 ## Variables (what a row means)
 
