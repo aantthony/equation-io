@@ -8,7 +8,8 @@
     "verbatimModuleSyntax": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    "types": ["vite/client"]
   },
   "include": [".", "../lib"],
   "exclude": ["../lib/**/*.test.ts"]
