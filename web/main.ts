@@ -327,9 +327,9 @@ function saveHash() {
   history.replaceState(null, '', texts.length ? '#' + texts.map(encodeURIComponent).join(';') : '#');
 }
 
-function addEquation(text: string): Equation {
+function addEquation(text: string, at = equations.length): Equation {
   const eq: Equation = { id: nextId++, text, colorIndex: (nextId - 2) % PALETTE.length };
-  equations.push(eq);
+  equations.splice(at, 0, eq);
   return eq;
 }
 
@@ -432,6 +432,26 @@ function rebuildList() {
 
     input.addEventListener('input', () => {
       const wasLast = equations[equations.length - 1] === eq;
+      if (input.value.includes(';')) {
+        // Multi-statement input: ';' splits into rows — the same separator
+        // the examples menu and the URL hash use, so pasted lists just work.
+        const parts = input.value.split(';').map(s => s.trim());
+        eq.text = parts[0] ?? '';
+        const rest = parts.slice(1).filter(s => s);
+        const at = equations.indexOf(eq) + 1;
+        rest.forEach((text, k) => addEquation(text, at + k));
+        if (equations[equations.length - 1].text.trim()) addEquation('');
+        recompileAll();
+        saveHash();
+        rebuildList();
+        requestRender();
+        // Land the caret at the end of the last statement's row.
+        const inputs = listEl.querySelectorAll<HTMLInputElement>('.eq-input');
+        const target = inputs[rest.length ? at + rest.length - 1 : at - 1];
+        target?.focus();
+        target?.setSelectionRange(target.value.length, target.value.length);
+        return;
+      }
       eq.text = input.value;
       recompileAll();
       refreshAll();
