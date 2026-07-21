@@ -467,6 +467,16 @@ function rebuildList() {
         mine.selectionStart = mine.selectionEnd = input.selectionStart;
       }
     });
+    input.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      const inputs = [...listEl.querySelectorAll<HTMLInputElement>('.eq-input')];
+      const target = inputs[inputs.indexOf(input) + (e.key === 'ArrowDown' ? 1 : -1)];
+      if (!target) return;
+      e.preventDefault();
+      const caret = Math.min(input.selectionStart ?? input.value.length, target.value.length);
+      target.focus();
+      target.selectionStart = target.selectionEnd = caret;
+    });
     refresh();
 
     const remove = document.createElement('button');
