@@ -8,8 +8,11 @@
  * - `f(x) = x^3 - a x` defines a function; calls are inlined symbolically.
  * - `d/dx (…)` (also `d^2/dx^2`, any single-letter variable) differentiates
  *   symbolically at resolve time via diff().
+ * - `sum(n=1..N, …)` / `prod(…)` (also Σ/Π, and `sum[n=1..N] …` binding the
+ *   trailing product like d/dx) expand symbolically at resolve time, so the
+ *   bounds must be numbers or already-known constants.
  */
-import { diff, mul, neg } from './diff.ts';
+import { add, diff, div, mul, neg, pow, sub } from './diff.ts';
 import { FUNCTIONS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
 
 export type Definition =
@@ -120,16 +123,170 @@ function matchDeriv(numr: Expr, den: Expr): Expr | null {
   return head.wrap(applyDiff(operand, dx.v, head.order));
 }
 
-/** Inline user-function calls and resolve d/dx derivative notation (post-order). */
-export function resolveExpr(e: Expr, getFn: GetFn): Expr {
+const num = (value: number): Expr => ({ kind: 'num', value });
+
+export interface ResolveOpts {
+  /** Numeric constant values, used to evaluate Σ/Π bounds at expansion time. */
+  consts?: Record<string, number>;
+  /** Out: constant names referenced by Σ/Π bounds (their sliders snap to integers). */
+  boundConsts?: Set<string>;
+}
+
+interface Ctx {
+  getFn: GetFn;
+  opts: ResolveOpts;
+  /** Terms expanded so far across every Σ/Π in this resolve (nesting multiplies). */
+  terms: number;
+}
+
+/** A Σ/Π call: args [index, lo, hi] (header awaiting a body) or [index, lo, hi, body]. */
+type SumCall = Expr & { kind: 'call'; name: 'sum' | 'prod' };
+
+const isSumHeader = (e: Expr): e is SumCall =>
+  e.kind === 'call' && (e.name === 'sum' || e.name === 'prod') && e.args.length === 3;
+
+/**
+ * A header in a product chain sums its trailing factors: in
+ * `2 sum[n=1..N] sin(n x)/n` the body is sin(n x)/n and the 2 stays outside
+ * (like d/dx, which also binds the rest of its product chain).
+ */
+function splitSumChain(e: Expr): { coeff: Expr | null; op: '*' | '/'; header: SumCall; body: Expr } | null {
+  const factors: Array<{ e: Expr; op: '*' | '/' }> = [];
+  let node: Expr = e;
+  while (node.kind === 'bin' && (node.op === '*' || node.op === '/')) {
+    factors.unshift({ e: node.b, op: node.op });
+    node = node.a;
+  }
+  factors.unshift({ e: node, op: '*' });
+  const at = factors.findIndex(f => isSumHeader(f.e));
+  if (at < 0) return null;
+  const rest = factors.slice(at + 1);
+  if (!rest.length) return null; // bodyless header: the call case reports it
+  let body: Expr = rest[0].op === '*' ? rest[0].e : { kind: 'bin', op: '/', a: num(1), b: rest[0].e };
+  for (let k = 1; k < rest.length; k++) body = { kind: 'bin', op: rest[k].op, a: body, b: rest[k].e };
+  let coeff: Expr | null = null;
+  for (let k = 0; k < at; k++) {
+    coeff = coeff === null ? factors[k].e : { kind: 'bin', op: factors[k].op, a: coeff, b: factors[k].e };
+  }
+  return { coeff, op: factors[at].op, header: factors[at].e as SumCall, body };
+}
+
+/** substVars for a Σ/Π index, stopping at nested Σ/Π that rebind the same name. */
+function substIdx(e: Expr, idx: string, val: Expr): Expr {
+  switch (e.kind) {
+    case 'num': return e;
+    case 'var': return e.name === idx ? val : e;
+    case 'neg': return { kind: 'neg', a: substIdx(e.a, idx, val) };
+    case 'bin': return { kind: 'bin', op: e.op, a: substIdx(e.a, idx, val), b: substIdx(e.b, idx, val) };
+    case 'call': {
+      if ((e.name === 'sum' || e.name === 'prod') && e.args[0]?.kind === 'var' && e.args[0].name === idx) {
+        // The inner Σ rebinds idx: substitute in its bounds but not its body.
+        const args = e.args.map((a, k) => (k === 0 || k === 3 ? a : substIdx(a, idx, val)));
+        return { kind: 'call', name: e.name, args };
+      }
+      return { kind: 'call', name: e.name, args: e.args.map(a => substIdx(a, idx, val)) };
+    }
+    case 'eq': return { kind: 'eq', l: substIdx(e.l, idx, val), r: substIdx(e.r, idx, val) };
+    case 'ineq': return { kind: 'ineq', op: e.op, l: substIdx(e.l, idx, val), r: substIdx(e.r, idx, val) };
+    case 'vec': return { kind: 'vec', items: e.items.map(a => substIdx(a, idx, val)) };
+  }
+}
+
+const FOLD_BUILD = { '+': add, '-': sub, '*': mul, '/': div, '^': pow } as const;
+
+/** Fold numeric subtrees ((2·3-1) → 5) so expanded Σ terms compile to compact GLSL. */
+function foldNums(e: Expr): Expr {
   switch (e.kind) {
     case 'num':
     case 'var':
       return e;
-    case 'neg': return { kind: 'neg', a: resolveExpr(e.a, getFn) };
+    case 'neg': return neg(foldNums(e.a));
     case 'bin': {
-      const a = resolveExpr(e.a, getFn);
-      const b = resolveExpr(e.b, getFn);
+      const a = foldNums(e.a);
+      const b = foldNums(e.b);
+      if (a.kind === 'num' && b.kind === 'num') {
+        const v = evaluate({ kind: 'bin', op: e.op, a, b }, {});
+        if (isFinite(v)) return num(v);
+      }
+      return FOLD_BUILD[e.op](a, b);
+    }
+    case 'call': return { kind: 'call', name: e.name, args: e.args.map(foldNums) };
+    case 'eq': return { kind: 'eq', l: foldNums(e.l), r: foldNums(e.r) };
+    case 'ineq': return { kind: 'ineq', op: e.op, l: foldNums(e.l), r: foldNums(e.r) };
+    case 'vec': return { kind: 'vec', items: e.items.map(foldNums) };
+  }
+}
+
+const SUM_MAX_TERMS = 500;
+const SUM_MAX_TOTAL = 2000;
+
+/** Expand a Σ/Π into an explicit sum/product of per-index terms. */
+function expandSum(header: SumCall, body: Expr, ctx: Ctx): Expr {
+  const sym = header.name === 'sum' ? 'Σ' : 'Π';
+  const [idxE, loE, hiE] = header.args;
+  if (idxE.kind !== 'var') throw new Error(`Expected ${header.name}(n=1..N, …).`);
+  const idx = idxE.name;
+  if (RESERVED.has(idx)) throw new Error(`Cannot use "${idx}" as a ${sym} index (it is reserved).`);
+  const bound = (b: Expr): number => {
+    const r = rx(b, ctx);
+    const env: Record<string, number> = {};
+    for (const fv of freeVars(r)) {
+      const v = ctx.opts.consts?.[fv];
+      if (v === undefined) {
+        if (fv === 't' || RESERVED.has(fv)) throw new Error(`${sym} bounds cannot depend on ${fv}.`);
+        throw new Error(`${sym} bounds must be constant — add "${fv} = 5" in a row above.`);
+      }
+      ctx.opts.boundConsts?.add(fv);
+      env[fv] = v;
+    }
+    const v = evaluate(r, env);
+    if (!isFinite(v)) throw new Error(`${sym} bound is not finite.`);
+    return v;
+  };
+  const start = Math.ceil(bound(loE) - 1e-9);
+  const end = Math.floor(bound(hiE) + 1e-9);
+  const count = end - start + 1;
+  if (count > SUM_MAX_TERMS) throw new Error(`${sym} expands to ${count} terms (limit ${SUM_MAX_TERMS}).`);
+  ctx.terms += Math.max(count, 0);
+  if (ctx.terms > SUM_MAX_TOTAL) {
+    throw new Error(`Nested ${sym} expand to too many terms (limit ${SUM_MAX_TOTAL} total).`);
+  }
+  const combine = header.name === 'sum' ? add : mul;
+  let acc: Expr | null = null;
+  for (let k = start; k <= end; k++) {
+    const term = foldNums(rx(substIdx(body, idx, num(k)), ctx));
+    acc = acc === null ? term : combine(acc, term);
+  }
+  return acc ?? num(header.name === 'sum' ? 0 : 1);
+}
+
+/**
+ * Inline user-function calls, resolve d/dx derivative notation, and expand
+ * Σ/Π sums (post-order).
+ */
+export function resolveExpr(e: Expr, getFn: GetFn, opts: ResolveOpts = {}): Expr {
+  return rx(e, { getFn, opts, terms: 0 });
+}
+
+function rx(e: Expr, ctx: Ctx): Expr {
+  const { getFn } = ctx;
+  switch (e.kind) {
+    case 'num':
+    case 'var':
+      return e;
+    case 'neg': return { kind: 'neg', a: rx(e.a, ctx) };
+    case 'bin': {
+      if (e.op === '*' || e.op === '/') {
+        // Σ headers capture their trailing product chain before it resolves,
+        // so `sum[n=1..N] sin(n x)/n` divides each term, not the whole sum.
+        const m = splitSumChain(e);
+        if (m) {
+          const body = expandSum(m.header, m.body, ctx);
+          return m.coeff ? { kind: 'bin', op: m.op, a: rx(m.coeff, ctx), b: body } : body;
+        }
+      }
+      const a = rx(e.a, ctx);
+      const b = rx(e.b, ctx);
       if (e.op === '/') {
         const d = matchDeriv(a, b);
         if (d) return d;
@@ -143,7 +300,14 @@ export function resolveExpr(e: Expr, getFn: GetFn): Expr {
       return { kind: 'bin', op: e.op, a, b };
     }
     case 'call': {
-      const args = e.args.map(x => resolveExpr(x, getFn));
+      if (e.name === 'sum' || e.name === 'prod') {
+        if (e.args.length !== 4) {
+          throw new Error(`${e.name === 'sum' ? 'Σ' : 'Π'} needs a body: write ${e.name}(n=1..N, …) or ${e.name}[n=1..N] (…).`);
+        }
+        return expandSum(e as SumCall, e.args[3], ctx);
+      }
+      if (e.name === '[range]') throw new Error("'..' ranges only appear in sum(n=1..N, …) or prod(…).");
+      const args = e.args.map(x => rx(x, ctx));
       const fn = getFn(e.name);
       if (fn) {
         if (args.length !== fn.params.length) {
@@ -153,9 +317,9 @@ export function resolveExpr(e: Expr, getFn: GetFn): Expr {
       }
       return { kind: 'call', name: e.name, args };
     }
-    case 'eq': return { kind: 'eq', l: resolveExpr(e.l, getFn), r: resolveExpr(e.r, getFn) };
-    case 'ineq': return { kind: 'ineq', op: e.op, l: resolveExpr(e.l, getFn), r: resolveExpr(e.r, getFn) };
-    case 'vec': return { kind: 'vec', items: e.items.map(x => resolveExpr(x, getFn)) };
+    case 'eq': return { kind: 'eq', l: rx(e.l, ctx), r: rx(e.r, ctx) };
+    case 'ineq': return { kind: 'ineq', op: e.op, l: rx(e.l, ctx), r: rx(e.r, ctx) };
+    case 'vec': return { kind: 'vec', items: e.items.map(x => rx(x, ctx)) };
   }
 }
 
@@ -163,6 +327,8 @@ export interface BuiltDefs {
   defs: Defs;
   /** Per-definition errors by name; failed definitions are excluded from defs. */
   errors: Map<string, string>;
+  /** Constants referenced by Σ/Π bounds (the UI snaps their sliders to integers). */
+  sumBoundConsts: Set<string>;
 }
 
 /** Parse and resolve a set of uniquely named definitions. */
@@ -172,6 +338,11 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   const byName = new Map(raw.map(d => [d.name, d]));
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
   const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+  // Numeric values of constants resolved so far: Σ/Π bounds in later
+  // definitions may use them (bounds need a value at expansion time).
+  const numEnv: Record<string, number> = {};
+  const ropts: ResolveOpts = { consts: numEnv, boundConsts: new Set() };
 
   const parsed = new Map<string, Expr>();
   const parse = (d: Definition): Expr => {
@@ -190,7 +361,7 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
     const d = byName.get(name) as Definition & { kind: 'fn' };
     resolving.add(name);
     try {
-      const fn: FnDef = { params: d.params, body: resolveExpr(parse(d), getFn) };
+      const fn: FnDef = { params: d.params, body: resolveExpr(parse(d), getFn, ropts) };
       defs.fns.set(name, fn);
       return fn;
     } finally {
@@ -204,7 +375,17 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
         if (new Set(d.params).size !== d.params.length) throw new Error('Duplicate parameter names.');
         getFn(d.name);
       } else {
-        defs.consts.set(d.name, resolveExpr(parse(d), getFn));
+        const e = resolveExpr(parse(d), getFn, ropts);
+        defs.consts.set(d.name, e);
+        try {
+          const env: Record<string, number> = {};
+          for (const fv of freeVars(e)) {
+            if (!(fv in numEnv)) throw new Error('not static');
+            env[fv] = numEnv[fv];
+          }
+          const v = evaluate(e, env);
+          if (isFinite(v)) numEnv[d.name] = v;
+        } catch { /* time-dependent or forward-referencing: Σ bounds can't use it */ }
       }
     } catch (e) {
       errors.set(d.name, msg(e));
@@ -318,7 +499,26 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   }
   for (const name of bad) defs.consts.delete(name);
 
-  return { defs, errors };
+  return { defs, errors, sumBoundConsts: ropts.boundConsts! };
+}
+
+/** Constants that depend on t — directly or through other constants. */
+export function animatedConstNames(defs: Defs): Set<string> {
+  const out = new Set<string>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const [name, e] of defs.consts) {
+      if (out.has(name)) continue;
+      for (const fv of freeVars(e)) {
+        if (fv === 't' || out.has(fv)) {
+          out.add(name);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return out;
 }
 
 /** Evaluate every constant at the given time (t may appear in definitions). */

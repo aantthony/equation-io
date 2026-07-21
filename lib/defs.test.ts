@@ -8,6 +8,7 @@ import {
   scanDefinition,
 } from './defs.ts';
 import { evaluate, parseExpr } from './expr.ts';
+import { toGLSL } from './glsl.ts';
 import { classify } from './plot.ts';
 
 const noFns = () => undefined;
@@ -54,6 +55,89 @@ describe('d/dx derivative syntax', () => {
 
   it('nests', () => {
     expect(at('d/dx (d/dx (x^3))', { x: 2 })).toBe(12);
+  });
+});
+
+describe('Σ sums and Π products', () => {
+  const at = (s: string, env: Record<string, number> = {}, consts?: Record<string, number>) =>
+    evaluate(resolveExpr(parseExpr(s), noFns, { consts }), env);
+
+  it('expands sum(n=1..N, body)', () => {
+    expect(at('sum(n=1..4, n^2)')).toBe(30);
+    expect(at('sum(n=1..3, n x)', { x: 2 })).toBe(12);
+    expect(at('sum(n=0..0, n + 5)')).toBe(5);
+  });
+
+  it('expands products and empty ranges', () => {
+    expect(at('prod(k=1..4, k)')).toBe(24);
+    expect(at('sum(n=1..0, n)')).toBe(0);
+    expect(at('prod(n=1..0, n)')).toBe(1);
+  });
+
+  it('binds the trailing product chain: sum[n=1..N] f(n)', () => {
+    expect(at('sum[n=1..4] n')).toBe(10);
+    expect(at('2 sum[n=1..3] n')).toBe(12);
+    expect(at('sum[n=1..3] n x / n', { x: 5 })).toBe(15); // /n applies per-term
+    expect(at('sum[n=1..3] n + 1')).toBe(7); // '+' ends the body
+  });
+
+  it('accepts Σ and Π glyphs', () => {
+    expect(at('Σ[n=1..4] n')).toBe(10);
+    expect(at('Π(k=1..3, k)')).toBe(6);
+  });
+
+  it('evaluates bounds from expressions and constants', () => {
+    expect(at('sum(n=1..2+1, n)')).toBe(6);
+    expect(at('sum(n=1..N, n)', {}, { N: 3 })).toBe(6);
+    expect(at('sum(n=0..N-1, 1)', {}, { N: 4 })).toBe(4);
+    expect(at('sum(n=1..3.7, n)')).toBe(6); // fractional upper bound floors
+  });
+
+  it('reports which constants the bounds used', () => {
+    const boundConsts = new Set<string>();
+    resolveExpr(parseExpr('sum(n=1..N, n)'), noFns, { consts: { N: 3 }, boundConsts });
+    expect([...boundConsts]).toEqual(['N']);
+  });
+
+  it('handles nested and index-dependent sums', () => {
+    expect(at('sum(n=1..3, sum(k=1..n, k))')).toBe(10); // 1 + 3 + 6
+    expect(at('sum(n=1..2, sum(n=1..3, n))')).toBe(12); // inner n shadows
+  });
+
+  it('differentiates through sums', () => {
+    expect(at('d/dx sum(n=1..3, x^n)', { x: 1 })).toBe(6);
+    expect(at('d/dx sum[n=1..3] x^n', { x: 1 })).toBe(6);
+  });
+
+  it('inlines user functions per term', () => {
+    const { defs } = buildDefs([{ kind: 'fn', name: 'f', params: ['k'], rhs: 'k^2' }]);
+    const e = resolveExpr(parseExpr('sum(n=1..3, f(n))', new Set(['f'])), n => defs.fns.get(n));
+    expect(evaluate(e, {})).toBe(14);
+  });
+
+  it('expands inside constant definitions, using earlier constants', () => {
+    const { defs, errors, sumBoundConsts } = buildDefs([
+      { kind: 'const', name: 'N', rhs: '3' },
+      { kind: 'const', name: 'S', rhs: 'sum(n=1..N, n)' },
+    ]);
+    expect(errors.size).toBe(0);
+    expect(evalConstEnv(defs, 0).S).toBe(6);
+    expect([...sumBoundConsts]).toEqual(['N']);
+  });
+
+  it('folds numeric subtrees so GLSL stays clean', () => {
+    const e = resolveExpr(parseExpr('sum(n=1..2, (-1)^n x)'), noFns);
+    expect(toGLSL(e)).not.toContain('eq_pow');
+    expect(evaluate(e, { x: 7 })).toBe(0);
+  });
+
+  it('rejects bad bounds and bodyless headers', () => {
+    expect(() => at('sum(n=1..N, n)')).toThrow(/constant/);
+    expect(() => at('sum(n=1..t, n)')).toThrow(/t/);
+    expect(() => at('sum(n=1..10000, n)')).toThrow(/terms/);
+    expect(() => at('sum[n=1..3] + 1')).toThrow(/body/);
+    expect(() => at('1..3')).toThrow(/sum/);
+    expect(() => at('sum(x=1..3, x)')).toThrow(/reserved/);
   });
 });
 
