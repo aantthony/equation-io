@@ -1,4 +1,4 @@
-import { AstNode } from './ast';
+import { AstNode } from './ast.js';
 
 export function format(ast: AstNode): string {
   let str = '';

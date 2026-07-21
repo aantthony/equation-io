@@ -1,16 +1,17 @@
 {
   "compilerOptions": {
     "rootDir": "lib",
-    "target": "ESNext",
-    "module": "commonjs",
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "declaration": true,
     "outDir": "./dist",
     "strict": true,
-    "noImplicitAny": true,
-    "noImplicitThis": true,
+    "types": ["node"],
     "esModuleInterop": true,
-    "moduleResolution": "node",
-    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
     "inlineSourceMap": true
-  }
+  },
+  "include": ["lib"],
+  "exclude": ["**/*.test.ts"]
 }

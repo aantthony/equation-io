@@ -1,0 +1,125 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+#gl, #overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+#gl { touch-action: none; }
+#overlay { pointer-events: none; }
+
+#panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 300px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  padding: 8px;
+}
+
+.eq-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+}
+.eq-color {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex: none;
+  cursor: pointer;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+.eq-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.eq-error {
+  display: none;
+  color: #c0392b;
+  font-size: 11px;
+  padding: 1px 4px 2px;
+}
+.eq-input {
+  width: 100%;
+  font: 15px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 3px 4px;
+  border-bottom: 1px solid transparent;
+}
+.eq-row:focus-within { background: rgba(0, 90, 200, 0.05); border-radius: 6px; }
+.eq-input.invalid { border-bottom: 1px solid #d33; }
+.eq-remove {
+  flex: none;
+  border: none;
+  background: none;
+  color: #999;
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0 4px;
+  visibility: hidden;
+}
+.eq-row:hover .eq-remove { visibility: visible; }
+.eq-remove:hover { color: #d33; }
+
+#examples {
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  margin-top: 4px;
+  padding: 4px;
+  font-size: 12px;
+}
+#examples > summary {
+  color: #888;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px;
+}
+#examples > summary:hover { color: #444; }
+#examples details {
+  margin: 2px 0 2px 8px;
+}
+#examples details > summary {
+  color: #555;
+  cursor: pointer;
+  user-select: none;
+  padding: 2px;
+  font-weight: 500;
+}
+#examples details > summary:hover { color: #000; }
+.ex-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 3px 4px 3px 14px;
+  border-radius: 4px;
+  color: #333;
+  font-size: 12px;
+}
+.ex-item:hover { background: rgba(0, 90, 200, 0.08); }
+.ex-item code {
+  display: block;
+  color: #999;
+  font: 10.5px ui-monospace, Menlo, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ex-item:hover code { color: #667; }

@@ -1,8 +1,8 @@
-import { walk } from './lang/ast';
-import { BinaryInfix, BinaryRightInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser';
-import Tokenzier, { PatternDict, Token } from './lang/tokenizer';
-import { MS, Nat } from './ms';
-import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Power, Times, TrueQ, UnsameQ } from './ops';
+import { walk } from './lang/ast.js';
+import { BinaryInfix, BinaryRightInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser.js';
+import Tokenzier, { PatternDict, Token } from './lang/tokenizer.js';
+import { MS, Nat } from './ms.js';
+import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Power, Times, TrueQ, UnsameQ } from './ops.js';
 
 type ValueNode = { type: 'value'; value: MS };
 type SeriesNode = { type: 'series'; items: Node[] };
@@ -140,7 +140,7 @@ const ops = operators<Node>({
   // ';': BinaryInfix('Statements', 10),
   // '->': BinaryInfix('Rule', 10),
   // '//.': BinaryInfix('ReplaceRepeated', 10),
-  '=': BinaryInfix((a, b): AssignmentNode => {
+  '=': BinaryInfix<Node>((a, b): AssignmentNode => {
     if (a.type === 'identifier') {
       return {
         type: 'assignment',
@@ -171,7 +171,7 @@ const ops = operators<Node>({
     };
   }),
   // ':': BinaryInfix('Property', 12),
-  [implicitLambdaSuffix.str]: Postfix((a): FnHeaderNode => {
+  [implicitLambdaSuffix.str]: Postfix<Node>((a): FnHeaderNode => {
     const items = a.type === 'series' ? a.items : [a];
   
     const args = items.map((n): DeclarationNode => {
@@ -199,7 +199,7 @@ const ops = operators<Node>({
   '*': Infix(onValueArray(Times)),
   '×': Infix(onValueArray(Times)),
 
-  [implicit.str]: BinaryInfix((a, b): ValueNode => {
+  [implicit.str]: BinaryInfix<Node>((a, b): ValueNode => {
     if (a.type === 'callable') {
       return { type: 'value', value: a.impl(getValue(b)) };
     }

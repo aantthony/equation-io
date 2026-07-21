@@ -1,4 +1,4 @@
-import { MS } from './ms';
+import { MS } from './ms.js';
 
 export function compare(a: MS, b: MS): 1 | -1 | 0 {
   if (!a || !b) throw new Error('Invalid arguments');

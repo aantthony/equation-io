@@ -1,0 +1,541 @@
+/**
+ * 3D rendering: every equation is the zero set of F(x,y,z), rendered by
+ * raymarching a bounding box in a fragment shader — sign-change detection
+ * along the ray, bisection refinement, finite-difference normals, and
+ * gl_FragDepth from the hit point so multiple surfaces intersect correctly.
+ *
+ * 2D-only equations (no z) still work here: F(x,y) extrudes to a vertical
+ * sheet, which is exactly its locus in R^3.
+ */
+import { GLSL_PRELUDE } from '../lib/glsl.js';
+import { ProgramCache, QUAD_VERT, compileProgram } from './gl.js';
+import { Mat4, invert, lookAt, multiply, perspective } from './mat4.js';
+import { niceSpacing } from './render2d.js';
+
+export interface Camera3D {
+  target: [number, number, number];
+  radius: number;
+  /** Azimuth around +Z. */
+  theta: number;
+  /** Elevation from the XY plane. */
+  phi: number;
+}
+
+export interface Surface3D {
+  /** GLSL expression for F(x,y,z) in terms of floats x, y, z. */
+  field: string;
+  color: [number, number, number];
+}
+
+export function cameraEye(cam: Camera3D): [number, number, number] {
+  const cp = Math.cos(cam.phi);
+  return [
+    cam.target[0] + cam.radius * cp * Math.cos(cam.theta),
+    cam.target[1] + cam.radius * cp * Math.sin(cam.theta),
+    cam.target[2] + cam.radius * Math.sin(cam.phi),
+  ];
+}
+
+export function cameraMatrices(cam: Camera3D, aspect: number): { vp: Mat4; invVp: Mat4; eye: [number, number, number] } {
+  const eye = cameraEye(cam);
+  const view = lookAt(eye, cam.target, [0, 0, 1]);
+  const proj = perspective(Math.PI / 4, aspect, cam.radius * 0.01, cam.radius * 100);
+  const vp = multiply(proj, view);
+  return { vp, invVp: invert(vp), eye };
+}
+
+const MARCH_COMMON = `
+uniform mat4 uInvVP;
+uniform mat4 uVP;
+uniform vec2 uRes;
+uniform float uBoxR;
+uniform float t;
+
+vec3 unproject(vec3 ndc) {
+  vec4 p = uInvVP * vec4(ndc, 1.0);
+  return p.xyz / p.w;
+}
+
+// Ray/AABB intersection for the box [-uBoxR, uBoxR]^3.
+vec2 boxSpan(vec3 ro, vec3 rd) {
+  vec3 inv = 1.0 / rd;
+  vec3 t1 = (vec3(-uBoxR) - ro) * inv;
+  vec3 t2 = (vec3(uBoxR) - ro) * inv;
+  vec3 tmin = min(t1, t2);
+  vec3 tmax = max(t1, t2);
+  return vec2(max(max(tmin.x, tmin.y), tmin.z), min(min(tmax.x, tmax.y), tmax.z));
+}
+
+float depthOf(vec3 p) {
+  vec4 clip = uVP * vec4(p, 1.0);
+  return clamp(clip.z / clip.w * 0.5 + 0.5, 0.0, 1.0);
+}
+`;
+
+const STEPS = 220;
+const BISECT = 24;
+
+function surfaceFrag(field: string, grad?: [string, string, string]): string {
+  const gradFn = grad
+    ? `
+vec3 gradF(vec3 p, float h) {
+  float x = p.x, y = p.y, z = p.z;
+  return vec3(${grad[0]}, ${grad[1]}, ${grad[2]});
+}`
+    : `
+vec3 gradF(vec3 p, float h) {
+  return vec3(
+    F(p + vec3(h, 0, 0)) - F(p - vec3(h, 0, 0)),
+    F(p + vec3(0, h, 0)) - F(p - vec3(0, h, 0)),
+    F(p + vec3(0, 0, h)) - F(p - vec3(0, 0, h)));
+}`;
+  return `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+uniform vec3 uEye;
+out vec4 outColor;
+${GLSL_PRELUDE}
+${MARCH_COMMON}
+
+float F(vec3 p) {
+  float x = p.x, y = p.y, z = p.z;
+  return ${field};
+}
+${gradFn}
+
+void main() {
+  vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
+  vec3 ro = unproject(vec3(ndc, -1.0));
+  vec3 far = unproject(vec3(ndc, 1.0));
+  vec3 rd = normalize(far - ro);
+
+  vec2 span = boxSpan(ro, rd);
+  float t0 = max(span.x, 0.0);
+  float t1 = span.y;
+  if (t1 <= t0) discard;
+
+  float dt = (t1 - t0) / float(${STEPS});
+  float tPrev = t0;
+  float vPrev = F(ro + rd * t0);
+  bool hit = false;
+  float tHit = 0.0;
+
+  for (int i = 1; i <= ${STEPS}; i++) {
+    float t = t0 + dt * float(i);
+    float v = F(ro + rd * t);
+    if (!isnan(v) && !isinf(v) && !isnan(vPrev) && !isinf(vPrev) && sign(v) != sign(vPrev)) {
+      // Bisect to the crossing.
+      float a = tPrev, b = t, va = vPrev;
+      for (int j = 0; j < ${BISECT}; j++) {
+        float m = 0.5 * (a + b);
+        float vm = F(ro + rd * m);
+        if (sign(vm) == sign(va)) { a = m; va = vm; } else { b = m; }
+      }
+      tHit = 0.5 * (a + b);
+      hit = true;
+      break;
+    }
+    tPrev = t;
+    vPrev = v;
+  }
+  if (!hit) discard;
+
+  vec3 p = ro + rd * tHit;
+  float h = max(dt * 0.25, uBoxR * 1e-4);
+  vec3 n = normalize(gradF(p, h));
+  if (any(isnan(n))) n = -rd;
+  if (dot(n, rd) > 0.0) n = -n; // face the viewer
+
+  vec3 lightDir = normalize(vec3(0.4, 0.55, 0.9));
+  float diffuse = max(dot(n, lightDir), 0.0);
+  float sky = 0.5 + 0.5 * n.z;
+  vec3 halfway = normalize(lightDir - rd);
+  float spec = pow(max(dot(n, halfway), 0.0), 48.0);
+
+  // Subtle checker so the surface reads as a grid.
+  float cs = uBoxR / 4.0;
+  float checker = mod(floor(p.x / cs) + floor(p.y / cs) + floor(p.z / cs), 2.0);
+  vec3 base = uColor * (0.92 + 0.08 * checker);
+
+  vec3 col = base * (0.30 + 0.25 * sky + 0.50 * diffuse) + vec3(0.35) * spec;
+  // Distance fade toward the box edge keeps clipped surfaces from popping.
+  float edge = smoothstep(uBoxR, uBoxR * 0.96, max(max(abs(p.x), abs(p.y)), abs(p.z)));
+  outColor = vec4(col, 0.6 + 0.4 * edge);
+  gl_FragDepth = depthOf(p);
+}
+`;
+}
+
+/**
+ * Parametric surface P(u,v), u,v in (0,1), the old surface3 way: a static
+ * (u,v) grid mesh is displaced by P in the VERTEX shader (rasterization gives
+ * depth for free), and the fragment shader lights with the symbolically
+ * differentiated tangents ∂P/∂u × ∂P/∂v — finite differences only when a
+ * component has no smooth derivative.
+ */
+function psurfVert(comps: [string, string, string]): string {
+  return `#version 300 es
+layout(location=0) in vec2 aUV;
+uniform mat4 uVP;
+uniform float t;
+out vec2 vUV;
+out vec3 vPos;
+${GLSL_PRELUDE}
+vec3 P(float u, float v) {
+  return vec3(${comps[0]}, ${comps[1]}, ${comps[2]});
+}
+void main() {
+  vUV = aUV;
+  vPos = P(aUV.x, aUV.y);
+  gl_Position = uVP * vec4(vPos, 1.0);
+}
+`;
+}
+
+function psurfFrag(
+  comps: [string, string, string],
+  du?: [string, string, string],
+  dv?: [string, string, string],
+): string {
+  const tangents = du && dv
+    ? `
+vec3 Pu(float u, float v) { return vec3(${du[0]}, ${du[1]}, ${du[2]}); }
+vec3 Pv(float u, float v) { return vec3(${dv[0]}, ${dv[1]}, ${dv[2]}); }`
+    : `
+vec3 P(float u, float v) { return vec3(${comps[0]}, ${comps[1]}, ${comps[2]}); }
+vec3 Pu(float u, float v) { return (P(u + 1e-3, v) - P(u - 1e-3, v)) * 500.0; }
+vec3 Pv(float u, float v) { return (P(u, v + 1e-3) - P(u, v - 1e-3)) * 500.0; }`;
+  return `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+uniform vec3 uEye;
+uniform float t;
+in vec2 vUV;
+in vec3 vPos;
+out vec4 outColor;
+${GLSL_PRELUDE}
+${tangents}
+
+void main() {
+  vec3 n = normalize(cross(Pu(vUV.x, vUV.y), Pv(vUV.x, vUV.y)));
+  vec3 rd = normalize(vPos - uEye);
+  if (any(isnan(n))) n = -rd;
+  if (dot(n, rd) > 0.0) n = -n;
+
+  vec3 lightDir = normalize(vec3(0.4, 0.55, 0.9));
+  float diffuse = max(dot(n, lightDir), 0.0);
+  float sky = 0.5 + 0.5 * n.z;
+  vec3 halfway = normalize(lightDir - rd);
+  float spec = pow(max(dot(n, halfway), 0.0), 96.0);
+  float fresnel = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+
+  // Faint parameter checker so the (u,v) mapping reads.
+  float checker = mod(floor(vUV.x * 8.0) + floor(vUV.y * 8.0), 2.0);
+  vec3 base = uColor * (0.92 + 0.08 * checker);
+
+  vec3 col = base * (0.22 + 0.22 * sky + 0.42 * diffuse)
+           + vec3(1.0) * spec * 0.85
+           + vec3(0.35, 0.4, 0.5) * fresnel * 0.35;
+  outColor = vec4(col, 1.0);
+}
+`;
+}
+
+const LINE_VERT = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uVP;
+void main() { gl_Position = uVP * vec4(aPos, 1.0); }
+`;
+
+const LINE_FRAG = `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+out vec4 outColor;
+void main() { outColor = vec4(uColor, 1.0); }
+`;
+
+const POINT_VERT = `#version 300 es
+layout(location=0) in vec3 aPos;
+uniform mat4 uVP;
+void main() {
+  gl_Position = uVP * vec4(aPos, 1.0);
+  gl_PointSize = 14.0;
+}
+`;
+
+const POINT_FRAG = `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+out vec4 outColor;
+void main() {
+  vec2 q = gl_PointCoord - 0.5;
+  float r = length(q);
+  if (r > 0.5) discard;
+  float rim = smoothstep(0.5, 0.38, r);
+  vec3 col = mix(vec3(1.0), uColor, rim);
+  outColor = vec4(col, 1.0);
+}
+`;
+
+/** The z=0 reference plane with the same adaptive grid as the 2D view. */
+const PLANE_FRAG = `#version 300 es
+precision highp float;
+uniform float uMajor;
+uniform float uMinor;
+out vec4 outColor;
+${MARCH_COMMON}
+
+float lineAlpha(float coord, float spacing, float halfWidth) {
+  float d = abs(coord - spacing * round(coord / spacing));
+  return 1.0 - smoothstep(halfWidth, halfWidth * 2.0, d);
+}
+
+void main() {
+  vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;
+  vec3 ro = unproject(vec3(ndc, -1.0));
+  vec3 far = unproject(vec3(ndc, 1.0));
+  vec3 rd = normalize(far - ro);
+  if (abs(rd.z) < 1e-9) discard;
+  float t = -ro.z / rd.z;
+  if (t <= 0.0) discard;
+  vec3 p = ro + rd * t;
+  if (max(abs(p.x), abs(p.y)) > uBoxR) discard;
+
+  // Line width proportional to distance so it stays roughly screen-constant.
+  float w = t * 0.0015;
+  float minor = max(lineAlpha(p.x, uMinor, w), lineAlpha(p.y, uMinor, w));
+  float major = max(lineAlpha(p.x, uMajor, w * 1.4), lineAlpha(p.y, uMajor, w * 1.4));
+  float axis = max(lineAlpha(p.x, 1e30, w * 2.2), lineAlpha(p.y, 1e30, w * 2.2));
+  float a = max(max(minor * 0.18, major * 0.34), axis * 0.6);
+  float fade = 1.0 - smoothstep(uBoxR * 0.6, uBoxR, length(p.xy));
+  if (a * fade < 0.01) discard;
+  outColor = vec4(vec3(0.25), a * fade);
+  gl_FragDepth = depthOf(p);
+}
+`;
+
+const AXES_VERT = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aColor;
+uniform mat4 uVP;
+uniform float uBoxR;
+out vec3 vColor;
+void main() {
+  vColor = aColor;
+  gl_Position = uVP * vec4(aPos * uBoxR, 1.0);
+}
+`;
+
+const AXES_FRAG = `#version 300 es
+precision highp float;
+in vec3 vColor;
+out vec4 outColor;
+void main() { outColor = vec4(vColor, 0.9); }
+`;
+
+export interface Scene3D {
+  implicits: Array<Surface3D & { grad?: [string, string, string] }>;
+  psurfaces: Array<{
+    comps: [string, string, string];
+    du?: [string, string, string];
+    dv?: [string, string, string];
+    color: [number, number, number];
+  }>;
+  curves: Array<{ pts: Float32Array; color: [number, number, number] }>;
+  points: Array<{ pos: [number, number, number]; color: [number, number, number] }>;
+}
+
+const GRID_N = 160;
+
+export class Renderer3D {
+  private cache: ProgramCache;
+  private axesProgram: WebGLProgram;
+  private axesVao: WebGLVertexArrayObject;
+  private lineProgram: WebGLProgram;
+  private pointProgram: WebGLProgram;
+  private dynVao: WebGLVertexArrayObject;
+  private dynBuf: WebGLBuffer;
+  private gridVao: WebGLVertexArrayObject;
+  private gridIndexCount: number;
+
+  constructor(private gl: WebGL2RenderingContext, private quad: { draw(): void }) {
+    this.cache = new ProgramCache(gl);
+    this.axesProgram = compileProgram(gl, AXES_VERT, AXES_FRAG);
+    this.lineProgram = compileProgram(gl, LINE_VERT, LINE_FRAG);
+    this.pointProgram = compileProgram(gl, POINT_VERT, POINT_FRAG);
+    this.dynVao = gl.createVertexArray()!;
+    this.dynBuf = gl.createBuffer()!;
+    gl.bindVertexArray(this.dynVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.dynBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
+    // Static (u,v) unit-square grid, displaced per-surface in the vertex shader.
+    const uvs = new Float32Array(GRID_N * GRID_N * 2);
+    for (let j = 0; j < GRID_N; j++) {
+      for (let i = 0; i < GRID_N; i++) {
+        uvs[(j * GRID_N + i) * 2] = i / (GRID_N - 1);
+        uvs[(j * GRID_N + i) * 2 + 1] = j / (GRID_N - 1);
+      }
+    }
+    const indices = new Uint32Array((GRID_N - 1) * (GRID_N - 1) * 6);
+    let k = 0;
+    for (let j = 0; j < GRID_N - 1; j++) {
+      for (let i = 0; i < GRID_N - 1; i++) {
+        const a = j * GRID_N + i;
+        indices[k++] = a; indices[k++] = a + 1; indices[k++] = a + GRID_N;
+        indices[k++] = a + 1; indices[k++] = a + GRID_N + 1; indices[k++] = a + GRID_N;
+      }
+    }
+    this.gridIndexCount = indices.length;
+    this.gridVao = gl.createVertexArray()!;
+    gl.bindVertexArray(this.gridVao);
+    const uvBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const idxBuf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+    gl.bindVertexArray(null);
+    this.axesVao = gl.createVertexArray()!;
+    const axes = new Float32Array([
+      // x axis: red-ish
+      -1, 0, 0, 0.75, 0.30, 0.30, 1, 0, 0, 0.75, 0.30, 0.30,
+      // y axis: green-ish
+      0, -1, 0, 0.30, 0.65, 0.30, 0, 1, 0, 0.30, 0.65, 0.30,
+      // z axis: blue-ish
+      0, 0, -1, 0.30, 0.40, 0.80, 0, 0, 1, 0.30, 0.40, 0.80,
+    ]);
+    gl.bindVertexArray(this.axesVao);
+    const buf = gl.createBuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, axes, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+    gl.bindVertexArray(null);
+  }
+
+  render(cam: Camera3D, scene: Scene3D, time = 0): void {
+    const surfaces = scene.implicits;
+    const { gl } = this;
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    gl.viewport(0, 0, w, h);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+
+    const { vp, invVp, eye } = cameraMatrices(cam, w / h);
+    const boxR = cam.radius * 0.85;
+
+    const setCommon = (prog: WebGLProgram) => {
+      gl.useProgram(prog);
+      gl.uniformMatrix4fv(gl.getUniformLocation(prog, 'uVP'), false, vp);
+      const inv = gl.getUniformLocation(prog, 'uInvVP');
+      if (inv) gl.uniformMatrix4fv(inv, false, invVp);
+      const res = gl.getUniformLocation(prog, 'uRes');
+      if (res) gl.uniform2f(res, w, h);
+      const box = gl.getUniformLocation(prog, 'uBoxR');
+      if (box) gl.uniform1f(box, boxR);
+      const tLoc = gl.getUniformLocation(prog, 't');
+      if (tLoc) gl.uniform1f(tLoc, time);
+    };
+
+    // Axes lines.
+    setCommon(this.axesProgram);
+    gl.bindVertexArray(this.axesVao);
+    gl.drawArrays(gl.LINES, 0, 6);
+    gl.bindVertexArray(null);
+
+    for (const s of surfaces) {
+      let prog: WebGLProgram;
+      try {
+        prog = this.cache.get(QUAD_VERT, surfaceFrag(s.field, s.grad));
+      } catch (e) {
+        console.error(e);
+        continue;
+      }
+      setCommon(prog);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...s.color);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uEye'), ...eye);
+      this.quad.draw();
+    }
+
+    for (const s of scene.psurfaces) {
+      let prog: WebGLProgram;
+      try {
+        prog = this.cache.get(psurfVert(s.comps), psurfFrag(s.comps, s.du, s.dv));
+      } catch (e) {
+        console.error(e);
+        continue;
+      }
+      setCommon(prog);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...s.color);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uEye'), ...eye);
+      gl.bindVertexArray(this.gridVao);
+      gl.drawElements(gl.TRIANGLES, this.gridIndexCount, gl.UNSIGNED_INT, 0);
+      gl.bindVertexArray(null);
+    }
+
+    // CPU-sampled parametric curves and points.
+    gl.bindVertexArray(this.dynVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.dynBuf);
+    for (const c of scene.curves) {
+      setCommon(this.lineProgram);
+      gl.uniform3f(gl.getUniformLocation(this.lineProgram, 'uColor'), ...c.color);
+      gl.bufferData(gl.ARRAY_BUFFER, c.pts, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINE_STRIP, 0, c.pts.length / 3);
+    }
+    for (const p of scene.points) {
+      setCommon(this.pointProgram);
+      gl.uniform3f(gl.getUniformLocation(this.pointProgram, 'uColor'), ...p.color);
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(p.pos), gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.POINTS, 0, 1);
+    }
+    gl.bindVertexArray(null);
+
+    // Reference grid plane at z=0, last and without writing depth so its
+    // translucent lines never occlude surfaces.
+    const spacing = niceSpacing(boxR / 300, 60);
+    const plane = this.cache.get(QUAD_VERT, PLANE_FRAG);
+    setCommon(plane);
+    gl.uniform1f(gl.getUniformLocation(plane, 'uMajor'), spacing.major);
+    gl.uniform1f(gl.getUniformLocation(plane, 'uMinor'), spacing.minor);
+    gl.depthMask(false);
+    this.quad.draw();
+    gl.depthMask(true);
+  }
+}
+
+/** Project axis-end labels (x, y, z) onto the overlay canvas. */
+export function drawLabels3D(ctx: CanvasRenderingContext2D, cam: Camera3D, dpr: number): void {
+  const w = ctx.canvas.width / dpr;
+  const h = ctx.canvas.height / dpr;
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+  const { vp } = cameraMatrices(cam, w / h);
+  const boxR = cam.radius * 0.85;
+  ctx.font = 'italic 13px ui-sans-serif, system-ui';
+  const labels: Array<[string, number[], string]> = [
+    ['x', [boxR * 1.04, 0, 0], '#a44'],
+    ['y', [0, boxR * 1.04, 0], '#4a4'],
+    ['z', [0, 0, boxR * 1.04], '#46a'],
+  ];
+  for (const [text, p, color] of labels) {
+    const cx = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12];
+    const cy = vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13];
+    const cw = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15];
+    if (cw <= 0) continue;
+    ctx.fillStyle = color;
+    ctx.fillText(text, (cx / cw * 0.5 + 0.5) * w, (0.5 - cy / cw * 0.5) * h);
+  }
+  ctx.restore();
+}
