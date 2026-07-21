@@ -8,7 +8,7 @@
     "build": "tsc",
     "test": "vitest",
     "coverage": "vitest run --coverage",
-    "dev": "env TZ=UTC tsx watch lib/repl.ts",
+    "dev": "env TZ=UTC node --watch lib/repl.ts",
     "web": "vite",
     "web:build": "vite build",
     "typecheck": "tsc --noEmit && tsc -p web --noEmit"
@@ -24,11 +24,10 @@
   },
   "homepage": "https://github.com/aantthony/equation#readme",
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "tsx": "^4.20.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.6",
     "vitest": "^4.1.10"

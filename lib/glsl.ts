@@ -4,7 +4,7 @@
  * An equation l = r compiles to the scalar field F = l - r; the graph is the
  * zero set of F, which the renderers extract in a fragment shader.
  */
-import { Expr } from './expr.js';
+import type { Expr } from './expr.ts';
 
 export const FN_GLSL: Record<string, string> = {
   ln: 'log',

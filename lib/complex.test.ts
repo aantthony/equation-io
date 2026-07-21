@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { compileTyped, usesComplex } from './complex.js';
-import { parseExpr } from './expr.js';
-import { classify } from './plot.js';
+import { compileTyped, usesComplex } from './complex.ts';
+import { parseExpr } from './expr.ts';
+import { classify } from './plot.ts';
 
 const typed = (s: string) => compileTyped(parseExpr(s));
 

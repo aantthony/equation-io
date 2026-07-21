@@ -1,8 +1,8 @@
-import { evaluate, parseExpr } from '../lib/expr.js';
-import { Classified, classify } from '../lib/plot.js';
-import { fullscreenQuad } from './gl.js';
-import { Curve2D, Overlay2D, Renderer2D, View2D, drawLabels2D } from './render2d.js';
-import { Camera3D, Renderer3D, Scene3D, drawLabels3D } from './render3d.js';
+import { evaluate, parseExpr } from '../lib/expr.ts';
+import { type Classified, classify } from '../lib/plot.ts';
+import { fullscreenQuad } from './gl.ts';
+import { type Curve2D, type Overlay2D, Renderer2D, type View2D, drawLabels2D } from './render2d.ts';
+import { type Camera3D, Renderer3D, type Scene3D, drawLabels3D } from './render3d.ts';
 
 const PALETTE: [number, number, number][] = [
   [0.176, 0.439, 0.702], // blue
@@ -87,7 +87,7 @@ function render() {
 
   // CPU sampling of parametric curves / points, with t bound to seconds.
   const sampleCurve = (eq: Equation, dim: 2 | 3): number[] => {
-    const { comps } = eq.cls!.plot as { comps: import('../lib/expr.js').Expr[] };
+    const { comps } = eq.cls!.plot as { comps: import('../lib/expr.ts').Expr[] };
     const out: number[] = [];
     for (let k = 0; k < CURVE_SAMPLES; k++) {
       const u = k / (CURVE_SAMPLES - 1);
@@ -102,7 +102,7 @@ function render() {
     return out;
   };
   const samplePoint = (eq: Equation): number[] | null => {
-    const { coords } = eq.cls!.plot as { coords: import('../lib/expr.js').Expr[] };
+    const { coords } = eq.cls!.plot as { coords: import('../lib/expr.ts').Expr[] };
     try {
       const p = coords.map(c => evaluate(c, { t: time }));
       return p.every(isFinite) ? p : null;

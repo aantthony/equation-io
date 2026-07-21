@@ -9,10 +9,10 @@
  * - vector with free u (and v) → parametric curve (u) / surface (u,v), u,v ∈ (0,1)
  * - t is always allowed and means "animated": bound to seconds since start
  */
-import { compileTyped, usesComplex } from './complex.js';
-import { diff } from './diff.js';
-import { Expr, freeVars } from './expr.js';
-import { toGLSL } from './glsl.js';
+import { compileTyped, usesComplex } from './complex.ts';
+import { diff } from './diff.ts';
+import { type Expr, freeVars } from './expr.ts';
+import { toGLSL } from './glsl.ts';
 
 export type Plot =
   | { type: 'implicit2d'; field: string }

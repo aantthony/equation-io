@@ -1,6 +1,6 @@
-import { compare } from './compare.js';
-import formatMs from './format.js';
-import { Empty, FALSE, MS, TRUE } from './ms.js';
+import { compare } from './compare.ts';
+import formatMs from './format.ts';
+import { Empty, FALSE, type MS, TRUE } from './ms.ts';
 
 export function Equal(a: MS, b: MS): MS {
   return compare(a, b) === 0 ? TRUE : FALSE;

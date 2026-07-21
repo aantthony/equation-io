@@ -1,6 +1,6 @@
 import readline from 'node:readline';
-import formatMs from './format.js';
-import { DeclarationNode, parse } from './syntax.js';
+import formatMs from './format.ts';
+import { type DeclarationNode, parse } from './syntax.ts';
 
 const repl = readline.createInterface({
   input: process.stdin,

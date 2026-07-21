@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import formatMs from './format.js';
-import { DeclarationNode, parse } from './syntax.js';
+import formatMs from './format.ts';
+import { DeclarationNode, parse } from './syntax.ts';
 
 function evaluate(input: string, globals = new Map<string, DeclarationNode>()): string {
   const res = parse(input, globals);

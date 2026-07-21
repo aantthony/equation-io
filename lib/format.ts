@@ -1,5 +1,5 @@
-import { compare } from './compare.js';
-import { MS } from './ms.js';
+import { compare } from './compare.ts';
+import type { MS } from './ms.ts';
 
 type TreeNode =
 | { name: 'Plus'; items: TreeNode[]; }

@@ -4,8 +4,8 @@
  * F(x,y) is evaluated per pixel, and the curve F=0 is drawn where the
  * screen-space distance estimate |F| / |∇F| is under the line width.
  */
-import { GLSL_PRELUDE } from '../lib/glsl.js';
-import { ProgramCache, QUAD_VERT } from './gl.js';
+import { GLSL_PRELUDE } from '../lib/glsl.ts';
+import { ProgramCache, QUAD_VERT } from './gl.ts';
 
 export interface View2D {
   cx: number;

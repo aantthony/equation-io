@@ -1,5 +1,5 @@
-import { OperatorDict } from './parser.js';
-import { Token } from './tokenizer.js';
+import type { OperatorDict } from './parser.ts';
+import type { Token } from './tokenizer.ts';
 
 /**
  * Executes a stream of RPN tokens, invoking the leaf() callback to create leaf AST nodes,

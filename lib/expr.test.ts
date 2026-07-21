@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { Expr, freeVars, parseExpr } from './expr.js';
-import { toGLSL } from './glsl.js';
+import { Expr, freeVars, parseExpr } from './expr.ts';
+import { toGLSL } from './glsl.ts';
 
 function evalExpr(e: Expr, env: Record<string, number>): number {
   switch (e.kind) {

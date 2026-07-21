@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { diff } from './diff.js';
-import { evaluate, parseExpr } from './expr.js';
-import { classify } from './plot.js';
+import { diff } from './diff.ts';
+import { evaluate, parseExpr } from './expr.ts';
+import { classify } from './plot.ts';
 
 function ddx(s: string, at: Record<string, number>, wrt = 'x'): number {
   return evaluate(diff(parseExpr(s), wrt), at);

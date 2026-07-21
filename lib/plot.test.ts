@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluate, parseExpr } from './expr.js';
-import { classify } from './plot.js';
+import { evaluate, parseExpr } from './expr.ts';
+import { classify } from './plot.ts';
 
 const cls = (s: string) => classify(parseExpr(s));
 

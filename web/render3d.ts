@@ -7,10 +7,10 @@
  * 2D-only equations (no z) still work here: F(x,y) extrudes to a vertical
  * sheet, which is exactly its locus in R^3.
  */
-import { GLSL_PRELUDE } from '../lib/glsl.js';
-import { ProgramCache, QUAD_VERT, compileProgram } from './gl.js';
-import { Mat4, invert, lookAt, multiply, perspective } from './mat4.js';
-import { niceSpacing } from './render2d.js';
+import { GLSL_PRELUDE } from '../lib/glsl.ts';
+import { ProgramCache, QUAD_VERT, compileProgram } from './gl.ts';
+import { type Mat4, invert, lookAt, multiply, perspective } from './mat4.ts';
+import { niceSpacing } from './render2d.ts';
 
 export interface Camera3D {
   target: [number, number, number];

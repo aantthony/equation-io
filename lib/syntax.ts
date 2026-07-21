@@ -1,8 +1,8 @@
-import { walk } from './lang/ast.js';
-import { BinaryInfix, BinaryRightInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser.js';
-import Tokenzier, { PatternDict, Token } from './lang/tokenizer.js';
-import { MS, Nat } from './ms.js';
-import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Power, Times, TrueQ, UnsameQ } from './ops.js';
+import { walk } from './lang/ast.ts';
+import { BinaryInfix, BinaryRightInfix, Infix, operators, Postfix, Prefix, shunting } from './lang/parser.ts';
+import Tokenzier, { type PatternDict, type Token } from './lang/tokenizer.ts';
+import { type MS, Nat } from './ms.ts';
+import { Divide, Equal, Greater, GreaterEqual, Less, LessEqual, Minus, Not, Plus, Power, Times, TrueQ, UnsameQ } from './ops.ts';
 
 type ValueNode = { type: 'value'; value: MS };
 type SeriesNode = { type: 'series'; items: Node[] };

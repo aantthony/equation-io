@@ -1,4 +1,4 @@
-import { Token } from './tokenizer.js';
+import type { Token } from './tokenizer.ts';
 
 
 export interface OperatorSpec<T> {

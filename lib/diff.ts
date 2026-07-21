@@ -4,7 +4,7 @@
  * readable and cheap. Non-smooth functions (min, max, floor, …) throw;
  * callers fall back to finite differences.
  */
-import { Expr } from './expr.js';
+import type { Expr } from './expr.ts';
 
 const num = (value: number): Expr => ({ kind: 'num', value });
 const ZERO = num(0);

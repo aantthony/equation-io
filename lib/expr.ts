@@ -5,9 +5,9 @@
  * parses input into a small symbolic AST that can retain free variables
  * (x, y, z, ...) so it can be compiled to GLSL or JS for graphing.
  */
-import { BinaryInfix, BinaryRightInfix, operators, Postfix, Prefix, shunting } from './lang/parser.js';
-import Tokenizer, { PatternDict, Token } from './lang/tokenizer.js';
-import { walk } from './lang/ast.js';
+import { BinaryInfix, BinaryRightInfix, operators, Postfix, Prefix, shunting } from './lang/parser.ts';
+import Tokenizer, { type PatternDict, type Token } from './lang/tokenizer.ts';
+import { walk } from './lang/ast.ts';
 
 export type Expr =
   | { kind: 'num'; value: number }

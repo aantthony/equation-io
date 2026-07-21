@@ -7,8 +7,8 @@
  * unaffected; re()/im()/arg()/abs() take a complex value back to a real one,
  * which lets equations like im(ln(w)) = 1 flow through the implicit-curve path.
  */
-import { Expr } from './expr.js';
-import { FN_GLSL, toGLSL } from './glsl.js';
+import type { Expr } from './expr.ts';
+import { FN_GLSL, toGLSL } from './glsl.ts';
 
 export type Typed = { type: 'real'; code: string } | { type: 'complex'; code: string };
 
