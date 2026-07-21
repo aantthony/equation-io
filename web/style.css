@@ -47,6 +47,39 @@ html, body {
   display: flex;
   flex-direction: column;
 }
+.eq-slider {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 2px 3px;
+}
+.eq-slider-range {
+  flex: 1;
+  min-width: 0;
+  height: 16px;
+  margin: 0;
+  accent-color: #2d70b3;
+  cursor: pointer;
+}
+.eq-slider-bound {
+  flex: none;
+  width: 46px;
+  border: none;
+  outline: none;
+  background: none;
+  font: 11px ui-monospace, "SF Mono", Menlo, monospace;
+  color: #999;
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.eq-slider-bound:focus { color: #333; }
+.eq-slider-bound::-webkit-outer-spin-button,
+.eq-slider-bound::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .eq-error {
   display: none;
   color: #c0392b;

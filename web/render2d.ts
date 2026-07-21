@@ -18,7 +18,12 @@ export interface Curve2D {
   /** GLSL expression for F(x,y) in terms of floats x, y. */
   field: string;
   color: [number, number, number];
+  /** User-defined constants the field references (as u_<name> uniforms). */
+  params?: string[];
 }
+
+export const paramDecls = (params: string[] = []): string =>
+  params.map(p => `uniform float u_${p};`).join('\n');
 
 /** Pick a "nice" grid spacing (1, 2, or 5 × 10^k) at least minPx pixels apart. */
 export function niceSpacing(upp: number, minPx: number): { major: number; minor: number } {
@@ -60,7 +65,7 @@ void main() {
 }
 `;
 
-function curveFrag(field: string): string {
+function curveFrag(field: string, params?: string[]): string {
   return `#version 300 es
 precision highp float;
 uniform vec2 uCenter;
@@ -68,6 +73,7 @@ uniform float uUpp;
 uniform vec2 uRes;
 uniform vec3 uColor;
 uniform float t;
+${paramDecls(params)}
 out vec4 outColor;
 ${GLSL_PRELUDE}
 float F(float x, float y) { return ${field}; }
@@ -106,7 +112,7 @@ void main() {
 `;
 }
 
-function scalarFrag(field: string): string {
+function scalarFrag(field: string, params?: string[]): string {
   return `#version 300 es
 precision highp float;
 uniform vec2 uCenter;
@@ -114,6 +120,7 @@ uniform float uUpp;
 uniform vec2 uRes;
 uniform vec3 uColor;
 uniform float t;
+${paramDecls(params)}
 out vec4 outColor;
 ${GLSL_PRELUDE}
 float F(float x, float y) { return ${field}; }
@@ -129,7 +136,7 @@ void main() {
 `;
 }
 
-function complexFrag(field: string): string {
+function complexFrag(field: string, params?: string[]): string {
   return `#version 300 es
 precision highp float;
 uniform vec2 uCenter;
@@ -137,6 +144,7 @@ uniform float uUpp;
 uniform vec2 uRes;
 uniform vec3 uColor;
 uniform float t;
+${paramDecls(params)}
 out vec4 outColor;
 ${GLSL_PRELUDE}
 vec2 F(float x, float y) { return ${field}; }
@@ -175,7 +183,14 @@ export class Renderer2D {
     this.cache = new ProgramCache(gl);
   }
 
-  render(view: View2D, curves: Curve2D[], scalars: Curve2D[] = [], complexes: Curve2D[] = [], time = 0): void {
+  render(
+    view: View2D,
+    curves: Curve2D[],
+    scalars: Curve2D[] = [],
+    complexes: Curve2D[] = [],
+    time = 0,
+    env: Record<string, number> = {},
+  ): void {
     const { gl } = this;
     const w = gl.drawingBufferWidth;
     const h = gl.drawingBufferHeight;
@@ -195,10 +210,10 @@ export class Renderer2D {
     gl.uniform1f(gl.getUniformLocation(grid, 'uMinor'), spacing.minor);
     this.quad.draw();
 
-    const drawField = (field: string, color: [number, number, number], frag: (f: string) => string) => {
+    const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) => {
       let prog: WebGLProgram;
       try {
-        prog = this.cache.get(QUAD_VERT, frag(field));
+        prog = this.cache.get(QUAD_VERT, frag(item.field, item.params));
       } catch (e) {
         console.error(e);
         return;
@@ -207,15 +222,19 @@ export class Renderer2D {
       gl.uniform2f(gl.getUniformLocation(prog, 'uCenter'), view.cx, view.cy);
       gl.uniform1f(gl.getUniformLocation(prog, 'uUpp'), view.upp);
       gl.uniform2f(gl.getUniformLocation(prog, 'uRes'), w, h);
-      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...color);
+      gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...item.color);
       const tLoc = gl.getUniformLocation(prog, 't');
       if (tLoc) gl.uniform1f(tLoc, time);
+      for (const p of item.params ?? []) {
+        const loc = gl.getUniformLocation(prog, 'u_' + p);
+        if (loc) gl.uniform1f(loc, env[p] ?? 0);
+      }
       this.quad.draw();
     };
 
-    for (const s of scalars) drawField(s.field, s.color, scalarFrag);
-    for (const c of complexes) drawField(c.field, c.color, complexFrag);
-    for (const c of curves) drawField(c.field, c.color, curveFrag);
+    for (const s of scalars) drawField(s, scalarFrag);
+    for (const c of complexes) drawField(c, complexFrag);
+    for (const c of curves) drawField(c, curveFrag);
   }
 }
 

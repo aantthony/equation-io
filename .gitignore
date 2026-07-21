@@ -105,3 +105,6 @@ dist
 
 # Grapher build output
 dist-web
+
+# macOS
+.DS_Store

@@ -34,6 +34,11 @@ export const CONSTANTS: Record<string, number> = {
   e: Math.E,
 };
 
+/** User-defined function names for the parse in progress (set by parseExpr). */
+let activeUserFns: ReadonlySet<string> = new Set();
+
+const isFnName = (name: string): boolean => FUNCTIONS.has(name) || activeUserFns.has(name);
+
 const num = (value: number): Expr => ({ kind: 'num', value });
 const bin = (op: '+' | '-' | '*' | '/' | '^') => (a: Expr, b: Expr): Expr => ({ kind: 'bin', op, a, b });
 
@@ -83,7 +88,7 @@ const ops = operators<PNode>({
 
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
-    if (a.kind !== 'var' || !FUNCTIONS.has(a.name)) throw new Error('Expected a function name.');
+    if (a.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
     const args = b.kind === 'series' ? b.items : [asExpr(b)];
     return { kind: 'call', name: a.name, args };
   }),
@@ -132,7 +137,7 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
     }
 
     if (afterValue && (token.type === 'number' || token.type === 'symbol' || token.type === 'parenopen')) {
-      const isFnCall = token.type === 'parenopen' && last!.type === 'symbol' && FUNCTIONS.has(last!.str);
+      const isFnCall = token.type === 'parenopen' && last!.type === 'symbol' && isFnName(last!.str);
       yield op(isFnCall ? '[apply]' : '[impl]');
     }
 
@@ -151,24 +156,45 @@ function createLeaf(token: Token): PNode {
   throw new Error(`Invalid token: ${token.type} ${JSON.stringify(token.str)}`);
 }
 
-/** Parse an expression or equation, keeping free variables symbolic. */
-export function parseExpr(str: string): Expr {
-  const tokens = addImplicitTokens(tokenize(str));
-  const stack: PNode[] = [];
-  walk(
-    ops,
-    createLeaf,
-    shunting(ops, tokens),
-    node => stack.push(node),
-    n => stack.splice(stack.length - n),
-  );
-  if (stack.length !== 1) throw new Error('Incomplete expression.');
-  const top = stack[0];
-  if (top.kind === 'series') {
-    if (top.items.length === 2 || top.items.length === 3) return { kind: 'vec', items: top.items };
-    throw new Error('Expected 2 or 3 vector components.');
+/**
+ * Parse an expression or equation, keeping free variables symbolic.
+ * Names in userFns parse as function calls (`f(x+1)`) instead of products.
+ */
+export function parseExpr(str: string, userFns: ReadonlySet<string> = new Set()): Expr {
+  activeUserFns = userFns;
+  try {
+    const tokens = addImplicitTokens(tokenize(str));
+    const stack: PNode[] = [];
+    walk(
+      ops,
+      createLeaf,
+      shunting(ops, tokens),
+      node => stack.push(node),
+      n => stack.splice(stack.length - n),
+    );
+    if (stack.length !== 1) throw new Error('Incomplete expression.');
+    const top = stack[0];
+    if (top.kind === 'series') {
+      if (top.items.length === 2 || top.items.length === 3) return { kind: 'vec', items: top.items };
+      throw new Error('Expected 2 or 3 vector components.');
+    }
+    return top;
+  } finally {
+    activeUserFns = new Set();
   }
-  return top;
+}
+
+/** Replace free variables by expressions. There are no binders, so no capture. */
+export function substVars(e: Expr, env: Record<string, Expr>): Expr {
+  switch (e.kind) {
+    case 'num': return e;
+    case 'var': return env[e.name] ?? e;
+    case 'neg': return { kind: 'neg', a: substVars(e.a, env) };
+    case 'bin': return { kind: 'bin', op: e.op, a: substVars(e.a, env), b: substVars(e.b, env) };
+    case 'call': return { kind: 'call', name: e.name, args: e.args.map(a => substVars(a, env)) };
+    case 'eq': return { kind: 'eq', l: substVars(e.l, env), r: substVars(e.r, env) };
+    case 'vec': return { kind: 'vec', items: e.items.map(a => substVars(a, env)) };
+  }
 }
 
 const EVAL_FNS: Record<string, (...xs: number[]) => number> = {

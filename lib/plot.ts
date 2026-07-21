@@ -11,7 +11,7 @@
  */
 import { compileTyped, usesComplex } from './complex.ts';
 import { diff } from './diff.ts';
-import { type Expr, freeVars } from './expr.ts';
+import { type Expr, freeVars, substVars } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 
 export type Plot =
@@ -40,18 +40,33 @@ export interface Classified {
   plot: Plot;
   animated: boolean;
   needs3D: boolean;
+  /**
+   * User-defined constants the expression references. In GLSL fields they
+   * appear as `u_<name>` uniforms; CPU-evaluated plots read them from the
+   * constant environment by their original names.
+   */
+  params: string[];
 }
 
 const SPACE_VARS = new Set(['x', 'y', 'z']);
 const PARAM_VARS = new Set(['u', 'v']);
 
-export function classify(expr: Expr): Classified {
+export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): Classified {
   const vars = freeVars(expr);
   vars.delete('i');
   if (vars.delete('w')) { vars.add('x'); vars.add('y'); }
+  const params: string[] = [];
+  for (const v of [...vars]) {
+    if (defined.has(v)) {
+      params.push(v);
+      vars.delete(v);
+    }
+  }
+  params.sort();
   for (const v of vars) {
     if (!SPACE_VARS.has(v) && !PARAM_VARS.has(v) && v !== 't') {
-      throw new Error(`Unknown variable: ${v}`);
+      if (v === 'd' || /^d[A-Za-z]$/.test(v)) throw new Error('Write derivatives as d/dx (…).');
+      throw new Error(`Unknown variable: ${v}. Define "${v} = 1" to make a slider.`);
     }
   }
   const animated = vars.has('t');
@@ -67,7 +82,14 @@ export function classify(expr: Expr): Classified {
     animated,
     needs3D: plot.type === 'implicit3d' || plot.type === 'psurface'
       || ((plot.type === 'point' || plot.type === 'pcurve') && plot.dim === 3),
+    params,
   });
+
+  // GLSL compilation sees constants as u_<name> uniforms; CPU evaluation
+  // (points, parametric curves) keeps the original names.
+  const g = params.length
+    ? substVars(expr, Object.fromEntries(params.map(p => [p, { kind: 'var', name: 'u_' + p } as Expr])))
+    : expr;
 
   if (expr.kind === 'vec') {
     if (usesComplex(expr)) throw new Error('Complex values are not supported in vectors.');
@@ -75,12 +97,13 @@ export function classify(expr: Expr): Classified {
     if (vars.has('v') && !vars.has('u')) throw new Error('Parametric surfaces use u (and v).');
     if (vars.has('u') && vars.has('v')) {
       if (dim !== 3) throw new Error('A parametric surface needs 3 components.');
-      const [a, b, c] = expr.items;
+      const gItems = (g as Expr & { kind: 'vec' }).items;
+      const [a, b, c] = gItems;
       return done({
         type: 'psurface',
         comps: [toGLSL(a), toGLSL(b), toGLSL(c)],
-        du: tryGrad(expr.items, 'u'),
-        dv: tryGrad(expr.items, 'v'),
+        du: tryGrad(gItems, 'u'),
+        dv: tryGrad(gItems, 'v'),
       });
     }
     if (vars.has('u')) return done({ type: 'pcurve', dim, comps: expr.items });
@@ -97,21 +120,21 @@ export function classify(expr: Expr): Classified {
     }
   };
 
-  if (expr.kind === 'eq') {
+  if (g.kind === 'eq') {
     // compileTyped rejects equations that are still complex-valued; re()/im()
     // wrapped sides come out real and flow through the implicit paths.
-    const field = compileTyped(expr).code;
+    const field = compileTyped(g).code;
     return done(vars.has('z')
-      ? { type: 'implicit3d', field, grad: gradOf(expr) }
+      ? { type: 'implicit3d', field, grad: gradOf(g) }
       : { type: 'implicit2d', field });
   }
 
   // Bare scalar expression.
-  const compiled = compileTyped(expr);
+  const compiled = compileTyped(g);
   if (compiled.type === 'complex') return done({ type: 'complex2d', field: compiled.code });
-  if (vars.has('z')) return done({ type: 'implicit3d', field: compiled.code, grad: gradOf(expr) });
+  if (vars.has('z')) return done({ type: 'implicit3d', field: compiled.code, grad: gradOf(g) });
   if (vars.has('y')) return done({ type: 'scalar2d', field: compiled.code });
   // Only x (or constants / t): plot as y = expr.
-  const asY: Expr = { kind: 'eq', l: { kind: 'var', name: 'y' }, r: expr };
+  const asY: Expr = { kind: 'eq', l: { kind: 'var', name: 'y' }, r: g };
   return done({ type: 'implicit2d', field: compileTyped(asY).code });
 }

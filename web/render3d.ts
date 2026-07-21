@@ -10,7 +10,7 @@
 import { GLSL_PRELUDE } from '../lib/glsl.ts';
 import { ProgramCache, QUAD_VERT, compileProgram } from './gl.ts';
 import { type Mat4, invert, lookAt, multiply, perspective } from './mat4.ts';
-import { niceSpacing } from './render2d.ts';
+import { niceSpacing, paramDecls } from './render2d.ts';
 
 export interface Camera3D {
   target: [number, number, number];
@@ -25,6 +25,8 @@ export interface Surface3D {
   /** GLSL expression for F(x,y,z) in terms of floats x, y, z. */
   field: string;
   color: [number, number, number];
+  /** User-defined constants the field references (as u_<name> uniforms). */
+  params?: string[];
 }
 
 export function cameraEye(cam: Camera3D): [number, number, number] {
@@ -75,7 +77,7 @@ float depthOf(vec3 p) {
 const STEPS = 220;
 const BISECT = 24;
 
-function surfaceFrag(field: string, grad?: [string, string, string]): string {
+function surfaceFrag(field: string, grad?: [string, string, string], params?: string[]): string {
   const gradFn = grad
     ? `
 vec3 gradF(vec3 p, float h) {
@@ -93,6 +95,7 @@ vec3 gradF(vec3 p, float h) {
 precision highp float;
 uniform vec3 uColor;
 uniform vec3 uEye;
+${paramDecls(params)}
 out vec4 outColor;
 ${GLSL_PRELUDE}
 ${MARCH_COMMON}
@@ -173,11 +176,12 @@ void main() {
  * differentiated tangents ∂P/∂u × ∂P/∂v — finite differences only when a
  * component has no smooth derivative.
  */
-function psurfVert(comps: [string, string, string]): string {
+function psurfVert(comps: [string, string, string], params?: string[]): string {
   return `#version 300 es
 layout(location=0) in vec2 aUV;
 uniform mat4 uVP;
 uniform float t;
+${paramDecls(params)}
 out vec2 vUV;
 out vec3 vPos;
 ${GLSL_PRELUDE}
@@ -196,6 +200,7 @@ function psurfFrag(
   comps: [string, string, string],
   du?: [string, string, string],
   dv?: [string, string, string],
+  params?: string[],
 ): string {
   const tangents = du && dv
     ? `
@@ -210,6 +215,7 @@ precision highp float;
 uniform vec3 uColor;
 uniform vec3 uEye;
 uniform float t;
+${paramDecls(params)}
 in vec2 vUV;
 in vec3 vPos;
 out vec4 outColor;
@@ -340,6 +346,7 @@ export interface Scene3D {
     du?: [string, string, string];
     dv?: [string, string, string];
     color: [number, number, number];
+    params?: string[];
   }>;
   curves: Array<{ pts: Float32Array; color: [number, number, number] }>;
   points: Array<{ pos: [number, number, number]; color: [number, number, number] }>;
@@ -420,7 +427,7 @@ export class Renderer3D {
     gl.bindVertexArray(null);
   }
 
-  render(cam: Camera3D, scene: Scene3D, time = 0): void {
+  render(cam: Camera3D, scene: Scene3D, time = 0, env: Record<string, number> = {}): void {
     const surfaces = scene.implicits;
     const { gl } = this;
     const w = gl.drawingBufferWidth;
@@ -447,6 +454,12 @@ export class Renderer3D {
       const tLoc = gl.getUniformLocation(prog, 't');
       if (tLoc) gl.uniform1f(tLoc, time);
     };
+    const setParams = (prog: WebGLProgram, params?: string[]) => {
+      for (const p of params ?? []) {
+        const loc = gl.getUniformLocation(prog, 'u_' + p);
+        if (loc) gl.uniform1f(loc, env[p] ?? 0);
+      }
+    };
 
     // Axes lines.
     setCommon(this.axesProgram);
@@ -457,12 +470,13 @@ export class Renderer3D {
     for (const s of surfaces) {
       let prog: WebGLProgram;
       try {
-        prog = this.cache.get(QUAD_VERT, surfaceFrag(s.field, s.grad));
+        prog = this.cache.get(QUAD_VERT, surfaceFrag(s.field, s.grad, s.params));
       } catch (e) {
         console.error(e);
         continue;
       }
       setCommon(prog);
+      setParams(prog, s.params);
       gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...s.color);
       gl.uniform3f(gl.getUniformLocation(prog, 'uEye'), ...eye);
       this.quad.draw();
@@ -471,12 +485,13 @@ export class Renderer3D {
     for (const s of scene.psurfaces) {
       let prog: WebGLProgram;
       try {
-        prog = this.cache.get(psurfVert(s.comps), psurfFrag(s.comps, s.du, s.dv));
+        prog = this.cache.get(psurfVert(s.comps, s.params), psurfFrag(s.comps, s.du, s.dv, s.params));
       } catch (e) {
         console.error(e);
         continue;
       }
       setCommon(prog);
+      setParams(prog, s.params);
       gl.uniform3f(gl.getUniformLocation(prog, 'uColor'), ...s.color);
       gl.uniform3f(gl.getUniformLocation(prog, 'uEye'), ...eye);
       gl.bindVertexArray(this.gridVao);

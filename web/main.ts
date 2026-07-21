@@ -1,3 +1,13 @@
+import {
+  type Definition,
+  type Defs,
+  buildDefs,
+  constsAnimated,
+  emptyDefs,
+  evalConstEnv,
+  resolveExpr,
+  scanDefinition,
+} from '../lib/defs.ts';
 import { evaluate, parseExpr } from '../lib/expr.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { fullscreenQuad } from './gl.ts';
@@ -19,6 +29,12 @@ interface Equation {
   colorIndex: number;
   cls?: Classified;
   error?: string;
+  /** Set when the row is a definition (`a = 2`, `f(x) = …`) rather than a plot. */
+  def?: Definition;
+  sliderMin?: number;
+  sliderMax?: number;
+  /** Sync this row's error/slider UI with current state (set by rebuildList). */
+  refresh?: () => void;
 }
 
 function cssColor([r, g, b]: [number, number, number]): string {
@@ -32,6 +48,9 @@ const CURVE_SAMPLES = 400;
 let nextId = 1;
 const equations: Equation[] = [];
 let mode: '2d' | '3d' = '2d';
+let defs: Defs = emptyDefs();
+let defsAnimated = false;
+let constEnv: Record<string, number> = {};
 
 const view: View2D = { cx: 0, cy: 0, upp: 0.01 };
 const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, phi: Math.PI / 5.5 };
@@ -82,6 +101,12 @@ function render() {
   const active = equations.filter(e => e.cls && !e.error);
   mode = active.some(e => e.cls!.needs3D) ? '3d' : '2d';
 
+  try {
+    constEnv = evalConstEnv(defs, time);
+  } catch {
+    constEnv = {};
+  }
+
   gl.clearColor(1, 1, 1, 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
@@ -93,7 +118,7 @@ function render() {
       const u = k / (CURVE_SAMPLES - 1);
       for (let c = 0; c < dim; c++) {
         try {
-          out.push(evaluate(comps[c], { u, t: time }));
+          out.push(evaluate(comps[c], { ...constEnv, u, t: time }));
         } catch {
           out.push(NaN);
         }
@@ -104,7 +129,7 @@ function render() {
   const samplePoint = (eq: Equation): number[] | null => {
     const { coords } = eq.cls!.plot as { coords: import('../lib/expr.ts').Expr[] };
     try {
-      const p = coords.map(c => evaluate(c, { t: time }));
+      const p = coords.map(c => evaluate(c, { ...constEnv, t: time }));
       return p.every(isFinite) ? p : null;
     } catch {
       return null;
@@ -116,18 +141,19 @@ function render() {
     for (const eq of active) {
       const color = PALETTE[eq.colorIndex];
       const plot = eq.cls!.plot;
+      const params = eq.cls!.params;
       switch (plot.type) {
         case 'implicit2d': // extrudes to its true locus (a vertical sheet)
-          scene.implicits.push({ field: plot.field, color });
+          scene.implicits.push({ field: plot.field, color, params });
           break;
         case 'implicit3d':
-          scene.implicits.push({ field: plot.field, grad: plot.grad, color });
+          scene.implicits.push({ field: plot.field, grad: plot.grad, color, params });
           break;
         case 'scalar2d':
         case 'complex2d':
           break; // density/complex fields have no 3D locus; skipped in 3D scenes
         case 'psurface':
-          scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color });
+          scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
         case 'pcurve': {
           const flat = sampleCurve(eq, plot.dim);
@@ -147,7 +173,7 @@ function render() {
         }
       }
     }
-    r3d.render(camera, scene, time);
+    r3d.render(camera, scene, time, constEnv);
     drawLabels3D(overlayCtx, camera, dpr);
   } else {
     const curves: Curve2D[] = [];
@@ -157,10 +183,11 @@ function render() {
     for (const eq of active) {
       const color = PALETTE[eq.colorIndex];
       const plot = eq.cls!.plot;
+      const params = eq.cls!.params;
       switch (plot.type) {
-        case 'implicit2d': curves.push({ field: plot.field, color }); break;
-        case 'scalar2d': scalars.push({ field: plot.field, color }); break;
-        case 'complex2d': complexes.push({ field: plot.field, color }); break;
+        case 'implicit2d': curves.push({ field: plot.field, color, params }); break;
+        case 'scalar2d': scalars.push({ field: plot.field, color, params }); break;
+        case 'complex2d': complexes.push({ field: plot.field, color, params }); break;
         case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
         case 'point': {
           const p = samplePoint(eq);
@@ -169,27 +196,71 @@ function render() {
         }
       }
     }
-    r2d.render(view, curves, scalars, complexes, time);
+    r2d.render(view, curves, scalars, complexes, time, constEnv);
     drawLabels2D(overlayCtx, view, dpr, extras);
   }
 
-  if (active.some(e => e.cls!.animated)) requestRender();
+  if (active.some(e => e.cls!.animated || (defsAnimated && e.cls!.params.length > 0))) requestRender();
 }
 
 // --- equation list UI ---
 
 const listEl = document.getElementById('equations')!;
 
-function compile(eq: Equation) {
-  eq.cls = undefined;
-  eq.error = undefined;
-  const text = eq.text.trim();
-  if (!text) return;
-  try {
-    eq.cls = classify(parseExpr(text));
-  } catch (e) {
-    eq.error = e instanceof Error ? e.message : String(e);
+/**
+ * Recompile every row: scan definitions first (they affect how every other
+ * row parses), then classify the plot rows against them. Cheap enough to run
+ * on every keystroke.
+ */
+function recompileAll() {
+  const raw: Definition[] = [];
+  const defRows = new Map<string, Equation>();
+  for (const eq of equations) {
+    eq.cls = undefined;
+    eq.error = undefined;
+    eq.def = undefined;
+    const text = eq.text.trim();
+    if (!text) continue;
+    const d = scanDefinition(text);
+    if (!d) continue;
+    eq.def = d;
+    if (defRows.has(d.name)) {
+      eq.error = `${d.name} is already defined.`;
+      continue;
+    }
+    defRows.set(d.name, eq);
+    raw.push(d);
   }
+
+  const built = buildDefs(raw);
+  defs = built.defs;
+  defsAnimated = constsAnimated(defs);
+  for (const [name, message] of built.errors) {
+    const row = defRows.get(name);
+    if (row) row.error = message;
+  }
+
+  const constNames = new Set(defs.consts.keys());
+  const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
+  const getFn = (name: string) => {
+    const fn = defs.fns.get(name);
+    if (!fn && fnNames.has(name)) throw new Error(`${name} has an error in its definition.`);
+    return fn;
+  };
+  for (const eq of equations) {
+    if (eq.def) continue;
+    const text = eq.text.trim();
+    if (!text) continue;
+    try {
+      eq.cls = classify(resolveExpr(parseExpr(text, fnNames), getFn), constNames);
+    } catch (e) {
+      eq.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+}
+
+function refreshAll() {
+  for (const eq of equations) eq.refresh?.();
 }
 
 function saveHash() {
@@ -200,9 +271,13 @@ function saveHash() {
 function addEquation(text: string): Equation {
   const eq: Equation = { id: nextId++, text, colorIndex: (nextId - 2) % PALETTE.length };
   equations.push(eq);
-  compile(eq);
   return eq;
 }
+
+/** A slider appears when a constant's right-hand side is a plain number. */
+const NUM_RE = /^\s*-?(\d+\.?\d*|\.\d+)([eE]-?\d+)?\s*$/;
+
+const fmtNum = (v: number) => String(parseFloat(v.toPrecision(6)));
 
 function rebuildList() {
   listEl.innerHTML = '';
@@ -232,17 +307,75 @@ function rebuildList() {
     input.autocapitalize = 'off';
     const errorEl = document.createElement('div');
     errorEl.className = 'eq-error';
-    const showError = () => {
+
+    // Slider row, shown only while the equation is `name = <number>`.
+    const sliderBox = document.createElement('div');
+    sliderBox.className = 'eq-slider';
+    const minIn = document.createElement('input');
+    minIn.type = 'number';
+    minIn.className = 'eq-slider-bound';
+    minIn.title = 'Slider minimum';
+    const range = document.createElement('input');
+    range.type = 'range';
+    range.className = 'eq-slider-range';
+    const maxIn = document.createElement('input');
+    maxIn.type = 'number';
+    maxIn.className = 'eq-slider-bound';
+    maxIn.title = 'Slider maximum';
+    sliderBox.append(minIn, range, maxIn);
+    sliderBox.style.display = 'none';
+
+    const refresh = () => {
       input.classList.toggle('invalid', !!eq.error);
       input.title = eq.error ?? '';
       errorEl.textContent = eq.error ?? '';
       errorEl.style.display = eq.error ? 'block' : 'none';
+      dot.style.visibility = eq.def ? 'hidden' : '';
+      const sliderable = eq.def?.kind === 'const' && !eq.error && NUM_RE.test(eq.def.rhs);
+      sliderBox.style.display = sliderable ? '' : 'none';
+      if (!sliderable) return;
+      const v = Number(eq.def!.rhs);
+      if (eq.sliderMin === undefined || eq.sliderMax === undefined) {
+        eq.sliderMin = Math.min(-10, Math.floor(v));
+        eq.sliderMax = Math.max(10, Math.ceil(v));
+      }
+      if (v < eq.sliderMin) eq.sliderMin = v;
+      if (v > eq.sliderMax) eq.sliderMax = v;
+      minIn.value = fmtNum(eq.sliderMin);
+      maxIn.value = fmtNum(eq.sliderMax);
+      range.min = String(eq.sliderMin);
+      range.max = String(eq.sliderMax);
+      range.step = String((eq.sliderMax - eq.sliderMin) / 400);
+      range.value = String(v);
     };
+    eq.refresh = refresh;
+
+    range.addEventListener('input', () => {
+      if (eq.def?.kind !== 'const') return;
+      eq.text = `${eq.def.name} = ${fmtNum(Number(range.value))}`;
+      input.value = eq.text;
+      recompileAll();
+      refreshAll();
+      saveHash();
+      requestRender();
+    });
+    const onBound = () => {
+      const lo = Number(minIn.value);
+      const hi = Number(maxIn.value);
+      if (isFinite(lo) && isFinite(hi) && hi > lo) {
+        eq.sliderMin = lo;
+        eq.sliderMax = hi;
+      }
+      refresh();
+    };
+    minIn.addEventListener('change', onBound);
+    maxIn.addEventListener('change', onBound);
+
     input.addEventListener('input', () => {
       const wasLast = equations[equations.length - 1] === eq;
       eq.text = input.value;
-      compile(eq);
-      showError();
+      recompileAll();
+      refreshAll();
       saveHash();
       requestRender();
       if (wasLast && input.value.trim()) {
@@ -255,7 +388,7 @@ function rebuildList() {
         mine.selectionStart = mine.selectionEnd = input.selectionStart;
       }
     });
-    showError();
+    refresh();
 
     const remove = document.createElement('button');
     remove.className = 'eq-remove';
@@ -264,6 +397,7 @@ function rebuildList() {
     remove.addEventListener('click', () => {
       equations.splice(equations.indexOf(eq), 1);
       if (!equations.length || equations[equations.length - 1].text.trim()) addEquation('');
+      recompileAll();
       saveHash();
       rebuildList();
       requestRender();
@@ -271,7 +405,7 @@ function rebuildList() {
 
     const col = document.createElement('div');
     col.className = 'eq-col';
-    col.append(input, errorEl);
+    col.append(input, sliderBox, errorEl);
     row.append(dot, col, remove);
     listEl.append(row);
   }
@@ -298,6 +432,13 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['flow past cylinder', 'w + 4/w'],
     ['orbiting charge', 'ln(w-2) - ln(w + 2e^(i t))'],
   ]],
+  ['sliders + calculus', [
+    ['slider', 'a = 2; y = sin(a x)/a'],
+    ['function', 'f(x) = x^3 - 3x; y = f(x)'],
+    ['derivative', 'y = d/dx (x^3 - 3x)'],
+    ['tangent line', 'f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x - a)'],
+    ['orbiting charge', 'r = 2 + sin(t); ln(w - r) - ln(w + r)'],
+  ]],
   ['points + motion', [
     ['a point', '(2, 3)'],
     ['orbit', '(2cos(t), 2sin(t))'],
@@ -320,11 +461,14 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
 
 function insertExample(text: string) {
   // Fill the trailing empty row (or append) so existing equations stay.
-  let eq = equations[equations.length - 1];
-  if (!eq || eq.text.trim()) eq = addEquation('');
-  eq.text = text;
-  compile(eq);
+  // Multi-row examples separate rows with ';' (the same separator as the hash).
+  for (const part of text.split(';')) {
+    let eq = equations[equations.length - 1];
+    if (!eq || eq.text.trim()) eq = addEquation('');
+    eq.text = part.trim();
+  }
   addEquation('');
+  recompileAll();
   saveHash();
   rebuildList();
   requestRender();
@@ -424,6 +568,7 @@ const fromHash = decodeURIComponent(location.hash.slice(1))
 if (fromHash.length) fromHash.forEach(addEquation);
 else addEquation('y = sin(x)');
 addEquation('');
+recompileAll();
 
 // Initial 2D scale: ~12 math units across the short screen edge.
 view.upp = 12 / (Math.min(window.innerWidth, window.innerHeight) * (window.devicePixelRatio || 1));

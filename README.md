@@ -26,6 +26,13 @@ pnpm web:build  # static build to dist-web/
 ```
 
 Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+z^2=9`
+· `a = 2` (a named constant with a slider; other equations can use `a`, and it
+  compiles to a uniform so dragging never rebuilds a shader; `b = a^2 + t`
+  defines a computed/animated constant)
+· `f(x) = x^3 - a x` (user-defined functions, inlined symbolically)
+· `y = d/dx f(x)` / `d^2/dx^2 (x^4)` (symbolic Leibniz derivatives — works for
+  any single-letter variable, nests, and flows through function definitions:
+  `g(x) = d/dx f(x)` then `y = f(a) + g(a)(x - a)` is a live tangent line)
 · `sin(x)cos(y)` (2D scalar/density field) · `(2, 3)` / `(3, 12, 0)` (points)
 · `(2cos(t), 2sin(t))` (t = seconds since load → animated)
 · `(2cos(2pi u), 2sin(2pi u), 3u)` (parametric curve, u ∈ (0,1))
