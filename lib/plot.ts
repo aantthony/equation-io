@@ -16,9 +16,15 @@ import { SPECIAL_FORMS, compileTyped, usesComplex } from './complex.ts';
 import { diff } from './diff.ts';
 import { builtinFn, type Expr, evaluate, freeVars, substVars } from './expr.ts';
 import { toGLSL } from './glsl.ts';
+import { type GridField, buildGridField } from './grid.ts';
 
 export type Plot =
-  | { type: 'implicit2d'; field: string }
+  /**
+   * levels: set when the equation is `f(x,y) = c` with c a defined constant
+   * (a slider). The renderer can then draw the whole family of level sets of
+   * f — a topographic map — with the slider's level as the solid curve.
+   */
+  | { type: 'implicit2d'; field: string; levels?: GridField }
   /**
    * Shaded region F < 0. Strict comparisons fill with no border; each
    * non-strict comparison contributes an edge field whose zero set is drawn
@@ -121,6 +127,26 @@ function nestedSpecial(e: Expr, isRoot = false): string | undefined {
       }
       return undefined;
     }
+  }
+}
+
+/**
+ * `f(x,y) = c` (either way around) where c is a defined constant: build the
+ * level-set family of f so the plot can render the whole contour stack.
+ * Real-valued f only — the family renderer and CPU spacing sampler both
+ * evaluate f as a plain scalar.
+ */
+function levelFamily(e: Expr, params: readonly string[], defined: ReadonlySet<string>): GridField | undefined {
+  if (e.kind !== 'eq') return undefined;
+  const isLevel = (s: Expr) => s.kind === 'var' && params.includes(s.name);
+  const f = isLevel(e.r) ? e.l : isLevel(e.l) ? e.r : undefined;
+  if (!f || usesComplex(f)) return undefined;
+  const fv = freeVars(f);
+  if (!fv.has('x') && !fv.has('y')) return undefined;
+  try {
+    return buildGridField('F', f, defined);
+  } catch {
+    return undefined;
   }
 }
 
@@ -284,9 +310,8 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
     // compileTyped rejects equations that are still complex-valued; re()/im()
     // wrapped sides come out real and flow through the implicit paths.
     const field = compileTyped(g).code;
-    return done(vars.has('z')
-      ? { type: 'implicit3d', field, grad: gradOf(g) }
-      : { type: 'implicit2d', field });
+    if (vars.has('z')) return done({ type: 'implicit3d', field, grad: gradOf(g) });
+    return done({ type: 'implicit2d', field, levels: levelFamily(expr, params, defined) });
   }
 
   // Bare scalar expression.

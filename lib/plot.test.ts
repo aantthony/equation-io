@@ -113,6 +113,47 @@ describe('classify', () => {
   });
 });
 
+describe('level families', () => {
+  const clsWith = (s: string, consts: string[]) => classify(parseExpr(s), new Set(consts));
+  const levelsOf = (c: ReturnType<typeof classify>) =>
+    (c.plot as { levels?: { glsl: string; params: string[]; angular: boolean } }).levels;
+
+  it('detects f(x,y) = c with a slider constant, either way around', () => {
+    for (const s of ['x^2 + y^2 = c', 'c = x^2 + y^2']) {
+      const c = clsWith(s, ['c']);
+      expect(c.plot.type).toBe('implicit2d');
+      expect(c.params).toEqual(['c']);
+      const lv = levelsOf(c);
+      expect(lv).toBeDefined();
+      expect(lv!.glsl).toContain('x');
+      expect(lv!.params).toEqual([]); // family of f itself, no c
+    }
+  });
+
+  it('keeps other constants as uniforms inside the family', () => {
+    const lv = levelsOf(clsWith('a x^2 + y^2 = c', ['a', 'c']));
+    expect(lv!.glsl).toContain('u_a');
+    expect(lv!.params).toEqual(['a']);
+  });
+
+  it('marks angle-valued families as angular', () => {
+    expect(levelsOf(clsWith('atan2(y, x) = c', ['c']))!.angular).toBe(true);
+    expect(levelsOf(clsWith('x y = c', ['c']))!.angular).toBe(false);
+  });
+
+  it('offers no family without a lone slider side', () => {
+    expect(levelsOf(cls('x^2 + y^2 = 4'))).toBeUndefined();
+    expect(levelsOf(cls('y = x^2'))).toBeUndefined();
+    expect(levelsOf(clsWith('x^2 + y^2 = c + 1', ['c']))).toBeUndefined();
+  });
+
+  it('offers no family for 3D, complex, or plane-free sides', () => {
+    expect(clsWith('x^2 + y^2 + z^2 = c', ['c']).plot.type).toBe('implicit3d');
+    expect(levelsOf(clsWith('re(w^2) = c', ['c']))).toBeUndefined();
+    expect(levelsOf(clsWith('sin(t) = c', ['c']))).toBeUndefined();
+  });
+});
+
 describe('vector evaluate', () => {
   it('evaluates components', () => {
     const e = parseExpr('(cos(2pi u), sin(2pi u))');

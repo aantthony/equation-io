@@ -28,6 +28,7 @@ import { fullscreenQuad } from './gl.ts';
 import {
   type GridSpec,
   type Layers2D,
+  type LevelSpec,
   type Overlay2D,
   Renderer2D,
   type VField2D,
@@ -50,8 +51,11 @@ interface Equation {
   def?: Definition;
   sliderMin?: number;
   sliderMax?: number;
+  /** Draw the whole family of level sets (for `f(x,y) = c` plots). */
+  showLevels?: boolean;
   /** Interleaved non-editable widgets, created lazily and kept across edits. */
   sliderUI?: SliderUI;
+  levelsBtn?: HTMLButtonElement;
   errorEl?: HTMLElement;
   infoEl?: HTMLElement;
 }
@@ -301,16 +305,38 @@ function render() {
     drawLabels3D(overlayCtx, camera, dpr);
   } else {
     const layers: Required<Layers2D> = {
-      fractals: [], domains: [], conformals: [], vfields: [],
+      levels: [], fractals: [], domains: [], conformals: [], vfields: [],
       ineqs: [], scalars: [], complexes: [], curves: [],
     };
     const extras: Overlay2D = { points: [], polylines: [] };
+    // Spacing for any level-set family (custom grids, contour stacks): sample
+    // |∇c| around the view to convert the target pixel gap into coordinate
+    // units (π-based for angles).
+    const halfW = (gl.drawingBufferWidth / 2) * view.upp;
+    const halfH = (gl.drawingBufferHeight / 2) * view.upp;
+    const viewPts: Array<[number, number]> = [
+      [view.cx, view.cy],
+      [view.cx - halfW / 2, view.cy], [view.cx + halfW / 2, view.cy],
+      [view.cx, view.cy - halfH / 2], [view.cx, view.cy + halfH / 2],
+    ];
+    const spacingEnv = { ...constEnv, t: time };
+    const levelSpacing = (f: GridField) => {
+      const cupp = sampleGradMag(f, viewPts, spacingEnv, view.upp * 4) * view.upp;
+      return f.angular ? angularSpacing(cupp, 90) : niceSpacing(cupp, 90);
+    };
     for (const eq of active) {
       const color = theme.palette[eq.colorIndex];
       const plot = eq.cls!.plot;
       const params = eq.cls!.params;
       switch (plot.type) {
-        case 'implicit2d': layers.curves.push({ field: plot.field, color, params }); break;
+        case 'implicit2d':
+          layers.curves.push({ field: plot.field, color, params });
+          if (eq.showLevels && plot.levels) {
+            const f = plot.levels;
+            const sp = levelSpacing(f);
+            layers.levels.push({ glsl: f.glsl, gradGlsl: f.gradGlsl, params: f.params, major: sp.major, minor: sp.minor, color });
+          }
+          break;
         case 'ineq2d': layers.ineqs.push({ field: plot.field, edges: plot.edges, color, params }); break;
         case 'scalar2d': layers.scalars.push({ field: plot.field, color, params }); break;
         case 'complex2d': layers.complexes.push({ field: plot.field, color, params }); break;
@@ -335,21 +361,10 @@ function render() {
         }
       }
     }
-    // Spacing per grid family: sample |∇c| around the view to convert the
-    // target pixel gap into coordinate units (π-based for angles).
     let gridSpecs: GridSpec[] | undefined;
     if (gridFields.length) {
-      const halfW = (gl.drawingBufferWidth / 2) * view.upp;
-      const halfH = (gl.drawingBufferHeight / 2) * view.upp;
-      const pts: Array<[number, number]> = [
-        [view.cx, view.cy],
-        [view.cx - halfW / 2, view.cy], [view.cx + halfW / 2, view.cy],
-        [view.cx, view.cy - halfH / 2], [view.cx, view.cy + halfH / 2],
-      ];
-      const env = { ...constEnv, t: time };
       gridSpecs = gridFields.map(f => {
-        const cupp = sampleGradMag(f, pts, env, view.upp * 4) * view.upp;
-        const sp = f.angular ? angularSpacing(cupp, 90) : niceSpacing(cupp, 90);
+        const sp = levelSpacing(f);
         return { glsl: f.glsl, gradGlsl: f.gradGlsl, params: f.params, major: sp.major, minor: sp.minor };
       });
     }
@@ -601,7 +616,7 @@ function setCaret(line: number, offset: number) {
 // whole-state snapshots beat operation diffing on simplicity.
 
 interface Snapshot {
-  eqs: Array<Pick<Equation, 'id' | 'text' | 'colorIndex' | 'sliderMin' | 'sliderMax'>>;
+  eqs: Array<Pick<Equation, 'id' | 'text' | 'colorIndex' | 'sliderMin' | 'sliderMax' | 'showLevels'>>;
   caret: { line: number; offset: number } | null;
 }
 
@@ -621,6 +636,7 @@ function takeSnapshot(caret: Snapshot['caret']): Snapshot {
       colorIndex: e.colorIndex,
       sliderMin: e.sliderMin,
       sliderMax: e.sliderMax,
+      showLevels: e.showLevels,
     })),
     caret,
   };
@@ -727,6 +743,22 @@ function makeSlider(eq: Equation): SliderUI {
   return { box, min, range, max };
 }
 
+/** Toggle that draws every level set of f, not just the slider's (f(x,y) = c). */
+function makeLevelsBtn(eq: Equation): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.className = 'eq-widget eq-levels';
+  btn.contentEditable = 'false';
+  btn.textContent = 'all levels';
+  btn.title = 'Draw the whole family of level sets (topographic map)';
+  btn.addEventListener('click', () => {
+    pushUndo(null);
+    eq.showLevels = !eq.showLevels;
+    btn.classList.toggle('on', !!eq.showLevels);
+    requestRender();
+  });
+  return btn;
+}
+
 /**
  * Sync per-line decorations (color, error state, placeholder) and the
  * interleaved widget blocks with current state. Never touches line text, so
@@ -765,6 +797,13 @@ function reconcile() {
       range.step = sumBoundNames.has(eq.def!.name) ? '1' : String((eq.sliderMax - eq.sliderMin) / 400);
       range.value = String(v);
       wanted.push(eq.sliderUI.box);
+    }
+    // `f(x,y) = c` rows can draw the whole contour stack of f, not just the
+    // slider's level. The control sits above the readout that may follow it.
+    if (eq.cls?.plot.type === 'implicit2d' && eq.cls.plot.levels) {
+      eq.levelsBtn ??= makeLevelsBtn(eq);
+      eq.levelsBtn.classList.toggle('on', !!eq.showLevels);
+      wanted.push(eq.levelsBtn);
     }
     if (eq.info) {
       eq.infoEl ??= (() => {
@@ -1167,6 +1206,7 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
   ]],
   ['sliders + calculus', [
     ['slider', 'a = 2; y = sin(a x)/a'],
+    ['level sets', 'c = 0.3; sin(x)cos(y) = c'],
     ['function', 'f(x) = x^3 - 3x; y = f(x)'],
     ['derivative', 'y = d/dx (x^3 - 3x)'],
     ['tangent line', 'f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x - a)'],
