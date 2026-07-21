@@ -31,6 +31,9 @@ Examples (paste-ready):
 - 3D saddle: https://equation.io/#z%3D(x%5E2-y%5E2)%2F4
 - Torus (parametric 3D): https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))
 - Complex dipole field: https://equation.io/#ln(w-2)-ln(w%2B2)
+- Vector field (animated streamlines): https://equation.io/#(-y%2C%20x)
+- Pendulum phase portrait (ODE system): https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))
+- Slope field: https://equation.io/#y'%20%3D%20x%20-%20y
 - Polar cardioid: https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))
 
 ## Expression syntax
@@ -65,6 +68,10 @@ Examples (paste-ready):
 - Scalar field: a bare expression in x, y — `sin(x)cos(y)` — shaded by value.
 - Complex plot: a complex expression in `w` — `w + 4/w`.
 - Point: `(2, 3)`; animate with t: `(2cos(t), 2sin(t))`.
+- Vector field: a 2-tuple in x, y — `(-y, x)` — drawn as animated streamlines
+  (line-integral convolution); clicking the canvas traces integral curves.
+- ODE / slope field: `dy/dx = x y` or `y' = sin(x) - y` plots the direction
+  field (1, f); a system `(x', y') = (y, -sin(x))` plots its phase portrait.
 - Parametric curve: components in u — `(2cos(2pi u), sin(4pi u))`; three
   components make a 3D curve — `(2cos(6pi u), 2sin(6pi u), 4u - 2)`.
 - Parametric surface: three components in u and v —
