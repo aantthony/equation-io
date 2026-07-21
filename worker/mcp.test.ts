@@ -94,6 +94,13 @@ describe('mcp endpoint', () => {
     }
   });
 
+  it('answers preflights with a long-lived cacheable policy', async () => {
+    const res = await handleMcp(new Request(URL_BASE, { method: 'OPTIONS' }), new URL(URL_BASE));
+    expect(res.status).toBe(204);
+    expect(res.headers.get('Access-Control-Max-Age')).toBe('86400');
+    expect(res.headers.get('Access-Control-Allow-Methods')).toContain('POST');
+  });
+
   it('rejects unknown methods and non-POST requests', async () => {
     const { body } = await rpc('bogus/method');
     expect(body.error.code).toBe(-32601);

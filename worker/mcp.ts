@@ -167,7 +167,14 @@ const CORS_HEADERS = {
 };
 
 export async function handleMcp(request: Request, url: URL): Promise<Response> {
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+  if (request.method === 'OPTIONS') {
+    return new Response(null, {
+      status: 204,
+      // Our CORS policy is static and permissive, so let browsers cache the
+      // preflight as long as they will (Chromium clamps to 2h, Firefox 24h).
+      headers: { ...CORS_HEADERS, 'Access-Control-Max-Age': '86400' },
+    });
+  }
   if (request.method !== 'POST') {
     // No server-initiated streams (GET) and no sessions to delete.
     return new Response(null, { status: 405, headers: { ...CORS_HEADERS, Allow: 'POST, OPTIONS' } });
