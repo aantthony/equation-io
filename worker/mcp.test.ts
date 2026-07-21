@@ -56,6 +56,9 @@ describe('mcp endpoint', () => {
     expect(out.valid).toBe(true);
     expect(out.url).toMatch(/^https:\/\/equation\.io\/#/);
     expect(out.share_url).toMatch(/^https:\/\/equation\.io\/g\//);
+    // Chat-app linkifiers cut URLs at bare parens; the codec must escape them.
+    expect(out.share_url).not.toMatch(/[()!'*]/);
+    expect(out.url).not.toMatch(/[()!'*]/);
     expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
       'definition (fn)', 'definition (fn)', 'definition (const)', 'implicit2d', 'implicit2d',
     ]);

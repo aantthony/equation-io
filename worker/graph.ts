@@ -34,19 +34,6 @@ export interface Analysis {
   constEnv: Record<string, number>;
 }
 
-/** Decode a `#`-fragment or `/g/` payload into equation row texts. */
-export function decodeEquations(payload: string): string[] {
-  return decodeURIComponent(payload)
-    .split(';')
-    .map(s => decodeURIComponent(s))
-    .filter(s => s.trim());
-}
-
-/** Encode equation rows into the payload used by both `#` and `/g/` URLs. */
-export function encodeEquations(texts: string[]): string {
-  return texts.filter(t => t.trim()).map(t => encodeURIComponent(t.trim())).join(';');
-}
-
 export function analyze(texts: string[]): Analysis {
   const rows: RowInfo[] = texts.map(text => ({ text: text.trim() }));
 

@@ -11,16 +11,20 @@
 
 Format:
 
-    https://equation.io/#<equation>;<equation>;...
+    https://equation.io/g/<equation>;<equation>;...
 
-- Each equation is percent-encoded (JavaScript `encodeURIComponent`); encoded
-  equations are joined with `;`.
+- Percent-encode each equation (JavaScript `encodeURIComponent`), then
+  additionally escape ( ) ! ' * as %28 %29 %21 %27 %2A — chat apps cut
+  auto-linked URLs at bare parentheses, silently truncating the graph.
+- Encoded equations are joined with `;`. Never put a literal `;` inside an
+  equation; it is only the row separator.
 - Every equation gets its own row and color. Definitions (constants,
   functions, coordinate fields) are rows too — order does not matter.
-- Never put a literal `;` inside an equation; it is only the row separator.
-- Spaces mean multiplication is implicit anyway, so `y=sin(x)` and
-  `y%20%3D%20sin(x)` both work. When in doubt, encodeURIComponent the whole
-  equation.
+- `/g/` links unfurl with a rendered preview image (og:image) in chat apps
+  and social cards; the image itself is served at
+  `https://equation.io/api/og/<same payload>`. An equivalent fragment form,
+  `https://equation.io/#<same payload>`, also opens the graph and keeps the
+  equations out of server logs, but gets no preview card.
 
 Examples (paste-ready):
 
@@ -142,9 +146,8 @@ edit a user's graph and build a new link). No authentication required.
 
 ## Guidance for assistants
 
-- To show a user a graph, emit a single https://equation.io/#... (or /g/...)
-  link built as above; the graph renders immediately on load, no interaction
-  needed.
+- To show a user a graph, emit a single https://equation.io/g/... link built
+  as above; the graph renders immediately on load, no interaction needed.
 - To edit a graph the user already has, decode their link (or call the MCP
   `read_graph` tool), transform the rows, and emit a new link. Prefer
   restructuring into named definitions: e.g. given `y = x^2 - 2x`, "add a

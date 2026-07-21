@@ -22,6 +22,7 @@ import {
   toProbability,
 } from '../lib/dist.ts';
 import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { splitStatements } from '../lib/statements.ts';
@@ -577,9 +578,14 @@ function recompileAll() {
   }
 }
 
+// The address bar shows the /g/ share form: it survives chat-app URL
+// linkifiers (lib/link.ts escapes parens etc.) and unfurls with a rendered
+// preview, so copying the URL is the share mechanism. /#payload links still
+// load (boot below) — they just normalize to /g/ on the next edit. The name
+// stays writeHash so the throttle below and its four callers are untouched.
 function writeHash() {
-  const texts = equations.map(e => e.text).filter(t => t.trim());
-  history.replaceState(null, '', texts.length ? '#' + texts.map(encodeURIComponent).join(';') : '#');
+  const payload = encodePayload(equations.map(e => e.text));
+  history.replaceState(null, '', payload ? '/g/' + payload : '/');
 }
 
 // Browsers rate-limit replaceState (Safari: 100 per 10s) and throw once it is
@@ -738,7 +744,7 @@ function restoreSnapshot(s: Snapshot) {
   if (s.caret && s.caret.line < equations.length) {
     setCaret(s.caret.line, Math.min(s.caret.offset, equations[s.caret.line].text.length));
   }
-  saveHash();
+  saveUrl();
   requestRender();
 }
 
@@ -785,7 +791,7 @@ function makeSlider(eq: Equation): SliderUI {
     if (line) line.textContent = eq.text;
     recompileAll();
     reconcile();
-    saveHash();
+    saveUrl();
     requestRender();
   });
   // A drag is one undo entry: coalesced while it lasts, sealed on release.
@@ -1068,7 +1074,7 @@ function insertStatements(text: string) {
   recompileAll();
   renderAll();
   setCaret(start.line + inserted.length - 1, caretOffset);
-  saveHash();
+  saveUrl();
   requestRender();
 }
 
@@ -1151,7 +1157,7 @@ listEl.addEventListener('input', e => {
     recompileAll();
     reconcile();
   }
-  saveHash();
+  saveUrl();
   requestRender();
 });
 
@@ -1209,7 +1215,7 @@ listEl.addEventListener('beforeinput', e => {
   recompileAll();
   renderAll();
   setCaret(from - 1, offset);
-  saveHash();
+  saveUrl();
   requestRender();
 });
 
@@ -1365,7 +1371,7 @@ function insertExample(text: string) {
     eq.text = part.trim();
   }
   recompileAll();
-  saveHash();
+  saveUrl();
   renderAll();
   requestRender();
 }
@@ -1574,24 +1580,22 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 
-// Equations come from the #-fragment, or from the /g/ share form (which the
-// worker serves with link-preview meta tags). Normalize /g/ back to /#… so
-// subsequent edits (saveHash) and reloads agree on where state lives.
+// Equations come from the /g/ share form (which the worker serves with
+// link-preview meta tags) or from a legacy /#-fragment link.
 let initialPayload = location.hash.slice(1);
 if (!initialPayload && location.pathname.startsWith('/g/')) {
   initialPayload = location.pathname.slice('/g/'.length);
 }
-if (location.pathname !== '/') {
-  history.replaceState(null, '', initialPayload ? '/#' + initialPayload : '/');
-}
-// Splitting stays bracket-aware (splitStatements), so a ';' inside brackets
-// does not start a new row — the same rule the editor's paste path uses.
-const fromHash = splitStatements(decodeURIComponent(initialPayload))
-  .map(s => decodeURIComponent(s))
-  .filter(s => s.trim());
-if (fromHash.length) fromHash.forEach(t => addEquation(t));
+// decodePayload splits bracket-aware and decodes each row exactly once, so it
+// reads both the /g/ form and legacy /#… links.
+const initialRows = decodePayload(initialPayload);
+if (initialRows.length) initialRows.forEach(t => addEquation(t));
 else addEquation('y = sin(x)');
 recompileAll();
+// Canonicalize what we loaded (re-encoded /g/ form; stray paths back to /).
+// A fresh visit stays at / — the default row only enters the URL once edited.
+if (initialPayload) saveUrl();
+else if (location.pathname !== '/') history.replaceState(null, '', '/');
 
 // Size the canvas (which also picks the opening zoom) before the first frame.
 resize();

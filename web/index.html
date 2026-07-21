@@ -10,7 +10,7 @@
        pinch-zoom and the accessibility escape hatch. -->
   <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover">
   <title>Equation.io — free online graphing calculator</title>
-  <meta name="description" content="Free in-browser graphing calculator. Plot implicit equations, inequalities, complex functions and 3D surfaces, compiled to your GPU as you type. Graphs live in the URL fragment — link to https://equation.io/#<encoded equations> to open any graph directly.">
+  <meta name="description" content="Free in-browser graphing calculator. Plot implicit equations, inequalities, complex functions and 3D surfaces, compiled to your GPU as you type. Graphs live in the URL — link to https://equation.io/g/<encoded equations> to open any graph directly.">
   <link rel="canonical" href="https://equation.io/">
   <link rel="alternate" type="text/plain" href="/llms.txt" title="LLM instructions">
   <meta property="og:type" content="website">
@@ -68,18 +68,18 @@
       JavaScript required).
     </p>
     <p>
-      The entire graph state lives in the URL fragment, so a link can open the
+      The entire graph state lives in the URL, so a link can open the
       app with equations already rendered:
-      <code>https://equation.io/#&lt;equation&gt;;&lt;equation&gt;;...</code> —
-      percent-encode each equation (encodeURIComponent), join with
-      <code>;</code>. Examples: a parabola is
-      https://equation.io/#y%3Dx%5E2 and a 3D cylinder is
-      https://equation.io/#(cos(2pi%20u)%2C%20sin(2pi%20u)%2C%204v-2)
+      <code>https://equation.io/g/&lt;equation&gt;;&lt;equation&gt;;...</code> —
+      percent-encode each equation (encodeURIComponent, plus parens as %28
+      %29), join with <code>;</code>. Examples: a parabola is
+      https://equation.io/g/y%20%3D%20x%5E2 and a 3D cylinder is
+      https://equation.io/g/%28cos%282pi%20u%29%2C%20sin%282pi%20u%29%2C%204v-2%29
     </p>
     <p>
       Full expression syntax and deep-link reference for AI assistants:
       <a href="/llms.txt">https://equation.io/llms.txt</a>. To show a user a
-      graph, reply with a single https://equation.io/#... link. Feature
+      graph, reply with a single https://equation.io/g/... link. Feature
       gallery: <a href="/about/">https://equation.io/about/</a>
     </p>
   </noscript>

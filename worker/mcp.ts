@@ -7,7 +7,8 @@
  * No sessions, no SSE — each POST is a complete JSON-RPC exchange, which is
  * all these tools need and keeps the Worker stateless.
  */
-import { analyze, decodeEquations, encodeEquations } from './graph.ts';
+import { decodePayload, encodePayload } from '../lib/link.ts';
+import { analyze } from './graph.ts';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
@@ -75,7 +76,7 @@ function createGraph(origin: string, args: Record<string, unknown>) {
           ...(row.cls?.animated ? { animated: true } : {}),
         }),
   }));
-  const payload = encodeEquations(texts);
+  const payload = encodePayload(texts);
   return {
     valid: rows.every(row => row.status === 'ok'),
     url: `${origin}/#${payload}`,
@@ -93,7 +94,7 @@ function readGraph(args: Record<string, unknown>) {
       ? url.pathname.slice(3)
       : '';
   if (!payload) throw new Error('No equations found in that URL (expected /#... or /g/... form).');
-  return { equations: decodeEquations(payload) };
+  return { equations: decodePayload(payload) };
 }
 
 // --- JSON-RPC plumbing ---

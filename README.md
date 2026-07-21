@@ -14,8 +14,11 @@ An equation grapher, deployed as a Cloudflare Worker.
     finite-difference normals, `gl_FragDepth` so multiple surfaces intersect
     correctly. Equations without `z` extrude to their true locus in R³.
 
-The whole graph state lives in the URL (`/#eq1;eq2;…`, each equation
-percent-encoded), so any set of equations is linkable. Agent-facing surface:
+The whole graph state lives in the URL (`/g/eq1;eq2;…`, each equation
+percent-encoded via `lib/link.ts`, which also escapes parens so chat-app
+linkifiers don't truncate the URL; legacy `/#…` links still load), so any set
+of equations is linkable and the address bar is the share mechanism.
+Agent-facing surface:
 
 - `/llms.txt` — link format + expression syntax reference
   ([`web/public/llms.txt`](web/public/llms.txt))

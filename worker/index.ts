@@ -1,4 +1,4 @@
-import { decodeEquations } from './graph.ts';
+import { decodePayload } from '../lib/link.ts';
 import { handleMcp } from './mcp.ts';
 import { OG_HEIGHT, OG_WIDTH, renderOgPng } from './og.ts';
 
@@ -9,13 +9,13 @@ const escapeAttr = (s: string) =>
  * /g/<payload>: the share form of a graph link. Serves the app shell with
  * og:/twitter: meta tags injected so the link unfurls with a rendered preview
  * (crawlers never see URL fragments, which is why this form exists). The web
- * app itself reads the payload from the path and normalizes back to /#....
+ * app boots from the path and keeps the address bar on the canonical /g/ form.
  */
 async function handleShare(request: Request, url: URL, env: Env): Promise<Response> {
   const payload = url.pathname.slice('/g/'.length);
   let equations: string[] = [];
   try {
-    equations = decodeEquations(payload);
+    equations = decodePayload(payload);
   } catch {
     // Undecodable payload — serve the plain app.
   }
@@ -58,7 +58,7 @@ async function handleOgImage(url: URL): Promise<Response> {
   const payload = url.pathname.slice('/api/og/'.length);
   let equations: string[] = [];
   try {
-    equations = decodeEquations(payload);
+    equations = decodePayload(payload);
   } catch {
     return Response.json({ error: 'bad_payload' }, { status: 400 });
   }
