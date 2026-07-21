@@ -167,6 +167,13 @@ function makeEnv(constEnv: Record<string, number>): EvalEnv {
   return { slots, vars, stack: new Float64Array(64), slotX: 0, slotY: 1 };
 }
 
+/** Compile against env, growing the shared stack to the program's depth. */
+function compileFor(env: EvalEnv, e: Expr): Prog {
+  const p = compileProg(e, env.slots);
+  if (p.depth > env.stack.length) env.stack = new Float64Array(p.depth);
+  return p;
+}
+
 const ineqDiff = (op: string, l: Expr, r: Expr): Expr =>
   op[0] === '<'
     ? { kind: 'bin', op: '-', a: l, b: r }
@@ -237,7 +244,7 @@ function polyline3D(
 function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [number, number, number]) {
   const { cls, expr } = row;
   if (!cls || !expr) return;
-  const compile = (e: Expr) => compileProg(e, env.slots);
+  const compile = (e: Expr) => compileFor(env, e);
   switch (cls.plot.type) {
     case 'implicit2d': {
       const f: Expr = expr.kind === 'eq'
@@ -290,7 +297,7 @@ function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [n
 function renderRow3D(r: Raster, v: View3D, row: RowInfo, env: EvalEnv, color: [number, number, number]) {
   const { cls, expr } = row;
   if (!cls || !expr) return;
-  const compile = (e: Expr) => compileProg(e, env.slots);
+  const compile = (e: Expr) => compileFor(env, e);
   const slotU = env.slots.get('u')!, slotV = env.slots.get('v')!;
   switch (cls.plot.type) {
     case 'psurface': {

@@ -111,7 +111,9 @@ function handleRpc(req: RpcRequest, origin: string): object | null {
   const result = (r: object) => ({ jsonrpc: '2.0', id, result: r });
   const error = (code: number, message: string) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
-  if (id === undefined || id === null) return null; // notification — no response
+  // A notification is a request with NO id member (JSON-RPC 2.0). `id: null`
+  // is a valid (if discouraged) request id and must still get a response.
+  if (id === undefined) return null;
 
   switch (method) {
     case 'initialize': {
@@ -154,6 +156,12 @@ function handleRpc(req: RpcRequest, origin: string): object | null {
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
+  // GET and DELETE return 405 today, but the MCP Streamable HTTP transport
+  // uses them (GET opens a server-initiated SSE stream, DELETE ends a
+  // session). Browsers cache preflight results per URL, so advertising the
+  // full transport method set now means an already-cached preflight stays
+  // valid if we ever add sessions — old clients won't need a cache expiry to
+  // reach the new methods.
   'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Session-Id, Mcp-Protocol-Version',
 };

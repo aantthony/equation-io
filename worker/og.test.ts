@@ -50,6 +50,15 @@ describe('og raster renderer', () => {
     expect(inkFraction(height)).toBeGreaterThan(0.03);
   });
 
+  it('grows the shared eval stack for deep expressions', () => {
+    // y = 0+(0+(...x...)) needs stack depth > the initial 64; a dropped or
+    // clipped stack would render garbage instead of the y = x diagonal.
+    const deep = 'y = ' + '0+('.repeat(80) + 'x' + ')'.repeat(80);
+    const r = renderRaster([deep], 100, 100);
+    expect(pixel(r, 50, 50)[0]).toBeLessThan(200);
+    expect(pixel(r, 80, 80)[0]).toBeGreaterThan(200);
+  });
+
   it('survives invalid rows and renders the rest', () => {
     const r = renderRaster(['y = florb(x)', 'y = x'], 100, 100);
     expect(pixel(r, 50, 50)[0]).toBeLessThan(220);

@@ -31,6 +31,11 @@ describe('mcp endpoint', () => {
     expect(body.result.protocolVersion).toBe('2025-06-18');
   });
 
+  it('answers requests with id: null (only an ABSENT id is a notification)', async () => {
+    const { body } = await rpc('ping', undefined, null);
+    expect(body).toEqual({ jsonrpc: '2.0', id: null, result: {} });
+  });
+
   it('accepts notifications with a 202 and no body', async () => {
     const request = new Request(URL_BASE, {
       method: 'POST',
