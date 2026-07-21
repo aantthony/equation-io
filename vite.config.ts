@@ -4,6 +4,7 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   root: 'web',
+  server: process.env.PORT ? { port: Number(process.env.PORT), strictPort: true } : undefined,
   build: {
     outDir: '../dist-web',
     emptyOutDir: true,

@@ -1,0 +1,97 @@
+# equation.io
+
+> Free in-browser graphing calculator (WebGL). Plots 2D curves, inequality
+> regions, scalar fields, complex functions, 3D surfaces, and parametric
+> curves/surfaces. No account, no server round-trips: the entire graph state
+> lives in the URL fragment, so you can construct a link that opens the app
+> with any set of equations already rendered.
+
+## Deep links
+
+Format:
+
+    https://equation.io/#<equation>;<equation>;...
+
+- Each equation is percent-encoded (JavaScript `encodeURIComponent`); encoded
+  equations are joined with `;`.
+- Every equation gets its own row and color. Definitions (constants,
+  functions, coordinate fields) are rows too — order does not matter.
+- Never put a literal `;` inside an equation; it is only the row separator.
+- Spaces mean multiplication is implicit anyway, so `y=sin(x)` and
+  `y%20%3D%20sin(x)` both work. When in doubt, encodeURIComponent the whole
+  equation.
+
+Examples (paste-ready):
+
+- Parabola: https://equation.io/#y%3Dx%5E2
+- Circle: https://equation.io/#x%5E2%2By%5E2%3D4
+- Sine + tangent line: https://equation.io/#f(x)%3Dx%5E3-2x;g(x)%3Dd%2Fdx%20f(x);a%3D1;y%3Df(x);y%3Df(a)%2Bg(a)(x-a)
+- Slider-controlled wave: https://equation.io/#a%3D2;y%3Dsin(a%20x)%2Fa
+- Animated ripples: https://equation.io/#sin(x%5E2%2By%5E2-4t)%2F2
+- 3D saddle: https://equation.io/#z%3D(x%5E2-y%5E2)%2F4
+- Torus (parametric 3D): https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))
+- Complex dipole field: https://equation.io/#ln(w-2)-ln(w%2B2)
+- Polar cardioid: https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))
+
+## Expression syntax
+
+- Operators: `+ - * / ^`, parentheses, unary minus. Multiplication is
+  implicit: `2x`, `x y`, `2cos(t)`, `a(x-1)` all work.
+- Absolute value bars: `|x|`, including nested/multiplied forms like `2|x-1|`.
+- Constants: `pi`, `tau`, `e`. Imaginary unit `i` in complex expressions.
+- Functions: sin cos tan asin acos atan atan2(y,x) sinh cosh tanh sech asinh
+  acosh atanh sqrt abs exp ln (natural) log (base 10) floor ceil round min max
+  mod sign fract, and complex helpers re im arg conj.
+- Derivatives: `d/dx (x^3)` differentiates symbolically; higher order
+  `d^2/dx^2 (...)`; works for any single-letter variable, e.g. `d/dq (q^2)`.
+
+## Variables (what a row means)
+
+- `x`, `y`: the 2D plane. `y = f(x)`, or any implicit equation in x and y
+  (`x^2+y^2=4`), renders as a curve.
+- `z`: using z switches to 3D. `z = sin(x)cos(y)` is a surface;
+  `x^2+y^2+z^2=9` is an implicit 3D surface.
+- `t`: time in seconds. Any row mentioning `t` animates, e.g.
+  `y = sin(x - 2t)`.
+- `u`, `v`: parametric parameters, each ranging over (0, 1).
+- `w`: the complex plane point x + iy. A complex-valued expression in `w`
+  (e.g. `ln(w-2) - ln(w+2)`) draws field lines and equipotentials.
+
+## Row types
+
+- Curve: an equation in x and y — `y = x^2`, `(x^2+y^2)^2 = 8(x^2-y^2)`.
+- Region: inequalities, including chains — `y < x/2 + 1`,
+  `4 <= x^2 + y^2 <= 9`. Non-strict comparisons draw a solid boundary.
+- Scalar field: a bare expression in x, y — `sin(x)cos(y)` — shaded by value.
+- Complex plot: a complex expression in `w` — `w + 4/w`.
+- Point: `(2, 3)`; animate with t: `(2cos(t), 2sin(t))`.
+- Parametric curve: components in u — `(2cos(2pi u), sin(4pi u))`; three
+  components make a 3D curve — `(2cos(6pi u), 2sin(6pi u), 4u - 2)`.
+- Parametric surface: three components in u and v —
+  `(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))`.
+- 3D surface: any equation in x, y, z.
+
+## Definitions (extra rows that set up the others)
+
+- Constant: `a = 2` — the UI shows a draggable slider for it. Computed
+  constants allowed: `b = a^2 + t`.
+- Function: `f(x) = x^3 - a x` — call it from other rows; calls inline
+  symbolically, so `d/dx f(x)` works.
+- Coordinate field: a definition that depends on the plane, e.g.
+  `r = sqrt(x^2+y^2); theta = atan2(y,x)`. Its level sets draw as a grid, and
+  later rows may use it: adding `r = 2(1 + cos(theta))` plots a cardioid in
+  polar coordinates.
+
+## Guidance for assistants
+
+- To show a user a graph, emit a single https://equation.io/#... link built as
+  above; the graph renders immediately on load, no interaction needed.
+- Prefer a slider constant (`a = 1; ...`) when the user may want to explore a
+  parameter, and `t` when they ask for animation.
+- The app is client-side only; there is no API. The link is the interface.
+
+## More
+
+- App: https://equation.io/
+- About (feature gallery with screenshots): https://equation.io/about/
+- Source: https://github.com/aantthony/equation
