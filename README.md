@@ -41,6 +41,12 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
   any single-letter variable, nests, and flows through function definitions:
   `g(x) = d/dx f(x)` then `y = f(a) + g(a)(x - a)` is a live tangent line)
 · `sin(x)cos(y)` (2D scalar/density field) · `(2, 3)` / `(3, 12, 0)` (points)
+· `(-y, x)` (a tuple depending on x, y is a vector field, rendered as animated
+  streamlines via GPU line-integral convolution; `t` works too: `(cos(t)-y, x)`)
+· `dy/dx = x y` / `y' = sin(x) - y` (ODEs plot the slope/direction field
+  `(1, f)`; click the canvas to drop an RK4 integral curve through that point,
+  double-click to clear) · `(x', y') = (y, -sin(x))` (a system plots its
+  phase portrait, with the same click-to-trace trajectories)
 · `(2cos(t), 2sin(t))` (t = seconds since load → animated)
 · `(2cos(2pi u), 2sin(2pi u), 3u)` (parametric curve, u ∈ (0,1))
 · `(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))`

@@ -64,6 +64,11 @@ try {
     });
     // Let compilation finish and `t` reach the pose the caption describes.
     await page.waitForTimeout((item.settle ?? 0.5) * 1000);
+    // Seed integral curves on vector fields / ODEs (motionless clicks).
+    for (const [fx, fy] of item.clicks ?? []) {
+      await page.mouse.click(fx * opts.width, fy * opts.height);
+    }
+    if (item.clicks?.length) await page.waitForTimeout(250);
     const path = `${OUT_DIR}${item.slug}.png`;
     await page.screenshot({ path });
     await page.close();

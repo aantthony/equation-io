@@ -34,6 +34,36 @@ describe('classify', () => {
     expect(() => cls('(u, v)')).toThrow(/3 components/);
   });
 
+  it('routes (x,y)-dependent vectors to vector fields', () => {
+    const f = cls('(-y, x)');
+    expect(f.plot.type).toBe('vfield2d');
+    expect(f.needs3D).toBe(false);
+    expect(f.animated).toBe(true); // streamlines drift continuously
+    expect(cls('(y, -sin(x))').plot.type).toBe('vfield2d');
+    expect(cls('(cos(t) - y, x)').plot.type).toBe('vfield2d');
+    expect(() => cls('(x, y, z)')).toThrow(/2D only/);
+    expect(() => cls('(x, y, 1)')).toThrow(/2 components/);
+  });
+
+  it('routes ODE notation to vector fields', () => {
+    const slope = cls("y' = sin(x) - y");
+    expect(slope.plot).toMatchObject({ type: 'vfield2d', fx: '1.0' });
+
+    const leib = cls('dy/dx = x y');
+    expect(leib.plot).toMatchObject({ type: 'vfield2d', fx: '1.0', fy: '(x * y)' });
+    expect(cls('dx/dy = x y').plot).toMatchObject({ type: 'vfield2d', fy: '1.0' });
+
+    const sys = cls("(x', y') = (y, -sin(x))");
+    expect(sys.plot).toMatchObject({ type: 'vfield2d', fx: 'y' });
+
+    // Constant right sides still make a (uniform) field, not a point.
+    expect(cls("y' = 2").plot.type).toBe('vfield2d');
+
+    expect(() => cls("(x', y') = 3")).toThrow(/two components/);
+    expect(() => cls("y = y'")).toThrow(/left of an ODE/);
+    expect(() => cls("y' = sin(u)")).toThrow(/cannot use u/);
+  });
+
   it('flags t as animated', () => {
     expect(cls('(cos(t), sin(t))').animated).toBe(true);
     expect(cls('y = sin(x - t)').animated).toBe(true);

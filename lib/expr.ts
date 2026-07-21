@@ -57,6 +57,11 @@ function asExpr(n: PNode): Expr {
   return n;
 }
 
+const asVecOrExpr = (n: PNode): Expr =>
+  n.kind === 'series' && (n.items.length === 2 || n.items.length === 3)
+    ? { kind: 'vec', items: n.items }
+    : asExpr(n);
+
 const asBin = (op: '+' | '-' | '*' | '/' | '^') =>
   BinaryInfix<PNode>((a, b) => bin(op)(asExpr(a), asExpr(b)));
 
@@ -71,7 +76,8 @@ const ops = operators<PNode>({
   ')': BinaryInfix<PNode>(inner => inner),
   ']': BinaryInfix<PNode>(inner => inner),
 
-  '=': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'eq', l: asExpr(a), r: asExpr(b) })),
+  // Either side of '=' may be a tuple, so (x', y') = (y, -sin(x)) parses.
+  '=': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'eq', l: asVecOrExpr(a), r: asVecOrExpr(b) })),
 
   '<': asIneq('<'),
   '<=': asIneq('<='),
@@ -124,7 +130,7 @@ const syntax: PatternDict = {
   number: /^\d+\.?\d*$/,
   bar: /^\|$/,
   whitespace: /\s$/,
-  symbol: /^[A-Za-z_][A-Za-z_0-9]*$/,
+  symbol: /^[A-Za-z_][A-Za-z_0-9]*'*$/,
   operator: x => !!ops[x] || MULTI_CHAR_OPS.some(m => m.startsWith(x)),
   invalid(x) { throw new Error(`Invalid character: ${JSON.stringify(x)}.`); },
 };

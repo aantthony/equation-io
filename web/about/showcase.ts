@@ -14,6 +14,12 @@ export interface ShowcaseItem {
   group: string;
   /** Seconds to let `t` advance before capturing (animated scenes). */
   settle?: number;
+  /**
+   * Canvas clicks (viewport-fraction coordinates) made before capturing —
+   * used to drop integral-curve seeds on vector fields / ODEs. The card's
+   * link still opens just the equations; visitors click to trace their own.
+   */
+  clicks?: Array<[number, number]>;
 }
 
 /** The app URL that loads these equations (the same format saveHash writes). */
@@ -89,6 +95,32 @@ export const SHOWCASE: ShowcaseItem[] = [
     eqs: ['r = 2 + sin(t)', 'ln(w - r) - ln(w + r)'],
     group: 'Fields & complex maps',
     settle: 0.9,
+  },
+  {
+    slug: 'pendulum-phase',
+    title: 'ODEs and phase portraits',
+    blurb: "Write (x′, y′) = (P, Q) and the flow appears — click to trace an orbit.",
+    eqs: ["(x', y') = (y, -sin(x))"],
+    group: 'Vector fields & ODEs',
+    settle: 0.8,
+    clicks: [[0.55, 0.40], [0.50, 0.14]],
+  },
+  {
+    slug: 'slope-field',
+    title: 'Slope fields from dy/dx',
+    blurb: 'An equation in dy/dx or y′ paints its direction field; clicked solutions follow it.',
+    eqs: ["y' = x - y"],
+    group: 'Vector fields & ODEs',
+    settle: 0.8,
+    clicks: [[0.42, 0.25], [0.56, 0.78]],
+  },
+  {
+    slug: 'vector-swirl',
+    title: 'Vector fields as flow',
+    blurb: 'A tuple in x and y is a vector field, rendered as animated streamlines.',
+    eqs: ['(sin(y), sin(x))'],
+    group: 'Vector fields & ODEs',
+    settle: 0.8,
   },
   {
     slug: 'cardioid-polar',
