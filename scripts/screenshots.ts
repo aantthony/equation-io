@@ -62,6 +62,25 @@ try {
         ? '#panel { backdrop-filter: none; background: rgba(255, 255, 255, 0.97); }'
         : '#panel { display: none; }',
     });
+    // Frame the shot before settling, so the wait covers the final view.
+    // __eq is the app's dev-only handle; shots always run against dev.
+    if (item.view) {
+      await page.waitForFunction(() =>
+        !!(window as unknown as { __eq?: unknown }).__eq
+        && (document.getElementById('gl') as HTMLCanvasElement).width > 0);
+      await page.evaluate(v => {
+        const { view, requestRender } = (window as unknown as {
+          __eq: { view: { cx: number; cy: number; upp: number }; requestRender: () => void };
+        }).__eq;
+        const gl = document.getElementById('gl') as HTMLCanvasElement;
+        // span is measured across the short edge, matching the app's own
+        // opening-zoom convention.
+        if (v.span !== undefined) view.upp = v.span / Math.min(gl.width, gl.height);
+        if (v.cx !== undefined) view.cx = v.cx;
+        if (v.cy !== undefined) view.cy = v.cy;
+        requestRender();
+      }, item.view);
+    }
     // Let compilation finish and `t` reach the pose the caption describes.
     await page.waitForTimeout((item.settle ?? 0.5) * 1000);
     // Seed integral curves on vector fields / ODEs (motionless clicks).

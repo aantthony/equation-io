@@ -347,16 +347,17 @@ void main() {
   vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
   vec2 f = F(p.x, p.y);
   if (any(isnan(f))) discard;
-  float r = length(f);
-  // Hue = arg f (0 → red); brightness ridges each factor of 2 in |f|;
+  // Hue = arg f (0 → red); a brightness ridge each factor of 2 in |f|;
   // black at zeros, white at poles, plain color at |f| = 1.
   float h = atan(f.y, f.x) * 0.15915494;
-  float k = pow(r, 0.3);
-  float m = k / (k + 1.0);
-  float band = isinf(r) ? 1.0 : 0.78 + 0.22 * fract(log2(r));
-  vec3 col = hsv2rgb(vec3(h, 0.9, 1.0)) * band;
-  col = mix(vec3(0.0), col, smoothstep(0.0, 0.5, m));
-  col = mix(col, vec3(1.0), smoothstep(0.82, 1.0, m));
+  // Work in octaves of |f|: L = 0 on the unit circle, and symmetric, so
+  // zeros and poles are equally far from plain color. The clamp also
+  // absorbs log2(0) = -inf at an exact zero.
+  float L = clamp(log2(length(f)), -32.0, 32.0);
+  vec3 col = hsv2rgb(vec3(h, 0.9, 1.0)) * (0.78 + 0.22 * fract(L));
+  float shade = clamp(L / 8.0, -1.0, 1.0);
+  col = mix(col, vec3(0.0), max(-shade, 0.0));  // → black over 8 octaves down
+  col = mix(col, vec3(1.0), max(shade, 0.0));   // → white over 8 octaves up
   outColor = vec4(col, 1.0);
 }
 `;

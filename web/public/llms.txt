@@ -1,8 +1,9 @@
 # equation.io
 
 > Free in-browser graphing calculator (WebGL). Plots 2D curves, inequality
-> regions, scalar fields, complex functions, 3D surfaces, and parametric
-> curves/surfaces. No account, no server round-trips: the entire graph state
+> regions, scalar fields, vector fields and ODEs, complex functions (including
+> domain coloring, conformal maps and escape-time fractals), 3D surfaces, and
+> parametric curves/surfaces. No account, no server round-trips: the graph state
 > lives in the URL fragment, so you can construct a link that opens the app
 > with any set of equations already rendered.
 
@@ -32,6 +33,10 @@ Examples (paste-ready):
 - 3D saddle: https://equation.io/#z%3D(x%5E2-y%5E2)%2F4
 - Torus (parametric 3D): https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))
 - Complex dipole field: https://equation.io/#ln(w-2)-ln(w%2B2)
+- Domain coloring: https://equation.io/#domain((w%5E3%20-%201)%2Fw)
+- Conformal grid image: https://equation.io/#conformal(w%5E2%2F4)
+- Mandelbrot set: https://equation.io/#iter(z%5E2%20%2B%20w)
+- Julia set: https://equation.io/#iter(z%5E2%20-%200.7269%20%2B%200.1889i)
 - Vector field (animated streamlines): https://equation.io/#(-y%2C%20x)
 - Pendulum phase portrait (ODE system): https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))
 - Slope field: https://equation.io/#y'%20%3D%20x%20-%20y
@@ -67,7 +72,10 @@ Examples (paste-ready):
   `y = sin(x - 2t)`.
 - `u`, `v`: parametric parameters, each ranging over (0, 1).
 - `w`: the complex plane point x + iy. A complex-valued expression in `w`
-  (e.g. `ln(w-2) - ln(w+2)`) draws field lines and equipotentials.
+  (e.g. `ln(w-2) - ln(w+2)`) draws field lines and equipotentials. Wrapping it
+  in `domain(…)` or `conformal(…)` picks a different view of the same function.
+- `z` inside `iter(…)`: the iterate being fed back through the step. Outside
+  `iter`, `z` is the 3D axis as above.
 
 ## Row types
 
@@ -76,6 +84,17 @@ Examples (paste-ready):
   `4 <= x^2 + y^2 <= 9`. Non-strict comparisons draw a solid boundary.
 - Scalar field: a bare expression in x, y — `sin(x)cos(y)` — shaded by value.
 - Complex plot: a complex expression in `w` — `w + 4/w`.
+- Domain coloring: `domain(f)` where f is complex — `domain(w^2 + 1)`. Hue is
+  arg f, brightness |f|; zeros render black and poles white.
+- Conformal map: `conformal(f)` — `conformal(w^2/4)` — draws the image of the
+  coordinate grid under f (the level curves of re f and im f).
+- Fractal: `iter(step)` iterates `z ↦ step`, coloring by escape time. Inside
+  `iter` only, `z` is the iterate. If the step mentions the plane (`w`, `x`,
+  `y`) iteration starts at 0, so `iter(z^2 + w)` is the Mandelbrot set; with a
+  fixed constant the pixel is the starting point, so `iter(z^2 - 0.8 + 0.156i)`
+  is a Julia set. An optional second argument sets the iteration count,
+  `iter(z^2 + w, 600)` (default 250, max 5000). Any expression works:
+  `iter((|re(z)| - i |im(z)|)^2 + w)` is the burning ship.
 - Point: `(2, 3)`; animate with t: `(2cos(t), 2sin(t))`.
 - Vector field: a 2-tuple in x, y — `(-y, x)` — drawn as animated streamlines
   (line-integral convolution); clicking the canvas traces integral curves.

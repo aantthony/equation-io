@@ -1326,4 +1326,4 @@ renderAll();
 buildExamplesMenu();
 
 // Dev-only handle for driving/inspecting the view in automated tests.
-if (import.meta.env.DEV) (window as any).__eq = { view, camera };
+if (import.meta.env.DEV) (window as any).__eq = { view, camera, requestRender };
