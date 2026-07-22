@@ -7,6 +7,17 @@
       "runtimeArgs": ["web"],
       "port": 5173,
       "autoPort": true
+    },
+    {
+      "name": "worker",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "exec",
+        "sh",
+        "-c",
+        "vite build && wrangler dev -c dist-web/equation/wrangler.json --port 8787"
+      ],
+      "port": 8787
     }
   ]
 }
