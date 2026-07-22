@@ -64,3 +64,49 @@ describe('classify (complex)', () => {
     expect(() => classify(parseExpr('(i x, 1, 1)'))).toThrow(/vector/i);
   });
 });
+
+describe('classify (special forms)', () => {
+  it('routes domain coloring and conformal grids', () => {
+    const d = classify(parseExpr('domain(w^2 + 1)'));
+    expect(d.plot.type).toBe('domain2d');
+    expect(d.needs3D).toBe(false);
+    expect(classify(parseExpr('conformal(w^2)')).plot.type).toBe('conformal2d');
+  });
+
+  it('rejects real-valued domain/conformal arguments', () => {
+    expect(() => classify(parseExpr('domain(x^2)'))).toThrow(/complex/);
+    expect(() => classify(parseExpr('conformal(x + y)'))).toThrow(/complex/);
+  });
+
+  it('iter binds z and seeds by whether the step sees the pixel', () => {
+    const m = classify(parseExpr('iter(z^2 + w)'));
+    expect(m.plot).toMatchObject({ type: 'fractal2d', seed: 'zero' });
+    expect(m.needs3D).toBe(false);
+    expect((m.plot as { step: string }).step).toContain('c_mul(zc, zc)');
+    const j = classify(parseExpr('iter(z^2 - 0.7269 + 0.1889i)'));
+    expect(j.plot).toMatchObject({ type: 'fractal2d', seed: 'pixel' });
+  });
+
+  it('iter takes an optional plain-number count', () => {
+    expect(classify(parseExpr('iter(z^2 + w, 500)')).plot).toMatchObject({ maxIter: 500 });
+    expect(() => classify(parseExpr('iter(z^2 + w, x)'))).toThrow(/plain number/);
+  });
+
+  it('special forms must stand alone', () => {
+    expect(() => classify(parseExpr('1 + iter(z^2 - 1)'))).toThrow(/whole expression/);
+    expect(() => classify(parseExpr('domain(w) = 1'))).toThrow(/whole expression/);
+    expect(() => classify(parseExpr('domain(iter(z^2 + w))'))).toThrow(/whole expression/);
+  });
+
+  it('flags t-animated julia sets', () => {
+    const c = classify(parseExpr('iter(z^2 + e^(i t/8))'));
+    expect(c.animated).toBe(true);
+    expect(c.plot).toMatchObject({ type: 'fractal2d', seed: 'pixel' });
+  });
+
+  it('threads slider constants through iter as uniforms', () => {
+    const c = classify(parseExpr('iter(z^2 + a + b i)'), new Set(['a', 'b']));
+    expect(c.params).toEqual(['a', 'b']);
+    expect((c.plot as { step: string }).step).toContain('u_a');
+  });
+});

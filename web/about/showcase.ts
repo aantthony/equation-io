@@ -20,6 +20,14 @@ export interface ShowcaseItem {
    * link still opens just the equations; visitors click to trace their own.
    */
   clicks?: Array<[number, number]>;
+  /**
+   * Camera for the shot: `span` math units across the canvas's short edge,
+   * centered on (cx, cy). Defaults to the app's opening view, which frames
+   * ~12 units — too wide for anything whose detail lives in a small window
+   * (fractals especially). Cards still link to the plain equations, so a
+   * visitor lands on the default view and scrolls in themselves.
+   */
+  view?: { cx?: number; cy?: number; span?: number };
 }
 
 /** The app URL that loads these equations (the same format saveHash writes). */
@@ -76,8 +84,8 @@ export const SHOWCASE: ShowcaseItem[] = [
   },
   {
     slug: 'flow-cylinder',
-    title: 'Complex functions, domain-colored',
-    blurb: 'Write f(w) and watch streamlines and equipotentials appear.',
+    title: 'Complex potentials',
+    blurb: 'Write f(w) and its streamlines and equipotentials appear — here, flow past a cylinder.',
     eqs: ['w + 4/w'],
     group: 'Fields & complex maps',
   },
@@ -95,6 +103,68 @@ export const SHOWCASE: ShowcaseItem[] = [
     eqs: ['r = 2 + sin(t)', 'ln(w - r) - ln(w + r)'],
     group: 'Fields & complex maps',
     settle: 0.9,
+  },
+  {
+    slug: 'domain-coloring',
+    title: 'Domain coloring',
+    blurb: 'Wrap f in domain(…): hue is the argument, brightness the magnitude. Zeros go black, poles white.',
+    eqs: ['domain((w^3 - 1)/w)'],
+    group: 'Fields & complex maps',
+    view: { span: 3 },
+    settle: 0.8,
+  },
+  {
+    slug: 'conformal-square',
+    title: 'Conformal maps',
+    blurb: 'conformal(f) draws where f sends the grid — stretched, but every crossing still square.',
+    eqs: ['conformal(w^2/4)'],
+    group: 'Fields & complex maps',
+    settle: 0.8,
+  },
+  {
+    slug: 'joukowski',
+    title: 'The Joukowski transform',
+    blurb: 'The map that turns circles into aerofoils, applied to the whole plane.',
+    eqs: ['conformal(w + 1/w)'],
+    group: 'Fields & complex maps',
+    view: { span: 8 },
+    settle: 0.8,
+  },
+  {
+    slug: 'mandelbrot',
+    title: 'Fractals from a recurrence',
+    blurb: 'iter(z² + w) iterates z ↦ z² + w from 0 — the Mandelbrot set, straight from its definition.',
+    eqs: ['iter(z^2 + w)'],
+    group: 'Fractals',
+    view: { cx: -0.5, span: 2.7 },
+    settle: 1,
+  },
+  {
+    slug: 'seahorse-valley',
+    title: 'Zoom until it surprises you',
+    blurb: 'Seahorse valley, 200× in. A second argument buys more iterations for deep zooms.',
+    eqs: ['iter(z^2 + w, 600)'],
+    group: 'Fractals',
+    view: { cx: -0.7627, cy: 0.1085, span: 0.042 },
+    settle: 1.2,
+  },
+  {
+    slug: 'julia',
+    title: 'Julia sets',
+    blurb: 'Fix the constant instead of reading it from the plane, and the pixel becomes the starting point.',
+    eqs: ['iter(z^2 - 0.7269 + 0.1889i)'],
+    group: 'Fractals',
+    view: { span: 2.8 },
+    settle: 1,
+  },
+  {
+    slug: 'burning-ship',
+    title: 'Any map you can write',
+    blurb: 'Nothing is hard-coded: fold absolute values into the step and the burning ship appears.',
+    eqs: ['iter((|re(z)| - i |im(z)|)^2 + w)'],
+    group: 'Fractals',
+    view: { cx: -0.35, cy: 0.5, span: 2.9 },
+    settle: 1,
   },
   {
     slug: 'pendulum-phase',
