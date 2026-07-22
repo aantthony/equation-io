@@ -62,9 +62,16 @@ html, body {
 }
 #gl, #overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
-  height: 100%;
+  /* Installed on iOS with a translucent status bar, WebKit shortens the
+     viewport by the status bar height but still lays the page out from the top
+     of the screen, stranding a dead band above the home indicator (measured:
+     402x874 screen, 402x812 viewport, 62px top inset). Add the inset back so
+     the canvas reaches the bottom edge. Everywhere else the inset is 0 and this
+     is plain 100%. */
+  height: calc(100% + env(safe-area-inset-top));
 }
 #gl { touch-action: none; }
 #overlay { pointer-events: none; }
