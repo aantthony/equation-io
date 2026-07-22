@@ -258,9 +258,9 @@ export const SHOWCASE: ShowcaseItem[] = [
   },
   {
     slug: 'trefoil',
-    title: 'Space curves are tubes',
-    blurb: '3D curves sweep a shaded tube — knots read at a glance, and curvature/torsion combs are a click away.',
-    eqs: ['(sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u))'],
+    title: 'Knots as solid tubes',
+    blurb: 'Wrap a space curve in tube(…) and it sweeps a shaded solid — knots read at a glance, with curvature and torsion combs a click away.',
+    eqs: ['tube((sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u)))'],
     group: 'The third dimension',
   },
 ];

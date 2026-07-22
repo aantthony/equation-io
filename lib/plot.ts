@@ -121,16 +121,19 @@ const WHOLE_EXPR_FORMS = new Set([...SPECIAL_FORMS, 'tube']);
  */
 function matchTube(e: Expr): { inner: Expr; radius: number } | null {
   if (e.kind !== 'call' || e.name !== 'tube') return null;
-  if (e.args.length < 1 || e.args.length > 2) {
-    throw new Error('tube takes a curve and an optional radius: tube((cos(u), sin(u), u/4), 0.1).');
+  // A parenthesized vector inside a call flattens into the argument list, so
+  // tube((x, y, z)) and tube(x, y, z) arrive here identically — both spell
+  // the same thing, and a fourth argument is the radius.
+  if (e.args.length !== 3 && e.args.length !== 4) {
+    throw new Error('tube takes three components and an optional radius: tube(cos(u), sin(u), u/4, 0.1).');
   }
   let radius = DEFAULT_TUBE_RADIUS;
-  if (e.args.length === 2) {
-    const r = e.args[1];
+  if (e.args.length === 4) {
+    const r = e.args[3];
     if (r.kind !== 'num' || !(r.value > 0)) throw new Error('The tube radius must be a positive number.');
     radius = r.value;
   }
-  return { inner: e.args[0], radius };
+  return { inner: { kind: 'vec', items: e.args.slice(0, 3) }, radius };
 }
 
 /** First special-form call at any position other than the root itself. */
@@ -184,12 +187,7 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   const ode = matchODE(expr);
   if (ode) expr = ode;
   const tube = matchTube(expr);
-  if (tube) {
-    expr = tube.inner;
-    if (expr.kind !== 'vec' || expr.items.length !== 3) {
-      throw new Error('tube(…) needs a 3D parametric curve like tube((cos(u), sin(u), u/4)).');
-    }
-  }
+  if (tube) expr = tube.inner;
   const special = expr.kind === 'call' && SPECIAL_FORMS.has(expr.name) ? expr.name : undefined;
   const nested = nestedSpecial(expr, true);
   if (nested) throw new Error(`${nested}(…) must be the whole expression.`);

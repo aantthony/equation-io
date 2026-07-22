@@ -1348,10 +1348,10 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['breathing torus', '(cos(2pi u)(2+cos(2pi v+t)), sin(2pi u)(2+cos(2pi v+t)), sin(2pi v+t))'],
   ]],
   ['knots', [
-    ['trefoil', '(sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u))'],
-    ['torus knot (2,5)', '((2+cos(10pi u))cos(4pi u), (2+cos(10pi u))sin(4pi u), sin(10pi u))'],
-    ['figure eight', '((2+cos(4pi u))cos(6pi u), (2+cos(4pi u))sin(6pi u), sin(8pi u))'],
-    ['viviani', '(1+cos(4pi u), sin(4pi u), 2sin(2pi u))'],
+    ['trefoil', 'tube((sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u)))'],
+    ['torus knot (2,5)', 'tube(((2+cos(10pi u))cos(4pi u), (2+cos(10pi u))sin(4pi u), sin(10pi u)))'],
+    ['figure eight', 'tube(((2+cos(4pi u))cos(6pi u), (2+cos(4pi u))sin(6pi u), sin(8pi u)))'],
+    ['viviani', 'tube((1+cos(4pi u), sin(4pi u), 2sin(2pi u)), 0.06)'],
   ]],
 ];
 

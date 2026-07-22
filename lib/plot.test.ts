@@ -34,6 +34,34 @@ describe('classify', () => {
     expect(() => cls('(u, v)')).toThrow(/3 components/);
   });
 
+  it('sweeps a tube only when tube(…) asks for one', () => {
+    // A bare 3D curve stays a line strip, so it cannot swallow points or
+    // other curves sharing the scene.
+    const bare = cls('(cos(2pi u), sin(2pi u), u)').plot as { tube?: number };
+    expect(bare.tube).toBeUndefined();
+
+    const tubed = cls('tube((cos(2pi u), sin(2pi u), u))').plot;
+    expect(tubed).toMatchObject({ type: 'pcurve', dim: 3, tube: 0.1 });
+    // Framing derivatives still come through the wrapper.
+    expect((tubed as { d1?: unknown[] }).d1).toHaveLength(3);
+
+    expect(cls('tube((cos(2pi u), sin(2pi u), u), 0.03)').plot).toMatchObject({ tube: 0.03 });
+    // A parenthesized vector flattens into the argument list, so the
+    // unparenthesized spelling is the same plot.
+    expect(cls('tube(cos(2pi u), sin(2pi u), u)').plot).toMatchObject({ tube: 0.1 });
+    // Builtin names fold case, so Tube(…) works too.
+    expect(cls('Tube((cos(2pi u), sin(2pi u), u))').plot).toMatchObject({ tube: 0.1 });
+  });
+
+  it('rejects tube(…) on anything that is not a 3D curve', () => {
+    expect(() => cls('tube((cos(2pi u), sin(2pi u)))')).toThrow(/three components/);
+    expect(() => cls('tube(x^2)')).toThrow(/three components/);
+    expect(() => cls('tube((1, 2, 3))')).toThrow(/curve in u/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), 0)')).toThrow(/positive number/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), a)')).toThrow(/positive number/);
+    expect(() => cls('z = tube((cos(u), sin(u), u))')).toThrow(/whole expression/);
+  });
+
   it('routes (x,y)-dependent vectors to vector fields', () => {
     const f = cls('(-y, x)');
     expect(f.plot.type).toBe('vfield2d');
