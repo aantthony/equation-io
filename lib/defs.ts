@@ -177,7 +177,24 @@ function substIdx(e: Expr, idx: string, val: Expr): Expr {
     case 'num': return e;
     case 'var': return e.name === idx ? val : e;
     case 'neg': return { kind: 'neg', a: substIdx(e.a, idx, val) };
-    case 'bin': return { kind: 'bin', op: e.op, a: substIdx(e.a, idx, val), b: substIdx(e.b, idx, val) };
+    case 'bin': {
+      if (e.op === '*' || e.op === '/') {
+        const m = splitSumChain(e);
+        if (m) {
+          // A bodyless header binds the rest of its product chain as its body
+          // (`sum[n=1..2] sum[n=1..3] n`). Canonicalize to the 4-arg call so
+          // the rebinding guard below sees that body as the inner Σ's own,
+          // not as a sibling factor ours may substitute into.
+          const call = substIdx(
+            { kind: 'call', name: m.header.name, args: [...m.header.args, m.body] },
+            idx,
+            val,
+          );
+          return m.coeff ? { kind: 'bin', op: m.op, a: substIdx(m.coeff, idx, val), b: call } : call;
+        }
+      }
+      return { kind: 'bin', op: e.op, a: substIdx(e.a, idx, val), b: substIdx(e.b, idx, val) };
+    }
     case 'call': {
       if ((e.name === 'sum' || e.name === 'prod') && e.args[0]?.kind === 'var' && e.args[0].name === idx) {
         // The inner Σ rebinds idx: substitute in its bounds but not its body.

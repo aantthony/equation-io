@@ -427,10 +427,21 @@ void main() {
   vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
   vec2 zc = ${seed === 'pixel' ? 'p' : 'vec2(0.0)'};
   float mu = -1.0;
+  float m2 = dot(zc, zc);
   for (int k = 0; k < ${maxIter}; k++) {
     zc = stepFn(zc, p.x, p.y);
-    float m2 = dot(zc, zc);
-    if (isnan(m2)) break;
+    float prev = m2;
+    m2 = dot(zc, zc);
+    if (isnan(m2) || isinf(m2)) {
+      // For degree >= 4, |z|^(2d) can leave the float32 range inside the step
+      // before the bailout test fires, yielding inf — or NaN, once inf - inf
+      // appears in a complex multiply. An orbit already outside the escape
+      // disc has escaped, and log2(inf) below would drive mu to -inf and
+      // paint it as interior; only a step undefined near the origin is
+      // genuinely bounded. No smooth term survives at this magnitude.
+      if (prev > 4.0) mu = float(k);
+      break;
+    }
     if (m2 > 1.0e12) {
       // Smooth (fractional) escape count, assuming a roughly degree-2 map:
       // log2 of the bailout overshoot ratio, bailout radius 1e6.
