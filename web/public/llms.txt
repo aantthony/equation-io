@@ -24,23 +24,23 @@ Format:
 
 Examples (paste-ready):
 
-- Parabola: https://equation.io/#y%3Dx%5E2
-- Circle: https://equation.io/#x%5E2%2By%5E2%3D4
-- Sine + tangent line: https://equation.io/#f(x)%3Dx%5E3-2x;g(x)%3Dd%2Fdx%20f(x);a%3D1;y%3Df(x);y%3Df(a)%2Bg(a)(x-a)
-- Slider-controlled wave: https://equation.io/#a%3D2;y%3Dsin(a%20x)%2Fa
-- Fourier series (drag N for more harmonics): https://equation.io/#N%20%3D%208;y%20%3D%202%20sum%5Bn%3D1..N%5D%20(-1)%5E(n%2B1)%20sin(n%20x)%2Fn
-- Animated ripples: https://equation.io/#sin(x%5E2%2By%5E2-4t)%2F2
-- 3D saddle: https://equation.io/#z%3D(x%5E2-y%5E2)%2F4
-- Torus (parametric 3D): https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))
-- Complex dipole field: https://equation.io/#ln(w-2)-ln(w%2B2)
-- Domain coloring: https://equation.io/#domain((w%5E3%20-%201)%2Fw)
-- Conformal grid image: https://equation.io/#conformal(w%5E2%2F4)
-- Mandelbrot set: https://equation.io/#iter(z%5E2%20%2B%20w)
-- Julia set: https://equation.io/#iter(z%5E2%20-%200.7269%20%2B%200.1889i)
-- Vector field (animated streamlines): https://equation.io/#(-y%2C%20x)
-- Pendulum phase portrait (ODE system): https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))
-- Slope field: https://equation.io/#y'%20%3D%20x%20-%20y
-- Polar cardioid: https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))
+- [Parabola](https://equation.io/#y%3Dx%5E2): `y = x^2`
+- [Circle](https://equation.io/#x%5E2%2By%5E2%3D4): `x^2 + y^2 = 4`
+- [Sine + tangent line](https://equation.io/#f(x)%3Dx%5E3-2x;g(x)%3Dd%2Fdx%20f(x);a%3D1;y%3Df(x);y%3Df(a)%2Bg(a)(x-a)): `f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x-a)`
+- [Slider-controlled wave](https://equation.io/#a%3D2;y%3Dsin(a%20x)%2Fa): `a = 2; y = sin(a x)/a`
+- [Fourier series](https://equation.io/#N%20%3D%208;y%20%3D%202%20sum%5Bn%3D1..N%5D%20(-1)%5E(n%2B1)%20sin(n%20x)%2Fn): `N = 8; y = 2 sum[n=1..N] (-1)^(n+1) sin(n x)/n` — drag N for more harmonics
+- [Animated ripples](https://equation.io/#sin(x%5E2%2By%5E2-4t)%2F2): `sin(x^2+y^2-4t)/2`
+- [3D saddle](https://equation.io/#z%3D(x%5E2-y%5E2)%2F4): `z = (x^2 - y^2)/4`
+- [Torus (parametric 3D)](https://equation.io/#(cos(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20u)(2%2Bcos(2pi%20v))%2C%20sin(2pi%20v))): `(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))`
+- [Complex dipole field](https://equation.io/#ln(w-2)-ln(w%2B2)): `ln(w-2) - ln(w+2)`
+- [Domain coloring](https://equation.io/#domain((w%5E3%20-%201)%2Fw)): `domain((w^3 - 1)/w)`
+- [Conformal grid image](https://equation.io/#conformal(w%5E2%2F4)): `conformal(w^2/4)`
+- [Mandelbrot set](https://equation.io/#iter(z%5E2%20%2B%20w)): `iter(z^2 + w)`
+- [Julia set](https://equation.io/#iter(z%5E2%20-%200.7269%20%2B%200.1889i)): `iter(z^2 - 0.7269 + 0.1889i)`
+- [Vector field](https://equation.io/#(-y%2C%20x)): `(-y, x)` — drawn as animated streamlines
+- [Pendulum phase portrait](https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))): `(x', y') = (y, -sin(x))`
+- [Slope field](https://equation.io/#y'%20%3D%20x%20-%20y): `y' = x - y`
+- [Polar cardioid](https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))): `r = sqrt(x^2+y^2); theta = atan2(y,x); r = 2(1 + cos(theta))`
 
 ## Expression syntax
 
@@ -131,5 +131,6 @@ Examples (paste-ready):
 
 ## More
 
-- App: https://equation.io/
-- About (feature gallery with screenshots): https://equation.io/about/
+- [App](https://equation.io/): the grapher itself
+- [About](https://equation.io/about/): feature gallery with screenshots
+- [robots.txt](https://equation.io/robots.txt): crawling policy
