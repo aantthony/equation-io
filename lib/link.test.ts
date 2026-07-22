@@ -20,4 +20,22 @@ describe('graph-link payload codec', () => {
     expect(encodePayload(['', ' y = x ', ''])).toBe('y%20%3D%20x');
     expect(decodePayload(';y%3Dx;;')).toEqual(['y=x']);
   });
+
+  it('separates rows whether the separator arrives raw or encoded', () => {
+    // Copying a /g/ link out of the address bar can hand the separator back as
+    // %3B. A payload that stops separating becomes one row containing a ';',
+    // which then fails to parse with "Invalid character".
+    const expected = ['y = sin(x)', 'y=x'];
+    expect(decodePayload('y%20%3D%20sin%28x%29;y%3Dx')).toEqual(expected); // as emitted
+    expect(decodePayload('y = sin(x);y=x')).toEqual(expected); // fully decoded
+    expect(decodePayload('y%20=%20sin(x);y=x')).toEqual(expected); // partly decoded
+    expect(decodePayload('y%20=%20sin(x)%3By=x')).toEqual(expected); // separator encoded
+    expect(decodePayload('y%20%3D%20sin%28x%29%3By%3Dx')).toEqual(expected); // fully encoded
+    expect(decodePayload('y%20=%20sin(x)%3by=x')).toEqual(expected); // lowercase %3b
+  });
+
+  it('keeps a single row whole', () => {
+    expect(decodePayload('y%20%3D%20sin%28x%29')).toEqual(['y = sin(x)']);
+    expect(decodePayload('(cos(2pi u), sin(2pi u), u)')).toEqual(['(cos(2pi u), sin(2pi u), u)']);
+  });
 });

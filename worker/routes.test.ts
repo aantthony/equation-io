@@ -57,10 +57,17 @@ describe('/api/og images', () => {
 });
 
 describe('payload round-trip', () => {
-  it('survives equations containing parens and semicolons', () => {
+  it('survives equations containing parens', () => {
     const rows = ['f(x) = x^3 - 2x', 'y = f(x)', 'a = 2'];
     expect(decodePayload(encodePayload(rows))).toEqual(rows);
-    // A ';' inside an equation encodes to %3B, so it must not split the payload.
-    expect(decodePayload(encodePayload(['y = 1; z']))).toHaveLength(1);
+  });
+
+  it('treats ; as a separator in either spelling, never as content', () => {
+    // The documented contract (llms.txt): ';' is only the row separator and
+    // never appears inside an equation. That is what lets a payload survive
+    // its separator coming back encoded — the far more common case, since
+    // copying a /g/ link out of the address bar can do exactly that.
+    expect(decodePayload(encodePayload(['y = 1', 'z']))).toEqual(['y = 1', 'z']);
+    expect(decodePayload('y%20%3D%201%3Bz')).toEqual(['y = 1', 'z']);
   });
 });

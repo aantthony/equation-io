@@ -21,14 +21,19 @@ export function encodePayload(texts: string[]): string {
 /**
  * Rows from a payload, reading both the `/g/` form and legacy `/#…` links.
  *
- * Split first, then decode each row exactly once. Decoding the whole payload
- * up front would turn an encoded `%3B` inside an equation into a real `;` and
- * split there, tearing the equation in half. Splitting stays bracket-aware so
- * a literal `;` inside brackets — reachable in a hand-written link — does not
- * start a new row either, matching the editor's paste rule.
+ * The separator survives in either spelling. We emit a literal `;`, but a
+ * round trip through the address bar, a copy, or a chat client can hand it
+ * back as `%3B`, and a payload that no longer separates renders as one row
+ * containing a `;` — which then fails to parse. Equations never contain a bare
+ * `;` (it is only the row separator, as llms.txt states), so normalizing the
+ * encoded form is unambiguous.
+ *
+ * Rows are then decoded exactly once. Decoding the whole payload up front
+ * instead would also un-escape any other `%`-sequence before the split, so a
+ * row is decoded here and never again.
  */
 export function decodePayload(payload: string): string[] {
-  return splitStatements(payload)
+  return splitStatements(payload.replace(/%3B/gi, ';'))
     .map(s => decodeURIComponent(s))
     .filter(s => s.trim());
 }
