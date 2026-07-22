@@ -1,5 +1,13 @@
 * { box-sizing: border-box; }
 
+/* The graph owns every gesture: one finger pans it, two pinch it (see the
+   pointer handlers in main.ts). Nothing in the app scrolls, so no touch should
+   reach the viewport's own pan/zoom — an accidental page zoom has no way back
+   short of a reload. Blanket rather than per-element so a pinch that happens to
+   start on the equation text can't leak through; `pan-x pan-y` rather than
+   `none` leaves the caret and text selection alone. */
+* { touch-action: pan-x pan-y; }
+
 /* Light theme (default). The dark overrides live in [data-theme="dark"] below;
    the JS theme switch flips data-theme on <html>, so every panel color moves
    with the WebGL background in one place. */
@@ -57,6 +65,7 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: var(--page-bg);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
