@@ -42,7 +42,9 @@ a { color: var(--accent); }
   justify-content: space-between;
   max-width: 1080px;
   margin: 0 auto;
-  padding: 18px 24px;
+  /* Clear the translucent status bar when opened from the installed app; the
+     inset is 0 in a browser tab, leaving the original 18px. */
+  padding: calc(18px + env(safe-area-inset-top)) 24px 18px;
 }
 .brand {
   font-size: 20px;
@@ -218,7 +220,7 @@ a { color: var(--accent); }
 footer {
   border-top: 1px solid var(--line);
   margin-top: 30px;
-  padding: 30px 24px 40px;
+  padding: 30px 24px calc(40px + env(safe-area-inset-bottom));
   text-align: center;
   color: var(--muted);
   font-size: 14.5px;

@@ -1305,6 +1305,15 @@ canvas.addEventListener('wheel', e => {
   zoomAt(e.clientX, e.clientY, factor);
 }, { passive: false });
 
+// touch-action stops the viewport pinch-zoom everywhere it is honored, but
+// WebKit still runs its own two-finger zoom off these non-standard gesture
+// events. Swallowing them at the document is what actually pins the page at
+// scale 1 on iOS; the canvas's own pinch (pointerdown/move above) is unaffected
+// because it never depended on them.
+for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
+  document.addEventListener(type, e => e.preventDefault(), { passive: false });
+}
+
 // The canvas box changes without a window resize event on mobile (URL bar
 // collapsing, safe-area shifts, an in-app browser animating to full height),
 // so observe the element itself. The window listener stays for devicePixelRatio

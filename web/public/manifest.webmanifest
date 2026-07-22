@@ -1,0 +1,17 @@
+{
+  "name": "Equation.io — graphing calculator",
+  "short_name": "Equation",
+  "description": "Plot implicit equations, inequalities, complex functions and 3D surfaces, compiled to your GPU as you type.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#171a1f",
+  "theme_color": "#171a1f",
+  "icons": [
+    { "src": "/icon.svg", "type": "image/svg+xml", "sizes": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" },
+    { "src": "/icon-maskable-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

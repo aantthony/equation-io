@@ -1,5 +1,13 @@
 * { box-sizing: border-box; }
 
+/* The graph owns every gesture: one finger pans it, two pinch it (see the
+   pointer handlers in main.ts). Nothing in the app scrolls, so no touch should
+   reach the viewport's own pan/zoom — an accidental page zoom has no way back
+   short of a reload. Blanket rather than per-element so a pinch that happens to
+   start on the equation text can't leak through; `pan-x pan-y` rather than
+   `none` leaves the caret and text selection alone. */
+* { touch-action: pan-x pan-y; }
+
 /* Light theme (default). The dark overrides live in [data-theme="dark"] below;
    the JS theme switch flips data-theme on <html>, so every panel color moves
    with the WebGL background in one place. */
@@ -57,22 +65,32 @@ html, body {
   margin: 0;
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none;
   background: var(--page-bg);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 #gl, #overlay {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   width: 100%;
-  height: 100%;
+  /* Installed on iOS with a translucent status bar, WebKit shortens the
+     viewport by the status bar height but still lays the page out from the top
+     of the screen, stranding a dead band above the home indicator (measured:
+     402x874 screen, 402x812 viewport, 62px top inset). Add the inset back so
+     the canvas reaches the bottom edge. Everywhere else the inset is 0 and this
+     is plain 100%. */
+  height: calc(100% + env(safe-area-inset-top));
 }
 #gl { touch-action: none; }
 #overlay { pointer-events: none; }
 
 #panel {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  /* viewport-fit=cover lets the canvas fill the whole screen (under the iOS
+     status bar and home indicator); keep the controls inside the safe area. */
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
   width: 300px;
   background: var(--panel-bg);
   backdrop-filter: blur(8px);

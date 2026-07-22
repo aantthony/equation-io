@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- min+max scale pin the installed app at exactly 1: the graph has its own
+       pinch-to-zoom, and a stray page zoom sticks across reloads with no way
+       back. Both bounds are needed — maximum-scale alone still leaves WebKit's
+       default minimum-scale of 0.25, so a pinch out could shrink the page.
+       Safari tabs deliberately ignore these, so ordinary browsing keeps
+       pinch-zoom and the accessibility escape hatch. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, viewport-fit=cover">
   <title>Equation.io — free online graphing calculator</title>
   <meta name="description" content="Free in-browser graphing calculator. Plot implicit equations, inequalities, complex functions and 3D surfaces, compiled to your GPU as you type. Graphs live in the URL fragment — link to https://equation.io/#<encoded equations> to open any graph directly.">
   <link rel="canonical" href="https://equation.io/">
@@ -12,6 +18,18 @@
   <meta property="og:description" content="Plot implicit equations, inequalities, complex functions and 3D surfaces in your browser. Graphs live in the URL, so every graph is a shareable link.">
   <meta property="og:url" content="https://equation.io/">
   <meta property="og:image" content="https://equation.io/shots/hero.png">
+  <!-- Installed to the Home Screen the app runs without browser chrome, which is
+       the only way viewport-fit=cover above can reach under the status bar and
+       home indicator. black-translucent puts the graph behind the status bar;
+       #panel offsets itself by the safe-area insets to stay clear of it. -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Equation">
+  <meta name="theme-color" id="theme-color" content="#ffffff">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="./style.css">
   <script>
     // Set the theme before first paint so dark users never see a white flash.
@@ -22,6 +40,8 @@
         var dark = s === 'dark' ||
           (s !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.getElementById('theme-color')
+          .setAttribute('content', dark ? '#171a1f' : '#ffffff');
       } catch (e) {}
     })();
   </script>
