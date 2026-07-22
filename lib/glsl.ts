@@ -13,6 +13,9 @@ export const FN_GLSL: Record<string, string> = {
   round: 'eq_round',
   sech: 'eq_sech',
   fract: 'fract',
+  erf: 'eq_erf',
+  normalpdf: 'eq_normalpdf',
+  normalcdf: 'eq_normalcdf',
 };
 
 /** Helper functions some expressions need; prepend once to the shader. */
@@ -20,6 +23,21 @@ export const GLSL_PRELUDE = `
 float eq_log10(float x) { return log(x) * 0.4342944819032518; }
 float eq_round(float x) { return floor(x + 0.5); }
 float eq_sech(float x) { return 1.0 / cosh(x); }
+float eq_erf(float x) {
+  // Abramowitz & Stegun 7.1.26; max absolute error ~1.5e-7.
+  float a = abs(x);
+  float t = 1.0 / (1.0 + 0.3275911 * a);
+  float y = 1.0 - ((((1.061405429*t - 1.453152027)*t + 1.421413741)*t - 0.284496736)*t + 0.254829592)
+    * t * exp(-a * a);
+  return sign(x) * y;
+}
+float eq_normalpdf(float x, float mean, float sd) {
+  float z = (x - mean) / sd;
+  return exp(-0.5 * z * z) / (sd * 2.5066282746310002);
+}
+float eq_normalcdf(float x, float mean, float sd) {
+  return 0.5 * (1.0 + eq_erf((x - mean) * 0.7071067811865476 / sd));
+}
 float eq_pow(float a, float b) {
   // Support negative bases for integer exponents (e.g. (-2)^3).
   if (a >= 0.0) return pow(a, b);

@@ -29,6 +29,7 @@ export const FUNCTIONS = new Set([
   'sinh', 'cosh', 'tanh', 'sech', 'asinh', 'acosh', 'atanh',
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
+  'erf', 'normalpdf', 'normalcdf',
   're', 'im', 'arg', 'conj',
   // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
   'sum', 'prod',
@@ -325,6 +326,21 @@ export function substVars(e: Expr, env: Record<string, Expr>): Expr {
   }
 }
 
+/** Abramowitz & Stegun 7.1.26; max absolute error ~1.5e-7. */
+export function erf(x: number): number {
+  const a = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * a);
+  const y = 1 - ((((1.061405429 * t - 1.453152027) * t + 1.421413741) * t - 0.284496736) * t + 0.254829592)
+    * t * Math.exp(-a * a);
+  return Math.sign(x) * y;
+}
+
+export const normalpdf = (x: number, mean: number, sd: number): number =>
+  Math.exp(-0.5 * ((x - mean) / sd) ** 2) / (sd * Math.sqrt(2 * Math.PI));
+
+export const normalcdf = (x: number, mean: number, sd: number): number =>
+  0.5 * (1 + erf((x - mean) / (sd * Math.SQRT2)));
+
 const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
@@ -336,6 +352,7 @@ const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   min: Math.min, max: Math.max,
   mod: (a, b) => a - Math.floor(a / b) * b,
   fract: a => a - Math.floor(a),
+  erf, normalpdf, normalcdf,
 };
 
 /** Numerically evaluate a scalar expression with the given variable bindings. */

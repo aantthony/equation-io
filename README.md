@@ -36,6 +36,11 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
 · `y < x/2 + 1` (inequalities shade their region; strict `<`/`>` have no
   border, `<=`/`>=` draw the boundary line, and chains like
   `4 <= x^2 + y^2 <= 9` intersect with an edge per non-strict bound)
+· `X ~ Normal(0, a)` (a random variable; the row plots its density, and
+  parameters may use sliders. Then `P(X < b)`, `P(X > b)`, or `P(-1 < X < 2)`
+  shades that area under the density and shows the numeric probability.
+  `erf`, `normalpdf(x, mean, sd)`, and `normalcdf(x, mean, sd)` are also
+  plain functions, so `y = normalcdf(x, 0, 1)` graphs the CDF)
 · `f(x) = x^3 - a x` (user-defined functions, inlined symbolically)
 · `y = d/dx f(x)` / `d^2/dx^2 (x^4)` (symbolic Leibniz derivatives — works for
   any single-letter variable, nests, and flows through function definitions:
