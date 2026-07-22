@@ -199,6 +199,21 @@ html, body {
   margin: 0;
 }
 
+.eq-levels {
+  display: block;
+  margin: 0 0 3px 28px; /* clears the color-dot gutter, like the other widgets */
+  border: 1px solid var(--dot-border);
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  font: 10.5px ui-sans-serif, system-ui, sans-serif;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+.eq-levels:hover { color: var(--muted-hover); border-color: var(--panel-border); }
+/* "on" inverts against the page so it reads in both themes. */
+.eq-levels.on { background: var(--accent); border-color: var(--accent); color: var(--page-bg); }
+
 .eq-error {
   color: var(--error);
   font-size: 11px;

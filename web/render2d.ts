@@ -50,6 +50,8 @@ export interface Fractal2D {
 
 /** Everything drawable in a 2D frame, in back-to-front draw order. */
 export interface Layers2D {
+  /** Contour stacks of f for `f(x,y) = c` rows; drawn under the other layers. */
+  levels?: LevelSpec[];
   fractals?: Fractal2D[];
   domains?: Curve2D[];
   conformals?: Curve2D[];
@@ -82,11 +84,35 @@ export interface GridSpec {
   minor: number;
 }
 
+/** A level-set family drawn in an equation's color (topographic map). */
+export interface LevelSpec extends GridSpec {
+  color: [number, number, number];
+}
+
+/**
+ * Antialiased line at every multiple of `spacing` of a field value c, with
+ * width from the distance estimate |c - k·s| / |∇c|, fading out where lines
+ * crowd toward subpixel spacing (singularities, extreme zoom).
+ */
+const GRID_LINE_GLSL = `
+float gridLine(float c, float lg, float spacing, float halfWidthPx) {
+  // The screen-derivative fallback for lg reads neighbouring pixels, which may
+  // lie outside the domain (floor, sqrt near its boundary), and an analytic
+  // gradient can blow up on its own. A NaN alpha survives the caller's
+  // "a < 0.004" discard — every comparison against NaN is false — and reaches
+  // blending, so stop it at the source, for the grid and contour stacks alike.
+  if (isnan(c) || isnan(lg) || isinf(lg)) return 0.0;
+  float lgv = max(lg / spacing, 1e-24);  // |∇(c/spacing)| per pixel
+  float v = c / spacing;
+  float distPx = abs(v - round(v)) / lgv;
+  float a = 1.0 - smoothstep(halfWidthPx, halfWidthPx + 1.0, distPx);
+  return a * clamp((0.35 - lgv) / 0.25, 0.0, 1.0);
+}
+`;
+
 /**
  * The grid is itself a field renderer: each family draws the level sets
- * c = k·spacing with width from the distance estimate |c - k·s| / |∇c|,
- * fading out where lines crowd toward subpixel spacing (singularities,
- * extreme zoom). The Cartesian grid is the identity pair (x, y).
+ * c = k·spacing via gridLine. The Cartesian grid is the identity pair (x, y).
  */
 function gridFrag(specs: GridSpec[]): string {
   const params = [...new Set(specs.flatMap(s => s.params))];
@@ -117,13 +143,7 @@ ${paramDecls(params)}
 out vec4 outColor;
 ${GLSL_PRELUDE}
 ${decls}
-float gridLine(float c, float lg, float spacing, float halfWidthPx) {
-  float lgv = max(lg / spacing, 1e-24);  // |∇(c/spacing)| per pixel
-  float v = c / spacing;
-  float distPx = abs(v - round(v)) / lgv;
-  float a = 1.0 - smoothstep(halfWidthPx, halfWidthPx + 1.0, distPx);
-  return a * clamp((0.35 - lgv) / 0.25, 0.0, 1.0);
-}
+${GRID_LINE_GLSL}
 void main() {
   vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
   vec3 col = ${glslVec3(theme.bg)};
@@ -135,6 +155,41 @@ ${blocks}
   col = mix(col, ${glslVec3(theme.gridMajor)}, majorA);
   col = mix(col, ${glslVec3(theme.axis)}, axisA);
   outColor = vec4(col, 1.0);
+}
+`;
+}
+
+/**
+ * Whole-family level sets of one equation's field f(x,y): faint contours at
+ * every multiple of uMinor, stronger at uMajor, in the equation's color. The
+ * current level (f = c) stays the solid curve drawn by curveFrag on top.
+ */
+function levelsFrag(spec: { glsl: string; gradGlsl?: [string, string]; params: string[] }): string {
+  const grad = spec.gradGlsl
+    ? `vec2 gradF(float x, float y) { return vec2(${spec.gradGlsl[0]}, ${spec.gradGlsl[1]}); }\n`
+    : '';
+  return `#version 300 es
+precision highp float;
+uniform vec2 uCenter;
+uniform float uUpp;
+uniform vec2 uRes;
+uniform vec3 uColor;
+uniform float uMajor;
+uniform float uMinor;
+uniform float t;
+${paramDecls(spec.params)}
+out vec4 outColor;
+${GLSL_PRELUDE}
+float F(float x, float y) { return ${spec.glsl}; }
+${grad}${GRID_LINE_GLSL}
+void main() {
+  vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
+  float v = F(p.x, p.y);
+  if (isnan(v) || isinf(v)) discard;
+  float lg = ${spec.gradGlsl ? 'length(gradF(p.x, p.y)) * uUpp' : 'length(vec2(dFdx(v), dFdy(v)))'};
+  float a = max(gridLine(v, lg, uMinor, 0.5) * 0.18, gridLine(v, lg, uMajor, 0.5) * 0.45);
+  if (a < 0.004) discard;
+  outColor = vec4(uColor, a);
 }
 `;
 }
@@ -567,7 +622,12 @@ export class Renderer2D {
       console.error(e);
     }
 
-    const drawProgram = (frag: string, color: [number, number, number], params?: string[]) => {
+    const drawProgram = (
+      frag: string,
+      color: [number, number, number],
+      params?: string[],
+      extra?: (prog: WebGLProgram) => void,
+    ) => {
       let prog: WebGLProgram;
       try {
         prog = this.cache.get(QUAD_VERT, frag);
@@ -586,11 +646,20 @@ export class Renderer2D {
         const loc = gl.getUniformLocation(prog, 'u_' + p);
         if (loc) gl.uniform1f(loc, env[p] ?? 0);
       }
+      extra?.(prog);
       this.quad.draw();
     };
     const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) =>
       drawProgram(frag(item.field, item.params), item.color, item.params);
 
+    // Contour stacks sit just above the grid, under everything else, so the
+    // solid level and any other layer stay readable on top.
+    for (const lv of layers.levels ?? []) {
+      drawProgram(levelsFrag(lv), lv.color, lv.params, prog => {
+        gl.uniform1f(gl.getUniformLocation(prog, 'uMajor'), lv.major);
+        gl.uniform1f(gl.getUniformLocation(prog, 'uMinor'), lv.minor);
+      });
+    }
     for (const f of layers.fractals ?? []) {
       drawProgram(fractalFrag(f.step, f.seed, f.maxIter, f.params), f.color, f.params);
     }
