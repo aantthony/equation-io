@@ -9,7 +9,7 @@
  * Run with PERF_MEASURE=1 to print current actuals for re-pinning.
  */
 import { describe, expect, test } from 'vitest';
-import { CORPUS, compileRows, countNodes } from './perfcase.ts';
+import { CORPUS, SUM_CASE, compileRows, countNodes } from './perfcase.ts';
 import { parseExpr } from './expr.ts';
 import { diff } from './diff.ts';
 import { toGLSL } from './glsl.ts';
@@ -34,6 +34,32 @@ describe('uniform parameterization (slider moves must not change compiled output
   }
 });
 
+describe('Σ/Π is the documented exception to uniform parameterization', () => {
+  // Sums expand at compile time, so the bound constant's value is baked into
+  // the GLSL: every step of an N slider is a new shader source and therefore
+  // a real compile. This is inherent to symbolic expansion, not a bug — but
+  // it is the one place the invariant above does not hold, so pin it. If
+  // someone later teaches sums to compile against a uniform, this test fails
+  // and should be deleted, and a CORPUS entry added instead.
+  test('output changes with the bound constant', () => {
+    const a = JSON.stringify(compileRows(SUM_CASE(3)).classified);
+    const b = JSON.stringify(compileRows(SUM_CASE(4)).classified);
+    expect(a).not.toBe(b);
+  });
+
+  test('expansion stays linear in N and bounded', () => {
+    const size = (n: number) => JSON.stringify(compileRows(SUM_CASE(n)).classified).length;
+    const s10 = size(10);
+    const s40 = size(40);
+    if (MEASURE) console.log(`sum N=10: ${s10}  N=40: ${s40}  ratio ${(s40 / s10).toFixed(2)}`);
+    // Linear growth (~4x for 4x the terms); a superlinear regression here
+    // would mean expansion is duplicating work per term.
+    expect(s40 / s10).toBeLessThan(6);
+    // SUM_MAX_TERMS keeps a single sum bounded however far the slider goes.
+    expect(() => compileRows(SUM_CASE(100000))).toThrow(/limit/);
+  });
+});
+
 describe('compiled size budgets', () => {
   // GLSL source length per corpus case: catches codegen blowup (e.g. an
   // expansion pass or a pow-unrolling change exploding shader size, which
@@ -52,6 +78,11 @@ describe('compiled size budgets', () => {
     derivative: 210,
     userfn: 280,
     polarfield: 400,
+    vfield2d: 80,
+    ode2d: 70,
+    domain2d: 240,
+    conformal2d: 160,
+    fractal2d: 170,
   };
 
   const glslOf = (rows: string[]): string => {

@@ -134,6 +134,24 @@ const SCENARIOS: Scenario[] = [
     rows: ['y = sin(x - t)', 'x^2 + y^2 = 4 + sin(t)'],
     action: page => settle(page, 60),
   },
+  {
+    // The one scenario expected to compile: Σ expands at compile time, so
+    // each N is a distinct shader. Baselined at its real cost rather than
+    // left uncovered, so any *increase* still trips.
+    name: 'sum-slider-drag',
+    rows: ['N = 3', 'y = (4/pi) sum(k=1..N, sin((2k-1)x)/(2k-1))'],
+    action: page => dragSlider(page, 30),
+  },
+  {
+    name: 'vector-field',
+    rows: ['(-y, x)'],
+    action: page => settle(page, 60),
+  },
+  {
+    name: 'fractal',
+    rows: ['iter(z^2 + w)'],
+    action: page => wheelZoom(page, 20, -120),
+  },
 ];
 
 function summarize(frames: number[], compilesAfterLoad: number, compilesDuringAction: number): Metrics {

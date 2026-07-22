@@ -6,7 +6,14 @@
  * defs, then resolve + classify the plot rows against them. Kept in sync by
  * hand; if recompileAll gains steps that affect compile output, add them here.
  */
-import { type Definition, buildDefs, resolveExpr, scanDefinition } from './defs.ts';
+import {
+  type Definition,
+  animatedConstNames,
+  buildDefs,
+  evalConstEnv,
+  resolveExpr,
+  scanDefinition,
+} from './defs.ts';
 import { parseExpr, substVars } from './expr.ts';
 import { type Classified, classify } from './plot.ts';
 import { buildGridField, type GridField } from './grid.ts';
@@ -42,9 +49,16 @@ export function compileRows(rows: string[]): CompiledRows {
   const fieldEnv = Object.fromEntries(built.defs.fields);
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
   const getFn = (name: string) => built.defs.fns.get(name);
+  // Σ/Π bounds expand against constant *values*, so they need the same env
+  // recompileAll builds (animated constants excluded).
+  let constVals: Record<string, number> = {};
+  try {
+    constVals = evalConstEnv(built.defs, 0);
+  } catch {}
+  for (const name of animatedConstNames(built.defs)) delete constVals[name];
   const classified: Classified[] = [];
   for (const text of plotTexts) {
-    let parsed = resolveExpr(parseExpr(text, fnNames), getFn);
+    let parsed = resolveExpr(parseExpr(text, fnNames), getFn, { consts: constVals });
     if (built.defs.fields.size) parsed = substVars(parsed, fieldEnv);
     classified.push(classify(parsed, constNames));
   }
@@ -68,7 +82,22 @@ export const CORPUS: { name: string; rows: (c: number) => string[] }[] = [
   { name: 'derivative', rows: c => [`a = ${c}`, 'y = d/dx (sin(a x) x^2)'] },
   { name: 'userfn', rows: c => [`a = ${c}`, 'f(x) = a x^2 + sin(x)', 'y = f(f(x))'] },
   { name: 'polarfield', rows: c => [`a = ${c}`, 'r = sqrt(x^2 + y^2)', 'r = 2a'] },
+  { name: 'vfield2d', rows: c => [`a = ${c}`, '(-a y, a x)'] },
+  { name: 'ode2d', rows: c => [`a = ${c}`, 'dy/dx = a x y'] },
+  { name: 'domain2d', rows: c => [`a = ${c}`, 'domain((w^3 - a)/w)'] },
+  { name: 'conformal2d', rows: c => [`a = ${c}`, 'conformal(w^2/a)'] },
+  { name: 'fractal2d', rows: c => [`a = ${c}`, 'iter(z^2 + w/a)'] },
 ];
+
+/**
+ * Σ/Π is the one compile path that deliberately breaks uniform
+ * parameterization: bounds expand at compile time, so the bound constant's
+ * *value* is baked into the output and every step of an N slider produces
+ * new GLSL — and a new shader compile. Kept out of CORPUS (which asserts the
+ * invariant) and pinned separately in perf-guards.test.ts, so the cost stays
+ * measured rather than forgotten.
+ */
+export const SUM_CASE = (n: number) => [`N = ${n}`, 'y = (4/pi) sum(k=1..N, sin((2k-1)x)/(2k-1))'];
 
 /** Structural size of an expression tree (perf proxy for symbolic swell). */
 export function countNodes(e: unknown): number {

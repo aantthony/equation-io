@@ -2,36 +2,57 @@
   "pan-2d": {
     "compilesAfterLoad": 7,
     "compilesDuringAction": 0,
-    "avgFrameMs": 8.33,
-    "p95FrameMs": 8.6,
+    "avgFrameMs": 8.41,
+    "p95FrameMs": 9.3,
     "longFrames": 0
   },
   "zoom-2d": {
     "compilesAfterLoad": 6,
     "compilesDuringAction": 0,
     "avgFrameMs": 8.33,
-    "p95FrameMs": 8.5,
+    "p95FrameMs": 9.3,
     "longFrames": 0
   },
   "slider-drag": {
     "compilesAfterLoad": 6,
     "compilesDuringAction": 0,
-    "avgFrameMs": 10.37,
+    "avgFrameMs": 9.55,
     "p95FrameMs": 16.7,
     "longFrames": 0
   },
   "orbit-3d": {
     "compilesAfterLoad": 5,
     "compilesDuringAction": 0,
-    "avgFrameMs": 35.62,
-    "p95FrameMs": 100,
+    "avgFrameMs": 35.38,
+    "p95FrameMs": 92.5,
     "longFrames": 40
   },
   "animated-t": {
     "compilesAfterLoad": 6,
     "compilesDuringAction": 0,
-    "avgFrameMs": 8.33,
-    "p95FrameMs": 8.4,
+    "avgFrameMs": 8.75,
+    "p95FrameMs": 9.4,
     "longFrames": 0
+  },
+  "sum-slider-drag": {
+    "compilesAfterLoad": 5,
+    "compilesDuringAction": 10,
+    "avgFrameMs": 22.58,
+    "p95FrameMs": 58.3,
+    "longFrames": 10
+  },
+  "vector-field": {
+    "compilesAfterLoad": 5,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 32.14,
+    "p95FrameMs": 34.2,
+    "longFrames": 8
+  },
+  "fractal": {
+    "compilesAfterLoad": 5,
+    "compilesDuringAction": 0,
+    "avgFrameMs": 10.51,
+    "p95FrameMs": 33.3,
+    "longFrames": 2
   }
 }
