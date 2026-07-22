@@ -1,9 +1,50 @@
 import { decodePayload } from '../lib/link.ts';
 import { handleMcp } from './mcp.ts';
-import { OG_HEIGHT, OG_WIDTH, renderOgPng } from './og.ts';
+import { OG_HEIGHT, OG_WIDTH, canRenderOg, renderOgPng } from './og.ts';
+
+/** Static card used when a graph is not one the preview renderer can draw. */
+const FALLBACK_OG = '/shots/hero.png';
 
 const escapeAttr = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+/**
+ * Title and og:/twitter: pairs for a share link.
+ *
+ * A rendered preview is only advertised for graphs the CPU renderer actually
+ * draws. For anything else the tags are omitted so the shell's own og:image —
+ * the static site card — survives: a truthful generic card beats a picture of
+ * an empty grid, which reads as a broken graph.
+ *
+ * Split out from handleShare so this decision is testable without the Workers
+ * runtime (HTMLRewriter is a runtime global).
+ */
+export function shareMeta(
+  equations: string[],
+  payload: string,
+  origin: string,
+): { title: string; meta: string[][] } {
+  const title = `${equations[0]}${equations.length > 1 ? ' …' : ''} — equation.io`;
+  const description = equations.length > 1
+    ? `Interactive graph of ${equations.length} equations: ${equations.join('; ')}`
+    : 'Interactive graph — opens rendered in the browser, no account needed.';
+  const meta: string[][] = [
+    ['og:title', title],
+    ['og:description', description],
+    ['og:type', 'website'],
+    ['og:url', `${origin}/g/${payload}`],
+  ];
+  if (canRenderOg(equations)) {
+    meta.push(
+      ['og:image', `${origin}/api/og/${payload}`],
+      ['og:image:width', String(OG_WIDTH)],
+      ['og:image:height', String(OG_HEIGHT)],
+      ['twitter:card', 'summary_large_image'],
+      ['twitter:image', `${origin}/api/og/${payload}`],
+    );
+  }
+  return { title, meta };
+}
 
 /**
  * /g/<payload>: the share form of a graph link. Serves the app shell with
@@ -22,21 +63,7 @@ async function handleShare(request: Request, url: URL, env: Env): Promise<Respon
   const shell = await env.ASSETS.fetch(new Request(new URL('/', url), request));
   if (!equations.length || !shell.headers.get('content-type')?.includes('text/html')) return shell;
 
-  const title = `${equations[0]}${equations.length > 1 ? ' …' : ''} — equation.io`;
-  const description = equations.length > 1
-    ? `Interactive graph of ${equations.length} equations: ${equations.join('; ')}`
-    : 'Interactive graph — opens rendered in the browser, no account needed.';
-  const meta = [
-    ['og:title', title],
-    ['og:description', description],
-    ['og:type', 'website'],
-    ['og:url', `${url.origin}/g/${payload}`],
-    ['og:image', `${url.origin}/api/og/${payload}`],
-    ['og:image:width', String(OG_WIDTH)],
-    ['og:image:height', String(OG_HEIGHT)],
-    ['twitter:card', 'summary_large_image'],
-    ['twitter:image', `${url.origin}/api/og/${payload}`],
-  ];
+  const { title, meta } = shareMeta(equations, payload, url.origin);
   const tags = meta
     .map(([p, c]) => `<meta ${p.startsWith('twitter:') ? 'name' : 'property'}="${p}" content="${escapeAttr(c)}">`)
     .join('\n  ');
@@ -61,6 +88,12 @@ async function handleOgImage(url: URL): Promise<Response> {
     equations = decodePayload(payload);
   } catch {
     return Response.json({ error: 'bad_payload' }, { status: 400 });
+  }
+  // handleShare only advertises this URL for drawable graphs, but the link may
+  // be hit directly or from a cached card; send those to the static site image
+  // rather than render an empty grid.
+  if (!canRenderOg(equations)) {
+    return Response.redirect(new URL(FALLBACK_OG, url).toString(), 302);
   }
   const png = await renderOgPng(equations);
   return new Response(png as unknown as BodyInit, {

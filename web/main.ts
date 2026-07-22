@@ -581,47 +581,46 @@ function recompileAll() {
 // The address bar shows the /g/ share form: it survives chat-app URL
 // linkifiers (lib/link.ts escapes parens etc.) and unfurls with a rendered
 // preview, so copying the URL is the share mechanism. /#payload links still
-// load (boot below) — they just normalize to /g/ on the next edit. The name
-// stays writeHash so the throttle below and its four callers are untouched.
-function writeHash() {
+// load (boot below) — they just normalize to /g/ on the next edit.
+function writeUrl() {
   const payload = encodePayload(equations.map(e => e.text));
   history.replaceState(null, '', payload ? '/g/' + payload : '/');
 }
 
 // Browsers rate-limit replaceState (Safari: 100 per 10s) and throw once it is
-// exceeded, so a fast slider drag must not write the hash on every frame.
+// exceeded, so a fast slider drag must not rewrite the URL on every frame.
 // Leading edge writes immediately; further calls coalesce into one trailing
 // write per second.
-const HASH_INTERVAL = 1000;
-let hashTimer: ReturnType<typeof setTimeout> | null = null;
-let hashPending = false;
-let hashLastWrite = 0;
+const URL_INTERVAL = 1000;
+let urlTimer: ReturnType<typeof setTimeout> | null = null;
+let urlPending = false;
+let urlLastWrite = 0;
 
-function saveHash() {
-  hashPending = true;
-  const wait = HASH_INTERVAL - (performance.now() - hashLastWrite);
+function saveUrl() {
+  urlPending = true;
+  const wait = URL_INTERVAL - (performance.now() - urlLastWrite);
   if (wait <= 0) {
-    flushHash();
+    flushUrl();
     return;
   }
-  if (hashTimer === null) hashTimer = setTimeout(flushHash, wait);
+  if (urlTimer === null) urlTimer = setTimeout(flushUrl, wait);
 }
 
-function flushHash() {
-  if (hashTimer !== null) {
-    clearTimeout(hashTimer);
-    hashTimer = null;
+function flushUrl() {
+  if (urlTimer !== null) {
+    clearTimeout(urlTimer);
+    urlTimer = null;
   }
-  if (!hashPending) return;
-  hashPending = false;
-  hashLastWrite = performance.now();
-  writeHash();
+  if (!urlPending) return;
+  urlPending = false;
+  urlLastWrite = performance.now();
+  writeUrl();
 }
 
 // Don't lose the last edit if the page goes away mid-interval.
-addEventListener('pagehide', flushHash);
+addEventListener('pagehide', flushUrl);
 addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushHash();
+  if (document.visibilityState === 'hidden') flushUrl();
 });
 
 function addEquation(text: string, at = equations.length): Equation {

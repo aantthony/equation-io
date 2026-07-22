@@ -9,6 +9,7 @@
  * with CompressionStream — no image library.
  */
 import type { Expr } from '../lib/expr.ts';
+import type { Plot } from '../lib/plot.ts';
 import { type Analysis, type RowInfo, analyze } from './graph.ts';
 import { type Prog, compileProg, run } from './vm.ts';
 
@@ -359,6 +360,54 @@ function renderRow3D(r: Raster, v: View3D, row: RowInfo, env: EvalEnv, color: [n
       return;
     }
   }
+}
+
+/**
+ * Whether this renderer draws each plot type.
+ *
+ * It is a second, CPU-only backend for the same lib/ classifier the GPU app
+ * uses, so it necessarily lags. Typing this as a total Record over
+ * Plot['type'] means adding a plot family to lib/plot.ts FAILS TO COMPILE
+ * until it is classified here — the drift cannot be silent, and tsc catches a
+ * stale entry too.
+ *
+ * The cost of getting it wrong is a preview showing an empty grid, which reads
+ * as "this graph is broken" — worse than no preview at all. Callers use
+ * canRenderOg() and fall back to the site's static card instead.
+ */
+export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
+  implicit2d: 'draws',
+  ineq2d: 'draws',
+  scalar2d: 'draws',
+  point: 'draws',
+  pcurve: 'draws',
+  psurface: 'draws',
+  implicit3d: 'draws',
+  // Each of these needs a per-pixel shader — domain coloring, conformal grids,
+  // escape-time iteration, line-integral convolution — that a scanline
+  // rasterizer cannot reproduce faithfully at preview size. They get the
+  // static site card instead of a wrong picture.
+  complex2d: 'fallback',
+  domain2d: 'fallback',
+  conformal2d: 'fallback',
+  fractal2d: 'fallback',
+  vfield2d: 'fallback',
+};
+
+/**
+ * True when every plot row in the graph is one this renderer draws. False for
+ * an empty graph too: a bare grid is not worth an image.
+ */
+export function canRenderOg(texts: string[]): boolean {
+  let analysis: Analysis;
+  try {
+    analysis = analyze(texts);
+  } catch {
+    return false;
+  }
+  const plots = analysis.rows.filter(r => r.cls);
+  if (!plots.length) return false;
+  return plots.every(r => OG_COVERAGE[r.cls!.plot.type] === 'draws');
 }
 
 /** Render equations to a raw RGB raster (exported for tests). */
