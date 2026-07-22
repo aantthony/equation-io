@@ -89,6 +89,20 @@ describe('parseExpr', () => {
     }
   });
 
+  it('auto-closes brackets left open at the end of input', () => {
+    // Half-typed input parses as if the missing closers were there, so the
+    // plot updates while typing.
+    expect(parseExpr('y=sin(x')).toEqual(parseExpr('y=sin(x)'));
+    expect(parseExpr('y=(x+1)(x-2')).toEqual(parseExpr('y=(x+1)(x-2)'));
+    expect(parseExpr('y=max(x,1')).toEqual(parseExpr('y=max(x,1)'));
+    expect(parseExpr('y=sqrt((x')).toEqual(parseExpr('y=sqrt((x))'));
+    expect(parseExpr('y=|x')).toEqual(parseExpr('y=|x|'));
+    expect(parseExpr('y=[1,2')).toEqual(parseExpr('y=[1,2]'));
+    expect(parseExpr('Σ[n=1..3')).toEqual(parseExpr('Σ[n=1..3]'));
+    // A stray closer is still an error.
+    expect(() => parseExpr('y=x)')).toThrow(/open brace/);
+  });
+
   it('parses Σ/Π headers into sum/prod call nodes', () => {
     const e = parseExpr('sum(n=1..N, n^2)');
     expect(e).toMatchObject({ kind: 'call', name: 'sum' });

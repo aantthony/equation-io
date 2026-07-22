@@ -76,6 +76,8 @@ export class ParseError extends Error {
   }
 }
 
+const MATCHING_CLOSE: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+
 // https://rosettacode.org/wiki/Parsing/Shunting-yard_algorithm#Go
 export function *shunting<T>(
   ops: OperatorDict<T>,
@@ -124,7 +126,17 @@ export function *shunting<T>(
   while (stack.length) {
     const entry = stack.pop()!;
     if (entry.type === 'parenopen') {
-      throw new Error(`Missing closing parentheses for bracket "${entry.str}" at ${entry.line}:${entry.loc[0]}`);
+      // Auto-close: a bracket left open at end of input is treated as if it
+      // were closed there, so half-typed input like `sin(x` still parses and
+      // the user sees the plot as they type.
+      yield (entry);
+      yield ({
+        ...entry,
+        type: 'parenclose',
+        str: MATCHING_CLOSE[entry.str] ?? ')',
+        loc: [entry.loc[1], entry.loc[1]],
+      });
+      continue;
     }
     yield (entry);
   }
