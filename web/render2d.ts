@@ -96,6 +96,12 @@ export interface LevelSpec extends GridSpec {
  */
 const GRID_LINE_GLSL = `
 float gridLine(float c, float lg, float spacing, float halfWidthPx) {
+  // The screen-derivative fallback for lg reads neighbouring pixels, which may
+  // lie outside the domain (floor, sqrt near its boundary), and an analytic
+  // gradient can blow up on its own. A NaN alpha survives the caller's
+  // "a < 0.004" discard — every comparison against NaN is false — and reaches
+  // blending, so stop it at the source, for the grid and contour stacks alike.
+  if (isnan(c) || isnan(lg) || isinf(lg)) return 0.0;
   float lgv = max(lg / spacing, 1e-24);  // |∇(c/spacing)| per pixel
   float v = c / spacing;
   float distPx = abs(v - round(v)) / lgv;

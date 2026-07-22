@@ -743,6 +743,13 @@ function makeSlider(eq: Equation): SliderUI {
   return { box, min, range, max };
 }
 
+/** Paint the toggle's state for both eyes and screen readers. Clicking and
+ *  reconcile() both land here, so the two can never disagree. */
+function setLevelsBtnState(btn: HTMLButtonElement, on: boolean) {
+  btn.classList.toggle('on', on);
+  btn.setAttribute('aria-pressed', String(on));
+}
+
 /** Toggle that draws every level set of f, not just the slider's (f(x,y) = c). */
 function makeLevelsBtn(eq: Equation): HTMLButtonElement {
   const btn = document.createElement('button');
@@ -750,10 +757,11 @@ function makeLevelsBtn(eq: Equation): HTMLButtonElement {
   btn.contentEditable = 'false';
   btn.textContent = 'all levels';
   btn.title = 'Draw the whole family of level sets (topographic map)';
+  setLevelsBtnState(btn, !!eq.showLevels);
   btn.addEventListener('click', () => {
     pushUndo(null);
     eq.showLevels = !eq.showLevels;
-    btn.classList.toggle('on', !!eq.showLevels);
+    setLevelsBtnState(btn, !!eq.showLevels);
     requestRender();
   });
   return btn;
@@ -802,7 +810,7 @@ function reconcile() {
     // slider's level. The control sits above the readout that may follow it.
     if (eq.cls?.plot.type === 'implicit2d' && eq.cls.plot.levels) {
       eq.levelsBtn ??= makeLevelsBtn(eq);
-      eq.levelsBtn.classList.toggle('on', !!eq.showLevels);
+      setLevelsBtnState(eq.levelsBtn, !!eq.showLevels);
       wanted.push(eq.levelsBtn);
     }
     if (eq.info) {
