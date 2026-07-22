@@ -5,7 +5,11 @@
  */
 
 export interface ShowcaseItem {
-  /** Filename stem for the rendered screenshot in web/public/shots/. */
+  /**
+   * Filename stem for the rendered screenshot. Gallery shots live in
+   * web/shots/ (bundled + content-hashed by Vite); the hero stays in
+   * web/public/shots/ so its og:image URL is stable.
+   */
   slug: string;
   title: string;
   blurb: string;
