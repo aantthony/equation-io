@@ -248,6 +248,47 @@ void main() {
 `;
 }
 
+/** CPU-built tube meshes (curve framing): plain position+normal lighting. */
+const TUBE_VERT = `#version 300 es
+layout(location=0) in vec3 aPos;
+layout(location=1) in vec3 aNormal;
+uniform mat4 uVP;
+out vec3 vPos;
+out vec3 vNormal;
+void main() {
+  vPos = aPos;
+  vNormal = aNormal;
+  gl_Position = uVP * vec4(aPos, 1.0);
+}
+`;
+
+const TUBE_FRAG = `#version 300 es
+precision highp float;
+uniform vec3 uColor;
+uniform vec3 uEye;
+in vec3 vPos;
+in vec3 vNormal;
+out vec4 outColor;
+void main() {
+  vec3 n = normalize(vNormal);
+  vec3 rd = normalize(vPos - uEye);
+  if (any(isnan(n))) n = -rd;
+  if (dot(n, rd) > 0.0) n = -n;
+
+  vec3 lightDir = normalize(vec3(0.4, 0.55, 0.9));
+  float diffuse = max(dot(n, lightDir), 0.0);
+  float sky = 0.5 + 0.5 * n.z;
+  vec3 halfway = normalize(lightDir - rd);
+  float spec = pow(max(dot(n, halfway), 0.0), 96.0);
+  float fresnel = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
+
+  vec3 col = uColor * (0.26 + 0.22 * sky + 0.46 * diffuse)
+           + vec3(1.0) * spec * 0.7
+           + vec3(0.35, 0.4, 0.5) * fresnel * 0.3;
+  outColor = vec4(col, 1.0);
+}
+`;
+
 const LINE_VERT = `#version 300 es
 layout(location=0) in vec3 aPos;
 uniform mat4 uVP;
@@ -350,6 +391,15 @@ export interface Scene3D {
     params?: string[];
   }>;
   curves: Array<{ pts: Float32Array; color: [number, number, number] }>;
+  /** Disconnected segments (comb teeth), drawn as gl.LINES vertex pairs. */
+  segments: Array<{ pts: Float32Array; color: [number, number, number] }>;
+  /** Indexed position+normal meshes (curve tubes). */
+  tubes: Array<{
+    positions: Float32Array;
+    normals: Float32Array;
+    indices: Uint32Array;
+    color: [number, number, number];
+  }>;
   points: Array<{ pos: [number, number, number]; color: [number, number, number] }>;
 }
 
@@ -361,8 +411,13 @@ export class Renderer3D {
   private axesVao: WebGLVertexArrayObject;
   private lineProgram: WebGLProgram;
   private pointProgram: WebGLProgram;
+  private tubeProgram: WebGLProgram;
   private dynVao: WebGLVertexArrayObject;
   private dynBuf: WebGLBuffer;
+  private tubeVao: WebGLVertexArrayObject;
+  private tubePosBuf: WebGLBuffer;
+  private tubeNrmBuf: WebGLBuffer;
+  private tubeIdxBuf: WebGLBuffer;
   private gridVao: WebGLVertexArrayObject;
   private gridIndexCount: number;
 
@@ -377,6 +432,22 @@ export class Renderer3D {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.dynBuf);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+
+    // Dynamic indexed mesh (curve tubes): separate position/normal buffers.
+    this.tubeProgram = compileProgram(gl, TUBE_VERT, TUBE_FRAG);
+    this.tubeVao = gl.createVertexArray()!;
+    this.tubePosBuf = gl.createBuffer()!;
+    this.tubeNrmBuf = gl.createBuffer()!;
+    this.tubeIdxBuf = gl.createBuffer()!;
+    gl.bindVertexArray(this.tubeVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubePosBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeNrmBuf);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.tubeIdxBuf);
     gl.bindVertexArray(null);
 
     // Static (u,v) unit-square grid, displaced per-surface in the vertex shader.
@@ -500,6 +571,21 @@ export class Renderer3D {
       gl.bindVertexArray(null);
     }
 
+    // CPU-built tube meshes.
+    for (const tube of scene.tubes) {
+      setCommon(this.tubeProgram);
+      gl.uniform3f(gl.getUniformLocation(this.tubeProgram, 'uColor'), ...tube.color);
+      gl.uniform3f(gl.getUniformLocation(this.tubeProgram, 'uEye'), ...eye);
+      gl.bindVertexArray(this.tubeVao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubePosBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, tube.positions, gl.DYNAMIC_DRAW);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.tubeNrmBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, tube.normals, gl.DYNAMIC_DRAW);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tube.indices, gl.DYNAMIC_DRAW);
+      gl.drawElements(gl.TRIANGLES, tube.indices.length, gl.UNSIGNED_INT, 0);
+      gl.bindVertexArray(null);
+    }
+
     // CPU-sampled parametric curves and points.
     gl.bindVertexArray(this.dynVao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.dynBuf);
@@ -508,6 +594,12 @@ export class Renderer3D {
       gl.uniform3f(gl.getUniformLocation(this.lineProgram, 'uColor'), ...c.color);
       gl.bufferData(gl.ARRAY_BUFFER, c.pts, gl.DYNAMIC_DRAW);
       gl.drawArrays(gl.LINE_STRIP, 0, c.pts.length / 3);
+    }
+    for (const s of scene.segments) {
+      setCommon(this.lineProgram);
+      gl.uniform3f(gl.getUniformLocation(this.lineProgram, 'uColor'), ...s.color);
+      gl.bufferData(gl.ARRAY_BUFFER, s.pts, gl.DYNAMIC_DRAW);
+      gl.drawArrays(gl.LINES, 0, s.pts.length / 3);
     }
     for (const p of scene.points) {
       setCommon(this.pointProgram);

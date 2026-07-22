@@ -10,6 +10,7 @@ import {
   resolveExpr,
   scanDefinition,
 } from '../lib/defs.ts';
+import { buildComb, buildTube, combScale, curveExtent, curveFrames } from '../lib/curve3d.ts';
 import {
   type DistDef,
   densityExpr,
@@ -53,9 +54,14 @@ interface Equation {
   sliderMax?: number;
   /** Draw the whole family of level sets (for `f(x,y) = c` plots). */
   showLevels?: boolean;
+  /** Curvature comb: teeth along −N of length κ. */
+  combK?: boolean;
+  /** Torsion comb: teeth along ±B of length |τ|. */
+  combT?: boolean;
   /** Interleaved non-editable widgets, created lazily and kept across edits. */
   sliderUI?: SliderUI;
   levelsBtn?: HTMLButtonElement;
+  curveUI?: CurveUI;
   errorEl?: HTMLElement;
   infoEl?: HTMLElement;
 }
@@ -67,6 +73,14 @@ interface SliderUI {
   max: HTMLInputElement;
 }
 
+/** κ/τ comb toggles for a 3D parametric curve. (The tube radius is not here:
+ *  it belongs to tube(…) in the expression, so share links carry it.) */
+interface CurveUI {
+  box: HTMLElement;
+  kappa: HTMLInputElement;
+  tau: HTMLInputElement;
+}
+
 function cssColor([r, g, b]: [number, number, number]): string {
   return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
 }
@@ -76,6 +90,8 @@ const CURVE_SAMPLES = 400;
 const ODE_STEPS = 1400;
 /** Most integral-curve seeds kept at once; older seeds evict first. */
 const MAX_DROPS = 12;
+const TUBE_SEGMENTS = 24;
+const COMB_STEP = 4;
 
 // --- state ---
 
@@ -259,8 +275,25 @@ function render() {
     }
   };
 
+  // Evaluate a symbolic derivative vector at the curve samples; NaN on failure.
+  const sampleDeriv = (es: import('../lib/expr.ts').Expr[] | undefined): Float32Array | undefined => {
+    if (!es) return undefined;
+    const out = new Float32Array(CURVE_SAMPLES * 3);
+    for (let k = 0; k < CURVE_SAMPLES; k++) {
+      const u = k / (CURVE_SAMPLES - 1);
+      for (let c = 0; c < 3; c++) {
+        try {
+          out[k * 3 + c] = evaluate(es[c], { ...constEnv, u, t: time });
+        } catch {
+          out[k * 3 + c] = NaN;
+        }
+      }
+    }
+    return out;
+  };
+
   if (mode === '3d') {
-    const scene: Scene3D = { implicits: [], psurfaces: [], curves: [], points: [] };
+    const scene: Scene3D = { implicits: [], psurfaces: [], curves: [], segments: [], tubes: [], points: [] };
     for (const eq of active) {
       const color = theme.palette[eq.colorIndex];
       const plot = eq.cls!.plot;
@@ -291,7 +324,38 @@ function render() {
             pts[k * 3 + 1] = flat[k * plot.dim + 1];
             pts[k * 3 + 2] = plot.dim === 3 ? flat[k * plot.dim + 2] : 0;
           }
-          scene.curves.push({ pts, color });
+          // Tubes are opt-in through tube(…): a bare curve stays a line, so
+          // it never hides points or curves sharing the scene.
+          const radius = plot.dim === 3 ? plot.tube ?? 0 : 0;
+          const combs = plot.dim === 3 && (eq.combK || eq.combT);
+          if (radius <= 0 && !combs) {
+            scene.curves.push({ pts, color });
+            break;
+          }
+          const fr = curveFrames(pts, sampleDeriv(plot.d1), sampleDeriv(plot.d2), sampleDeriv(plot.d3));
+          if (radius > 0) {
+            const { positions, normals, indices } = buildTube(pts, fr, radius, TUBE_SEGMENTS);
+            scene.tubes.push({ positions, normals, indices, color });
+          } else {
+            scene.curves.push({ pts, color });
+          }
+          const extent = curveExtent(pts);
+          if (eq.combK) {
+            // Teeth point along −N (away from the center of curvature).
+            const kColor: [number, number, number] = [color[0] * 0.7, color[1] * 0.7, color[2] * 0.7];
+            const comb = buildComb(pts, fr.frenetNormal, fr.kappa, -combScale(fr.kappa, extent), COMB_STEP);
+            scene.segments.push({ pts: comb.teeth, color: kColor });
+            scene.curves.push({ pts: comb.tips, color: kColor });
+          }
+          if (eq.combT) {
+            // Signed teeth along ±B expose where torsion changes hand.
+            const tColor: [number, number, number] = [
+              color[0] * 0.45 + 0.25, color[1] * 0.45 + 0.25, color[2] * 0.45 + 0.25,
+            ];
+            const comb = buildComb(pts, fr.frenetBinormal, fr.tau, combScale(fr.tau, extent), COMB_STEP);
+            scene.segments.push({ pts: comb.teeth, color: tColor });
+            scene.curves.push({ pts: comb.tips, color: tColor });
+          }
           break;
         }
         case 'point': {
@@ -767,6 +831,39 @@ function makeLevelsBtn(eq: Equation): HTMLButtonElement {
   return btn;
 }
 
+function makeCurveUI(eq: Equation): CurveUI {
+  const box = document.createElement('div');
+  box.className = 'eq-widget eq-curve';
+  box.contentEditable = 'false';
+  const label = document.createElement('span');
+  label.className = 'eq-curve-label';
+  label.textContent = 'combs';
+  const makeToggle = (glyph: string, title: string): [HTMLLabelElement, HTMLInputElement] => {
+    const toggle = document.createElement('label');
+    toggle.className = 'eq-curve-toggle';
+    toggle.title = title;
+    const check = document.createElement('input');
+    check.type = 'checkbox';
+    toggle.append(check, glyph);
+    return [toggle, check];
+  };
+  const [kLabel, kappa] = makeToggle('κ', 'Curvature comb: tooth length κ, away from the center of curvature');
+  const [tLabel, tau] = makeToggle('τ', 'Torsion comb: signed teeth along the binormal');
+  box.append(label, kLabel, tLabel);
+  // Combs are view styling, not document state: no undo entries, no hash.
+  // (The tube radius is not here — it lives in tube(…), so it survives a
+  // share link, which a widget-only slider never did.)
+  kappa.addEventListener('change', () => {
+    eq.combK = kappa.checked;
+    requestRender();
+  });
+  tau.addEventListener('change', () => {
+    eq.combT = tau.checked;
+    requestRender();
+  });
+  return { box, kappa, tau };
+}
+
 /**
  * Sync per-line decorations (color, error state, placeholder) and the
  * interleaved widget blocks with current state. Never touches line text, so
@@ -812,6 +909,13 @@ function reconcile() {
       eq.levelsBtn ??= makeLevelsBtn(eq);
       setLevelsBtnState(eq.levelsBtn, !!eq.showLevels);
       wanted.push(eq.levelsBtn);
+    }
+    const plot = eq.cls?.plot;
+    if (!eq.error && plot?.type === 'pcurve' && plot.dim === 3) {
+      eq.curveUI ??= makeCurveUI(eq);
+      eq.curveUI.kappa.checked = !!eq.combK;
+      eq.curveUI.tau.checked = !!eq.combT;
+      wanted.push(eq.curveUI.box);
     }
     if (eq.info) {
       eq.infoEl ??= (() => {
@@ -1242,6 +1346,12 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['torus', '(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))'],
     ['sphere (u,v)', '(2sin(pi v)cos(2pi u), 2sin(pi v)sin(2pi u), 2cos(pi v))'],
     ['breathing torus', '(cos(2pi u)(2+cos(2pi v+t)), sin(2pi u)(2+cos(2pi v+t)), sin(2pi v+t))'],
+  ]],
+  ['knots', [
+    ['trefoil', 'tube((sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u)))'],
+    ['torus knot (2,5)', 'tube(((2+cos(10pi u))cos(4pi u), (2+cos(10pi u))sin(4pi u), sin(10pi u)))'],
+    ['figure eight', 'tube(((2+cos(4pi u))cos(6pi u), (2+cos(4pi u))sin(6pi u), sin(8pi u)))'],
+    ['viviani', 'tube((1+cos(4pi u), sin(4pi u), 2sin(2pi u)), 0.06)'],
   ]],
 ];
 

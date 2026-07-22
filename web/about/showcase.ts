@@ -256,4 +256,11 @@ export const SHOWCASE: ShowcaseItem[] = [
     eqs: ['x^2 + y^2 + z^2 = 4', '(2cos(6pi u), 2sin(6pi u), 4u - 2)'],
     group: 'The third dimension',
   },
+  {
+    slug: 'trefoil',
+    title: 'Knots as solid tubes',
+    blurb: 'Wrap a space curve in tube(…) and it sweeps a shaded solid — knots read at a glance, with curvature and torsion combs a click away.',
+    eqs: ['tube((sin(2pi u) + 2sin(4pi u), cos(2pi u) - 2cos(4pi u), -sin(6pi u)))'],
+    group: 'The third dimension',
+  },
 ];

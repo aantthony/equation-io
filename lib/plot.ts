@@ -48,7 +48,10 @@ export type Plot =
   /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
    *  comps keep the symbolic components for CPU integration (integral curves). */
   | { type: 'vfield2d'; fx: string; fy: string; comps: [Expr, Expr] }
-  | { type: 'pcurve'; dim: 2 | 3; comps: Expr[] }
+  /** tube: set by the explicit tube(…) form — sweep a lit tube of this radius
+   *  instead of a line strip. d1..d3: symbolic d/du of comps for framing
+   *  (κ, τ, tubes); absent → finite differences. */
+  | { type: 'pcurve'; dim: 2 | 3; comps: Expr[]; tube?: number; d1?: Expr[]; d2?: Expr[]; d3?: Expr[] }
   /** du/dv: symbolic tangents ∂P/∂u, ∂P/∂v for lighting; absent → finite differences. */
   | { type: 'psurface'; comps: [string, string, string]; du?: [string, string, string]; dv?: [string, string, string] };
 
@@ -103,9 +106,39 @@ function matchODE(e: Expr): (Expr & { kind: 'vec' }) | null {
   return null;
 }
 
+/** Default sweep radius for tube(…) when no explicit radius is given. */
+const DEFAULT_TUBE_RADIUS = 0.1;
+
+/** Calls that describe the whole plot and cannot appear as a subterm. */
+const WHOLE_EXPR_FORMS = new Set([...SPECIAL_FORMS, 'tube']);
+
+/**
+ * tube(curve[, radius]): sweep a 3D parametric curve as a lit tube.
+ *
+ * Opt-in by design. A bare curve stays a line strip, so a tube can never
+ * swallow points, other curves, or anything else sharing the scene — you
+ * ask for the solid only when the solid is the point.
+ */
+function matchTube(e: Expr): { inner: Expr; radius: number } | null {
+  if (e.kind !== 'call' || e.name !== 'tube') return null;
+  // A parenthesized vector inside a call flattens into the argument list, so
+  // tube((x, y, z)) and tube(x, y, z) arrive here identically — both spell
+  // the same thing, and a fourth argument is the radius.
+  if (e.args.length !== 3 && e.args.length !== 4) {
+    throw new Error('tube takes three components and an optional radius: tube(cos(u), sin(u), u/4, 0.1).');
+  }
+  let radius = DEFAULT_TUBE_RADIUS;
+  if (e.args.length === 4) {
+    const r = e.args[3];
+    if (r.kind !== 'num' || !(r.value > 0)) throw new Error('The tube radius must be a positive number.');
+    radius = r.value;
+  }
+  return { inner: { kind: 'vec', items: e.args.slice(0, 3) }, radius };
+}
+
 /** First special-form call at any position other than the root itself. */
 function nestedSpecial(e: Expr, isRoot = false): string | undefined {
-  if (e.kind === 'call' && !isRoot && SPECIAL_FORMS.has(e.name)) return e.name;
+  if (e.kind === 'call' && !isRoot && WHOLE_EXPR_FORMS.has(e.name)) return e.name;
   switch (e.kind) {
     case 'num':
     case 'var': return undefined;
@@ -153,6 +186,8 @@ function levelFamily(e: Expr, params: readonly string[], defined: ReadonlySet<st
 export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): Classified {
   const ode = matchODE(expr);
   if (ode) expr = ode;
+  const tube = matchTube(expr);
+  if (tube) expr = tube.inner;
   const special = expr.kind === 'call' && SPECIAL_FORMS.has(expr.name) ? expr.name : undefined;
   const nested = nestedSpecial(expr, true);
   if (nested) throw new Error(`${nested}(…) must be the whole expression.`);
@@ -262,7 +297,21 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
         dv: tryGrad(gItems, 'v'),
       });
     }
-    if (vars.has('u')) return done({ type: 'pcurve', dim, comps: expr.items });
+    if (vars.has('u')) {
+      // Successive u-derivatives for Frenet framing; stop at the first
+      // non-smooth level (the renderer falls back to finite differences).
+      const tryDiff = (es?: Expr[]): Expr[] | undefined => {
+        try {
+          return es?.map(c => diff(c, 'u'));
+        } catch {
+          return undefined;
+        }
+      };
+      const d1 = tryDiff(expr.items);
+      const d2 = tryDiff(d1);
+      return done({ type: 'pcurve', dim, comps: expr.items, tube: tube?.radius, d1, d2, d3: tryDiff(d2) });
+    }
+    if (tube) throw new Error('tube(…) needs a curve in u, like tube((cos(u), sin(u), u/4)).');
     return done({ type: 'point', dim, coords: expr.items });
   }
 

@@ -34,8 +34,8 @@ export const FUNCTIONS = new Set([
   // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
   'sum', 'prod',
   // Whole-expression plot modes (see classify): domain coloring, conformal
-  // grids, and escape-time iteration.
-  'domain', 'conformal', 'iter',
+  // grids, escape-time iteration, and swept tubes.
+  'domain', 'conformal', 'iter', 'tube',
 ]);
 
 export const CONSTANTS: Record<string, number> = {
