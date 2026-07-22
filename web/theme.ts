@@ -87,6 +87,14 @@ export function onThemeChange(cb: () => void): void {
 function set(mode: 'light' | 'dark'): void {
   Object.assign(theme, mode === 'dark' ? DARK : LIGHT);
   document.documentElement.dataset.theme = mode;
+  // Installed/standalone, the OS tints its chrome with theme-color; derive it
+  // from the canvas clear color so the two can never drift apart. The manual
+  // toggle means a media-scoped <meta> wouldn't be enough — it has to move here.
+  const meta = document.getElementById('theme-color');
+  if (meta) {
+    const hex = theme.bg.map(c => Math.round(c * 255).toString(16).padStart(2, '0'));
+    meta.setAttribute('content', `#${hex.join('')}`);
+  }
   for (const cb of listeners) cb();
 }
 

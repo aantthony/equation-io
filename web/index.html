@@ -12,6 +12,18 @@
   <meta property="og:description" content="Plot implicit equations, inequalities, complex functions and 3D surfaces in your browser. Graphs live in the URL, so every graph is a shareable link.">
   <meta property="og:url" content="https://equation.io/">
   <meta property="og:image" content="https://equation.io/shots/hero.png">
+  <!-- Installed to the Home Screen the app runs without browser chrome, which is
+       the only way viewport-fit=cover above can reach under the status bar and
+       home indicator. black-translucent puts the graph behind the status bar;
+       #panel offsets itself by the safe-area insets to stay clear of it. -->
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Equation">
+  <meta name="theme-color" id="theme-color" content="#ffffff">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="./style.css">
   <script>
     // Set the theme before first paint so dark users never see a white flash.
@@ -22,6 +34,8 @@
         var dark = s === 'dark' ||
           (s !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        document.getElementById('theme-color')
+          .setAttribute('content', dark ? '#171a1f' : '#ffffff');
       } catch (e) {}
     })();
   </script>
