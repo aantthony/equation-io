@@ -104,6 +104,16 @@ describe('Σ sums and Π products', () => {
     expect(at('sum(n=1..2, sum(n=1..3, n))')).toBe(12); // inner n shadows
   });
 
+  it('shadows the index in the chain form too', () => {
+    // The inner header's body is the rest of the product chain, not a
+    // sibling factor the outer Σ may substitute into.
+    expect(at('sum[n=1..2] sum[n=1..3] n')).toBe(12); // 6 + 6, not 3 + 6
+    expect(at('sum[n=1..2] sum[k=1..3] k')).toBe(12); // distinct indices
+    expect(at('sum[n=1..3] sum[k=1..n] k')).toBe(10); // inner bound sees outer n
+    expect(at('2 sum[n=1..2] sum[n=1..2] n')).toBe(12); // coefficient outside
+    expect(at('sum[n=1..2] n prod[n=1..2] n')).toBe(6); // (1·2) + (2·2)
+  });
+
   it('differentiates through sums', () => {
     expect(at('d/dx sum(n=1..3, x^n)', { x: 1 })).toBe(6);
     expect(at('d/dx sum[n=1..3] x^n', { x: 1 })).toBe(6);
