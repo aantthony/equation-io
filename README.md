@@ -54,7 +54,10 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
 · `y = d/dx f(x)` / `d^2/dx^2 (x^4)` (symbolic Leibniz derivatives — works for
   any single-letter variable, nests, and flows through function definitions:
   `g(x) = d/dx f(x)` then `y = f(a) + g(a)(x - a)` is a live tangent line)
-· `sin(x)cos(y)` (2D scalar/density field) · `(2, 3)` / `(3, 12, 0)` (points)
+· `sin(x)cos(y)` (2D scalar/density field) · `(2, 3)` / `(3, 12, 0)` (points —
+  in 2D, coordinates that are plain numbers or slider names can be dragged on
+  the canvas, and the drag rewrites them: `a = 1; b = 2; (a, b)` moves both
+  sliders, `(2sin(t), 3)` only its literal height)
 · `(-y, x)` (a tuple depending on x, y is a vector field, rendered as animated
   streamlines via GPU line-integral convolution; `t` works too: `(cos(t)-y, x)`)
 · `dy/dx = x y` / `y' = sin(x) - y` (ODEs plot the slope/direction field
@@ -73,7 +76,8 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
   values back to ℝ, e.g. `im(ln(w)) = 1` plots as an ordinary implicit curve).
 
 Equations persist in the URL hash. Drag to pan/orbit, wheel to zoom,
-right-drag (or shift) to pan in 3D, click a color dot to cycle colors.
+right-drag (or shift) to pan in 3D, click a color dot to cycle colors. Points
+and dropped ODE seeds highlight under the cursor and drag with it.
 
 `worker/` — the Cloudflare Worker entry: serves the built app and handles
 `/api/*` routes.

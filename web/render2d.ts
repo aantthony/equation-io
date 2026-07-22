@@ -674,7 +674,8 @@ export class Renderer2D {
 }
 
 export interface Overlay2D {
-  points: Array<{ x: number; y: number; color: string }>;
+  /** hot: pointer is over it (or dragging it) — drawn with a grab halo. */
+  points: Array<{ x: number; y: number; color: string; hot?: boolean }>;
   polylines: Array<{ pts: number[]; color: string }>;
 }
 
@@ -740,6 +741,18 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
       const sx = toScreenX(pt.x);
       const sy = toScreenY(pt.y);
       if (!isFinite(sx) || !isFinite(sy)) continue;
+      if (pt.hot) {
+        // A ring, not a wash: a translucent disc in the point's own color
+        // disappears into a field drawn in that same color.
+        ctx.beginPath();
+        ctx.arc(sx, sy, 10, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = theme.pointOutline;
+        ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = pt.color;
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(sx, sy, 5, 0, Math.PI * 2);
       ctx.fillStyle = pt.color;
