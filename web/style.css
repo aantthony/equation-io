@@ -71,8 +71,10 @@ html, body {
 
 #panel {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  /* viewport-fit=cover lets the canvas fill the whole screen (under the iOS
+     status bar and home indicator); keep the controls inside the safe area. */
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
   width: 300px;
   background: var(--panel-bg);
   backdrop-filter: blur(8px);
