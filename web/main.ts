@@ -1,6 +1,7 @@
 import {
   type Definition,
   type Defs,
+  animatedConstNames,
   buildDefs,
   constsAnimated,
   emptyDefs,
@@ -67,6 +68,8 @@ let mode: '2d' | '3d' = '2d';
 let defs: Defs = emptyDefs();
 let defsAnimated = false;
 let constEnv: Record<string, number> = {};
+/** Constants used as Σ/Π bounds; their sliders snap to integer steps. */
+let sumBoundNames = new Set<string>();
 /** Compiled coordinate fields; non-empty replaces the Cartesian grid. */
 let gridFields: GridField[] = [];
 /** Click-dropped seeds for integral curves through vector fields / ODEs. */
@@ -371,6 +374,7 @@ function recompileAll() {
   const built = buildDefs(raw);
   defs = built.defs;
   defsAnimated = constsAnimated(defs);
+  sumBoundNames = built.sumBoundConsts;
   for (const [name, message] of built.errors) {
     const row = defRows.get(name);
     if (row) row.error = message;
@@ -400,12 +404,19 @@ function recompileAll() {
     if (!fn && fnNames.has(name)) throw new Error(`${name} has an error in its definition.`);
     return fn;
   };
+  // Σ/Π bounds in plot rows expand against the constants' current values
+  // (animated ones excluded: expansion is static, so t may not reach bounds).
+  let constVals: Record<string, number> = {};
+  try {
+    constVals = evalConstEnv(defs, 0);
+  } catch { /* a broken definition; bounds using it will report the error */ }
+  for (const name of animatedConstNames(defs)) delete constVals[name];
   for (const eq of equations) {
     if (eq.def) continue;
     const text = eq.text.trim();
     if (!text) continue;
     try {
-      let parsed = resolveExpr(parseExpr(text, fnNames), getFn);
+      let parsed = resolveExpr(parseExpr(text, fnNames), getFn, { consts: constVals, boundConsts: sumBoundNames });
       // Coordinate fields substitute in as functions of the plane, so
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
@@ -679,7 +690,8 @@ function reconcile() {
       max.value = fmtNum(eq.sliderMax);
       range.min = String(eq.sliderMin);
       range.max = String(eq.sliderMax);
-      range.step = String((eq.sliderMax - eq.sliderMin) / 400);
+      // Σ/Π bounds are integers, so their sliders step whole terms at a time.
+      range.step = sumBoundNames.has(eq.def!.name) ? '1' : String((eq.sliderMax - eq.sliderMin) / 400);
       range.value = String(v);
       wanted.push(eq.sliderUI.box);
     }
@@ -1043,6 +1055,11 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['derivative', 'y = d/dx (x^3 - 3x)'],
     ['tangent line', 'f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x - a)'],
     ['orbiting charge', 'r = 2 + sin(t); ln(w - r) - ln(w + r)'],
+  ]],
+  ['series', [
+    ['fourier square wave', 'N = 3; y = (4/pi) sum(n=1..N, sin((2n-1)x)/(2n-1))'],
+    ['fourier sawtooth', 'N = 5; y = 2 sum[n=1..N] (-1)^(n+1) sin(n x)/n'],
+    ['taylor cosine', 'N = 2; y = sum(n=0..N, (-1)^n x^(2n)/prod(k=1..2n, k)); y = cos(x)'],
   ]],
   ['points + motion', [
     ['a point', '(2, 3)'],

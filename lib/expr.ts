@@ -30,6 +30,8 @@ export const FUNCTIONS = new Set([
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
   're', 'im', 'arg', 'conj',
+  // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
+  'sum', 'prod',
 ]);
 
 export const CONSTANTS: Record<string, number> = {
@@ -92,6 +94,8 @@ const ops = operators<PNode>({
   ']': BinaryInfix<PNode>(inner => inner),
 
   // Either side of '=' may be a tuple, so (x', y') = (y, -sin(x)) parses.
+  // (In `sum(n = 1..N, body)` the ',' binds tighter than '=', so the rhs
+  // arrives as the tuple (1..N, body); sumCall unpacks that shape.)
   '=': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'eq', l: asVecOrExpr(a), r: asVecOrExpr(b) })),
 
   '<': asIneq('<'),
@@ -102,9 +106,12 @@ const ops = operators<PNode>({
   '≥': asIneq('>='),
 
   ',': BinaryInfix<PNode>((a, b) => {
-    const items = (n: PNode): Expr[] => (n.kind === 'series' ? n.items : [n]);
+    const items = (n: PNode): Expr[] => (n.kind === 'series' ? n.items : [asExpr(n)]);
     return { kind: 'series', items: [...items(a), ...items(b)] };
   }),
+
+  // Σ/Π index ranges: `1..N` (only meaningful inside sum()/prod()).
+  '..': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'call', name: '[range]', args: [asExpr(a), asExpr(b)] })),
 
   '+': asBin('+'),
   '-': asBin('-'),
@@ -124,10 +131,36 @@ const ops = operators<PNode>({
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
     if (a.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
+    const name = canonicalFn(a.name);
+    if (name === 'sum' || name === 'prod') return sumCall(name, b);
     const args = b.kind === 'series' ? b.items : [asExpr(b)];
-    return { kind: 'call', name: canonicalFn(a.name), args };
+    return { kind: 'call', name, args };
   }),
 });
+
+const isRange = (e: Expr): e is Expr & { kind: 'call' } => e.kind === 'call' && e.name === '[range]';
+
+/**
+ * Shape a Σ/Π header into a call node: args are [index, lo, hi] for the
+ * header-only form `sum[n=1..N] …` and [index, lo, hi, body] for
+ * `sum(n=1..N, body)` — whose `n = (1..N, body)` arrives as an equation with
+ * a tuple rhs. resolveExpr expands both symbolically.
+ */
+function sumCall(name: 'sum' | 'prod', b: PNode): Expr {
+  const usage = () => new Error(`Expected ${name}(n=1..N, …).`);
+  if (b.kind !== 'eq' || b.l.kind !== 'var') throw usage();
+  const idx = b.l;
+  let range = b.r;
+  let body: Expr | null = null;
+  if (range.kind === 'vec') {
+    if (range.items.length !== 2) throw usage();
+    [range, body] = range.items;
+  }
+  if (!isRange(range)) throw usage();
+  const args = [idx, range.args[0], range.args[1]];
+  if (body) args.push(body);
+  return { kind: 'call', name, args };
+}
 
 // Unary minus and '^' must share a precedence level (both right-associative):
 // '-x^2' parses as -(x^2) and 'x^-1' as x^(-1) without either popping the other.
@@ -145,7 +178,7 @@ const syntax: PatternDict = {
   number: /^\d+\.?\d*$/,
   bar: /^\|$/,
   whitespace: /\s$/,
-  symbol: /^[A-Za-z_][A-Za-z_0-9]*'*$/,
+  symbol: /^[A-Za-z_Σ∑Π∏][A-Za-z_0-9]*'*$/,
   operator: x => !!ops[x] || MULTI_CHAR_OPS.some(m => m.startsWith(x)),
   invalid(x) { throw new Error(`Invalid character: ${JSON.stringify(x)}.`); },
 };
@@ -154,6 +187,36 @@ const tokenize = Tokenizer(syntax);
 
 function op(str: string): Token {
   return { type: 'operator', str, line: -1, loc: [-1, -1] };
+}
+
+const SYMBOL_ALIASES: Record<string, string> = { 'Σ': 'sum', '∑': 'sum', 'Π': 'prod', '∏': 'prod' };
+
+/**
+ * Map Σ/Π glyphs to sum/prod, and repair `1..N`: the greedy number match
+ * takes "1." leaving a lone "." operator, so rejoin the dot into "..".
+ */
+function *normalizeTokens(bare: Iterable<Token>): Iterable<Token> {
+  let held: Token | null = null;
+  for (let token of bare) {
+    if (token.type === 'symbol' && SYMBOL_ALIASES[token.str]) {
+      token = { ...token, str: SYMBOL_ALIASES[token.str] };
+    }
+    if (held) {
+      if (token.type === 'operator' && token.str.startsWith('.')) {
+        yield { ...held, str: held.str.slice(0, -1) };
+        token = { ...token, str: '.' + token.str };
+      } else {
+        yield held;
+      }
+      held = null;
+    }
+    if (token.type === 'number' && token.str.endsWith('.')) {
+      held = token;
+      continue;
+    }
+    yield token;
+  }
+  if (held) yield held;
 }
 
 /**
@@ -224,7 +287,7 @@ function createLeaf(token: Token): PNode {
 export function parseExpr(str: string, userFns: ReadonlySet<string> = new Set()): Expr {
   activeUserFns = userFns;
   try {
-    const tokens = addImplicitTokens(tokenize(str));
+    const tokens = addImplicitTokens(normalizeTokens(tokenize(str)));
     const stack: PNode[] = [];
     walk(
       ops,

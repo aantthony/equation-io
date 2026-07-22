@@ -89,6 +89,27 @@ describe('parseExpr', () => {
     }
   });
 
+  it('parses Σ/Π headers into sum/prod call nodes', () => {
+    const e = parseExpr('sum(n=1..N, n^2)');
+    expect(e).toMatchObject({ kind: 'call', name: 'sum' });
+    expect((e as Expr & { kind: 'call' }).args).toHaveLength(4);
+    expect((e as Expr & { kind: 'call' }).args[0]).toEqual({ kind: 'var', name: 'n' });
+
+    const header = parseExpr('Σ[n=1..3]');
+    expect(header).toMatchObject({ kind: 'call', name: 'sum' });
+    expect((header as Expr & { kind: 'call' }).args).toHaveLength(3);
+
+    expect(parseExpr('∏(k=1..3, k)')).toMatchObject({ kind: 'call', name: 'prod' });
+    expect(() => parseExpr('sum(1..3, n)')).toThrow(/Expected sum/);
+    expect(() => parseExpr('sum(n=1..2, a, b)')).toThrow(/Expected sum/);
+  });
+
+  it('tokenizes .. after integers and decimals', () => {
+    const range = (s: string) => parseExpr(`sum(n=${s}, n)`) as Expr & { kind: 'call' };
+    expect(range('1..3').args.slice(1, 3)).toEqual([{ kind: 'num', value: 1 }, { kind: 'num', value: 3 }]);
+    expect(range('1.5..N').args[1]).toEqual({ kind: 'num', value: 1.5 });
+  });
+
   it('collects free variables', () => {
     expect([...freeVars(parseExpr('x^2+y^2=1'))].sort()).toEqual(['x', 'y']);
     expect([...freeVars(parseExpr('z = sin(x)cos(y)'))].sort()).toEqual(['x', 'y', 'z']);
