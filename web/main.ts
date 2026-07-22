@@ -1579,12 +1579,15 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 
-// Equations come from the /g/ share form (which the worker serves with
-// link-preview meta tags) or from a legacy /#-fragment link.
-let initialPayload = location.hash.slice(1);
-if (!initialPayload && location.pathname.startsWith('/g/')) {
-  initialPayload = location.pathname.slice('/g/'.length);
+/** The graph payload the current URL names: the /g/ path, or a legacy
+ *  #fragment (which wins, so an appended #… can steer a /g/ page). */
+function urlPayload(): string {
+  const hash = location.hash.slice(1);
+  if (hash) return hash;
+  return location.pathname.startsWith('/g/') ? location.pathname.slice('/g/'.length) : '';
 }
+
+const initialPayload = urlPayload();
 // decodePayload splits bracket-aware and decodes each row exactly once, so it
 // reads both the /g/ form and legacy /#… links.
 const initialRows = decodePayload(initialPayload);
@@ -1595,6 +1598,32 @@ recompileAll();
 // A fresh visit stays at / — the default row only enters the URL once edited.
 if (initialPayload) saveUrl();
 else if (location.pathname !== '/') history.replaceState(null, '', '/');
+
+/**
+ * The URL is an input, not only an output.
+ *
+ * Back/forward and an externally set URL both have to reach the graph, and
+ * they have to reach it *without* a reload: re-navigating discards the WebGL
+ * context and the camera and costs a server round-trip. Editing the address is
+ * how browser automation drives this app, and until now setting location.hash
+ * did nothing at all — only a full reload took effect.
+ *
+ * saveUrl() writes with replaceState, which fires neither event, so the app
+ * cannot loop against its own writes; the equality check covers the rest.
+ */
+function loadFromUrl() {
+  const rows = decodePayload(urlPayload());
+  const wanted = rows.length ? rows : ['y = sin(x)'];
+  const current = equations.map(e => e.text);
+  if (wanted.length === current.length && wanted.every((t, i) => t === current[i])) return;
+  equations.length = 0;
+  wanted.forEach(t => addEquation(t));
+  recompileAll();
+  renderAll();
+  requestRender();
+}
+addEventListener('popstate', loadFromUrl);
+addEventListener('hashchange', loadFromUrl);
 
 // Size the canvas (which also picks the opening zoom) before the first frame.
 resize();
