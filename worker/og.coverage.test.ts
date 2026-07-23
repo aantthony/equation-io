@@ -60,6 +60,12 @@ describe('canRenderOg', () => {
     expect(canRenderOg([])).toBe(false);
     expect(canRenderOg(['a = 2'])).toBe(false); // definitions only
     expect(canRenderOg(['y = ('])).toBe(false); // parse error
+    expect(canRenderOg(['view(x = 0..1)'])).toBe(false); // viewport only
+  });
+
+  it('treats viewport rows as framing, not plots', () => {
+    expect(canRenderOg(['view(x = 0..1)', 'y = sin(x)'])).toBe(true);
+    expect(canRenderOg(['camera(0, 1)', 'z = x^2 + y^2'])).toBe(true);
   });
 });
 

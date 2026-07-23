@@ -26,6 +26,14 @@ import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { splitStatements } from '../lib/statements.ts';
+import {
+  type ViewSpec,
+  clampPhi,
+  fitView2D,
+  formatCameraRow,
+  formatViewRow,
+  parseViewRow,
+} from '../lib/view.ts';
 import { fullscreenQuad } from './gl.ts';
 import {
   type GridSpec,
@@ -51,6 +59,8 @@ interface Equation {
   info?: string;
   /** Set when the row is a definition (`a = 2`, `f(x) = …`) rather than a plot. */
   def?: Definition;
+  /** Set when the row is a viewport row (`view(…)` / `camera(…)`). */
+  viewSpec?: ViewSpec;
   sliderMin?: number;
   sliderMax?: number;
   /** Draw the whole family of level sets (for `f(x,y) = c` plots). */
@@ -183,8 +193,91 @@ function requestRender() {
 
 const startTime = performance.now();
 
+// --- viewport rows: the two-way binding ---
+//
+// A `view(…)` / `camera(…)` row is the framing as document state. Row → view:
+// applied before a frame whenever the row's text changed (load, edit, undo,
+// popstate). View → row: interaction rewrites the row the way dragging a
+// slider rewrites its constant — so the URL always names the exact picture on
+// screen. Without a viewport row, interaction stays ephemeral as it always
+// was. The applied-text markers make the loop convergent: a writeback marks
+// its own text as applied, so the re-apply never snaps the live view to the
+// row's rounded numbers mid-gesture.
+
+let appliedViewText: string | null = null;
+let appliedCameraText: string | null = null;
+
+/** The viewport row of the given kind, if any (duplicates carry errors). */
+function viewportRow(kind: ViewSpec['kind']): Equation | undefined {
+  return equations.find(eq => !eq.error && eq.viewSpec?.kind === kind);
+}
+
+function applyViewportRows() {
+  const vRow = viewportRow('view');
+  if (!vRow) appliedViewText = null;
+  else if (vRow.text !== appliedViewText && vRow.viewSpec!.kind === 'view') {
+    appliedViewText = vRow.text;
+    Object.assign(view, fitView2D(vRow.viewSpec!, canvas.width, canvas.height));
+  }
+  const cRow = viewportRow('camera');
+  if (!cRow) appliedCameraText = null;
+  else if (cRow.text !== appliedCameraText && cRow.viewSpec!.kind === 'camera') {
+    appliedCameraText = cRow.text;
+    const c = cRow.viewSpec!;
+    camera.theta = c.theta;
+    camera.phi = clampPhi(c.phi);
+    camera.radius = c.radius ?? 14;
+    camera.target = c.target ? [...c.target] : [0, 0, 0];
+  }
+}
+
+// Pointer moves are hotter than slider inputs, so the row rewrite trails the
+// gesture by a beat instead of running per move; release flushes it so the
+// row, URL, and undo entry are settled the moment the gesture ends.
+let viewportWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleViewportWriteback() {
+  viewportWriteTimer ??= setTimeout(() => {
+    viewportWriteTimer = null;
+    writebackViewport();
+  }, 200);
+}
+
+function flushViewportWriteback() {
+  if (viewportWriteTimer !== null) {
+    clearTimeout(viewportWriteTimer);
+    viewportWriteTimer = null;
+  }
+  writebackViewport();
+}
+
+function writebackViewport() {
+  const eq = viewportRow(mode === '2d' ? 'view' : 'camera');
+  if (!eq) return;
+  let text: string;
+  if (mode === '2d') {
+    if (!canvas.width || !canvas.height) return;
+    const hw = (canvas.width / 2) * view.upp;
+    const hh = (canvas.height / 2) * view.upp;
+    text = formatViewRow(view.cx - hw, view.cx + hw, view.cy - hh, view.cy + hh);
+  } else {
+    text = formatCameraRow(camera);
+  }
+  if (text === eq.text) return;
+  pushUndo(`viewport:${eq.id}`);
+  if (mode === '2d') appliedViewText = text;
+  else appliedCameraText = text;
+  eq.text = text;
+  const line = lineEls()[equations.indexOf(eq)];
+  if (line) line.textContent = text;
+  recompileAll();
+  reconcile();
+  saveUrl();
+}
+
 function render() {
   if (!syncCanvasSize()) return;
+  applyViewportRows();
   const dpr = window.devicePixelRatio || 1;
   const time = (performance.now() - startTime) / 1000;
   const active = equations.filter(e => e.cls && !e.error);
@@ -466,6 +559,7 @@ function recompileAll() {
     eq.error = undefined;
     eq.info = undefined;
     eq.def = undefined;
+    eq.viewSpec = undefined;
     const text = eq.text.trim();
     if (!text) continue;
     const d = scanDefinition(text);
@@ -549,11 +643,19 @@ function recompileAll() {
     }
   }
 
+  const seenViewport = new Set<string>();
   for (const eq of equations) {
     if (eq.def || distRows.has(eq)) continue;
     const text = eq.text.trim();
     if (!text) continue;
     try {
+      const vspec = parseViewRow(text, constVals);
+      if (vspec) {
+        if (seenViewport.has(vspec.kind)) throw new Error(`${vspec.kind} is already set by another row.`);
+        seenViewport.add(vspec.kind);
+        eq.viewSpec = vspec;
+        continue;
+      }
       const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(text);
       if (probBody !== null) {
         if (!dists.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
@@ -1424,6 +1526,7 @@ function zoomAt(clientX: number, clientY: number, factor: number) {
     camera.radius = Math.min(1e6, Math.max(1e-4, camera.radius * factor));
   }
   requestRender();
+  scheduleViewportWriteback();
 }
 
 canvas.addEventListener('pointerdown', e => {
@@ -1473,6 +1576,7 @@ canvas.addEventListener('pointermove', e => {
     lastX = mx;
     lastY = my;
     requestRender();
+    scheduleViewportWriteback();
     return;
   }
   if (!dragging) return;
@@ -1496,9 +1600,10 @@ canvas.addEventListener('pointermove', e => {
     camera.target[2] += cp * dy * s;
   } else {
     camera.theta -= dx * 0.008;
-    camera.phi = Math.min(Math.PI / 2 - 0.01, Math.max(-Math.PI / 2 + 0.01, camera.phi + dy * 0.008));
+    camera.phi = clampPhi(camera.phi + dy * 0.008);
   }
   requestRender();
+  scheduleViewportWriteback();
 });
 const endPointer = (e: PointerEvent) => {
   pointers.delete(e.pointerId);
@@ -1511,6 +1616,9 @@ const endPointer = (e: PointerEvent) => {
     lastY = p.y;
   } else if (pointers.size === 0) {
     dragging = false;
+    // Settle the row/URL now and seal the gesture as one undo entry.
+    flushViewportWriteback();
+    coalesce = null;
   }
 };
 canvas.addEventListener('pointerup', e => {
@@ -1631,4 +1739,4 @@ renderAll();
 buildExamplesMenu();
 
 // Dev-only handle for driving/inspecting the view in automated tests.
-if (import.meta.env.DEV) (window as any).__eq = { view, camera, requestRender };
+if (import.meta.env.DEV) (window as any).__eq = { view, camera, equations, requestRender, flushViewportWriteback };

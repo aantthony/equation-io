@@ -10,6 +10,7 @@
  */
 import type { Expr } from '../lib/expr.ts';
 import type { Plot } from '../lib/plot.ts';
+import { clampPhi, fitView2D } from '../lib/view.ts';
 import { type Analysis, type RowInfo, analyze } from './graph.ts';
 import { type Prog, compileProg, run } from './vm.ts';
 
@@ -80,13 +81,21 @@ const toScreenY = (r: Raster, v: View2D, wy: number) => r.h / 2 - (wy - v.cy) / 
 function drawGrid2D(r: Raster, v: View2D) {
   const minor: [number, number, number] = [0.92, 0.92, 0.92];
   const axis: [number, number, number] = [0.65, 0.65, 0.65];
+  // With a viewport row the window is author-controlled: a zoomed-out view
+  // would paint one gridline per pixel (or worse), so drop the unit grid once
+  // it gets denser than ~3px and keep only the axes.
+  const drawMinor = 1 / v.upp >= 3;
   const x0 = v.cx - (r.w / 2) * v.upp, x1 = v.cx + (r.w / 2) * v.upp;
   const y0 = v.cy - (r.h / 2) * v.upp, y1 = v.cy + (r.h / 2) * v.upp;
-  for (let wx = Math.ceil(x0); wx <= x1; wx++) {
+  const lines = (lo: number, hi: number) => (drawMinor ? Array.from(
+    { length: Math.max(0, Math.floor(hi) - Math.ceil(lo) + 1) },
+    (_, i) => Math.ceil(lo) + i,
+  ) : [0]);
+  for (const wx of lines(x0, x1)) {
     const sx = Math.round(toScreenX(r, v, wx));
     for (let y = 0; y < r.h; y++) blend(r, sx, y, wx === 0 ? axis : minor, 1);
   }
-  for (let wy = Math.ceil(y0); wy <= y1; wy++) {
+  for (const wy of lines(y0, y1)) {
     const sy = Math.round(toScreenY(r, v, wy));
     for (let x = 0; x < r.w; x++) blend(r, x, sy, wy === 0 ? axis : minor, 1);
   }
@@ -193,16 +202,25 @@ function ineqParts(e: Expr & { kind: 'ineq' }): { field: Expr; edge: boolean }[]
 
 // --- 3D projection ---
 
-// Matches the app's default camera angles (web/main.ts).
+// Matches the app's default camera (web/main.ts): angles, and radius 14
+// corresponding to the h/14 projection scale.
 const THETA = -Math.PI / 3;
 const PHI = Math.PI / 5.5;
+const RADIUS = 14;
 
-interface View3D { scale: number; ox: number; oy: number }
+interface View3D {
+  scale: number;
+  ox: number;
+  oy: number;
+  theta: number;
+  phi: number;
+  target: [number, number, number];
+}
 
 function project(v: View3D, p: [number, number, number]): [number, number] {
-  const [x, y, z] = p;
-  const st = Math.sin(THETA), ct = Math.cos(THETA);
-  const sp = Math.sin(PHI), cp = Math.cos(PHI);
+  const x = p[0] - v.target[0], y = p[1] - v.target[1], z = p[2] - v.target[2];
+  const st = Math.sin(v.theta), ct = Math.cos(v.theta);
+  const sp = Math.sin(v.phi), cp = Math.cos(v.phi);
   const rx = -st * x + ct * y;
   const ry = -ct * sp * x - st * sp * y + cp * z;
   return [v.ox + rx * v.scale, v.oy - ry * v.scale];
@@ -475,18 +493,33 @@ export function renderRaster(texts: string[], w = OG_WIDTH, h = OG_HEIGHT): Rast
   const plotRows = analysis.rows.filter(r => r.cls).slice(0, MAX_PLOTS);
   const needs3D = plotRows.some(r => r.cls!.needs3D);
 
+  // Honor viewport rows: the author's framing is document state, so the
+  // preview draws the window the app would open with.
+  const spec = (kind: 'view' | 'camera') => analysis.rows.find(r => r.view?.kind === kind)?.view;
+
   // Row colors follow creation order across ALL rows (defs consume a color
   // slot in the app too, since colorIndex comes from row id).
   const colorOf = (row: RowInfo) => PALETTE[analysis.rows.indexOf(row) % PALETTE.length];
 
   if (needs3D) {
-    const view: View3D = { scale: h / 14, ox: w / 2, oy: h / 2 + h / 14 };
+    const cam = spec('camera');
+    const view: View3D = cam?.kind === 'camera'
+      ? {
+          scale: h / (cam.radius ?? RADIUS),
+          ox: w / 2,
+          oy: h / 2 + h / RADIUS,
+          theta: cam.theta,
+          phi: clampPhi(cam.phi),
+          target: cam.target ?? [0, 0, 0],
+        }
+      : { scale: h / RADIUS, ox: w / 2, oy: h / 2 + h / RADIUS, theta: THETA, phi: PHI, target: [0, 0, 0] };
     drawGrid3D(raster, view);
     for (const row of plotRows) {
       try { renderRow3D(raster, view, row, env, colorOf(row)); } catch { /* skip row */ }
     }
   } else {
-    const view: View2D = { cx: 0, cy: 0, upp: 12 / h };
+    const box = spec('view');
+    const view: View2D = box?.kind === 'view' ? fitView2D(box, w, h) : { cx: 0, cy: 0, upp: 12 / h };
     drawGrid2D(raster, view);
     for (const row of plotRows) {
       try { renderRow2D(raster, view, row, env, colorOf(row)); } catch { /* skip row */ }

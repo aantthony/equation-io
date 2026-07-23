@@ -15,11 +15,14 @@ import {
 } from '../lib/defs.ts';
 import { type Expr, parseExpr, substVars } from '../lib/expr.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { type ViewSpec, parseViewRow } from '../lib/view.ts';
 
 export interface RowInfo {
   text: string;
   /** Set for definition rows (constants, functions, coordinate fields). */
   def?: Definition;
+  /** Set for viewport rows (view(...) / camera(...)). */
+  view?: ViewSpec;
   /** Set for plot rows that classified successfully. */
   cls?: Classified;
   /** The fully resolved expression a plot row renders (fields substituted). */
@@ -63,7 +66,15 @@ export function analyze(texts: string[]): Analysis {
     else row.error = `${row.def!.name} is already defined.`;
   }
 
-  // Pass 2: plots.
+  // Constants at t = 0, needed by pass 2: viewport-row bounds may use them.
+  let constEnv: Record<string, number> = {};
+  try {
+    constEnv = evalConstEnv(defs, 0);
+  } catch {
+    // A broken constant already carries a row error; rendering treats it as 0.
+  }
+
+  // Pass 2: viewport rows and plots.
   const constNames = new Set(defs.consts.keys());
   const fieldEnv = Object.fromEntries(defs.fields);
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
@@ -72,9 +83,17 @@ export function analyze(texts: string[]): Analysis {
     if (!fn && fnNames.has(name)) throw new Error(`${name} has an error in its definition.`);
     return fn;
   };
+  const seenViewKinds = new Set<string>();
   for (const row of rows) {
     if (row.def || row.error || !row.text) continue;
     try {
+      const view = parseViewRow(row.text, constEnv);
+      if (view) {
+        if (seenViewKinds.has(view.kind)) throw new Error(`${view.kind} is already set by another row.`);
+        seenViewKinds.add(view.kind);
+        row.view = view;
+        continue;
+      }
       let parsed = resolveExpr(parseExpr(row.text, fnNames), getFn);
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       row.cls = classify(parsed, constNames);
@@ -84,11 +103,5 @@ export function analyze(texts: string[]): Analysis {
     }
   }
 
-  let constEnv: Record<string, number> = {};
-  try {
-    constEnv = evalConstEnv(defs, 0);
-  } catch {
-    // A broken constant already carries a row error; rendering treats it as 0.
-  }
   return { rows, defs, constEnv };
 }

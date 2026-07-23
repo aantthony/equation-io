@@ -220,6 +220,35 @@ describe('graph previews', () => {
   });
 });
 
+describe('viewport rows', () => {
+  const call = (equations: string[]) =>
+    rpc('tools/call', { name: 'create_graph', arguments: { equations } });
+
+  it('classifies viewport rows and still attaches the (framed) preview', async () => {
+    const { body } = await call(['view(x = 98..102)', 'y = (x - 100)^2']);
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows[0]).toEqual({ text: 'view(x = 98..102)', status: 'ok', kind: 'viewport (view)' });
+    expect(out.preview).toBe('attached');
+    expect(body.result.content.some((c: { type: string }) => c.type === 'image')).toBe(true);
+  });
+
+  it('accepts a camera row for 3D graphs', async () => {
+    const { body } = await call(['camera(-pi/3, 0.6, 8)', 'z = x^2 - y^2']);
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows[0].kind).toBe('viewport (camera)');
+  });
+
+  it('reports malformed viewport rows per-row, like any other error', async () => {
+    const { body } = await call(['view(x = 5..-5)', 'y = sin(x)']);
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(false);
+    expect(out.rows[0].status).toBe('error');
+    expect(out.rows[0].error).toContain('lo < hi');
+  });
+});
+
 describe('syntax resource', () => {
   it('declares the resources capability and lists the syntax resource', async () => {
     const { body: init } = await rpc('initialize', { protocolVersion: '2025-06-18' });

@@ -149,6 +149,21 @@ demand instead of living in a tool description. No authentication required.
   later rows may use it: adding `r = 2(1 + cos(theta))` plots a cardioid in
   polar coordinates.
 
+## Viewport rows (framing)
+
+- `view(x = -5..5, y = -2..2)` sets the 2D window; either axis alone works
+  (`view(x = 0..0.01)`), the other is centered at 0 and sized by the canvas
+  aspect. The whole box is always visible (uniform scale).
+- `camera(theta, phi, radius, (tx, ty, tz))` aims the 3D orbit camera —
+  angles in radians (`camera(-pi/3, 0.6)`), radius and target optional.
+- Binding is two-way in the app: panning, zooming, or orbiting rewrites the
+  row the way dragging a slider rewrites its constant, so the URL always
+  names the exact picture on screen. Without a viewport row, interaction
+  stays ephemeral and the default framing applies.
+- Bounds and angles may use `pi` and defined constants, evaluated at load.
+- The /g/ preview card and the MCP create_graph preview image honor these
+  rows, so they show the framing you chose.
+
 ## Guidance for assistants
 
 - To show a user a graph, emit a single https://equation.io/g/... link built

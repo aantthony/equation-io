@@ -64,6 +64,41 @@ describe('og raster renderer', () => {
     expect(pixel(r, 50, 50)[0]).toBeLessThan(220);
   });
 
+  it('frames 2D plots through a view(...) row', () => {
+    // A parabola living near x = 100: invisible in the default ±6 window,
+    // fully in frame once the row asks for it. Grid and axes are gray, so
+    // only curve pixels count — total ink would be swamped by gridlines.
+    const colored = (r: { w: number; h: number; px: Uint8ClampedArray }) => {
+      let n = 0;
+      for (let i = 0; i < r.px.length; i += 3) {
+        if (Math.abs(r.px[i] - r.px[i + 1]) > 25) n++;
+      }
+      return n / (r.w * r.h);
+    };
+    const rows = ['y = (x - 100)^2'];
+    expect(colored(renderRaster(rows, 100, 100))).toBeLessThan(0.002);
+    expect(colored(renderRaster(['view(x = 98..102, y = 0..4)', ...rows], 100, 100))).toBeGreaterThan(0.01);
+  });
+
+  it('drops the unit grid when a view row zooms far out, keeping the axes', () => {
+    const r = renderRaster(['view(x = -100000..100000)', 'y = x'], 100, 100);
+    // One vertical axis + one horizontal axis + the diagonal — not a line per
+    // unit, which would paint every column of the raster.
+    expect(inkFraction(r)).toBeLessThan(0.2);
+    expect(pixel(r, 50, 50)[0]).toBeLessThan(220); // the curve still shows
+  });
+
+  it('aims the 3D wireframe through a camera(...) row', () => {
+    const rows = ['z = x^2 - y^2'];
+    const def = renderRaster(rows, 120, 120);
+    const aimed = renderRaster(['camera(0.8, 0.9, 7)', ...rows], 120, 120);
+    expect(inkFraction(aimed)).toBeGreaterThan(0.02);
+    expect(aimed.px).not.toEqual(def.px); // the camera actually moved
+    const shifted = renderRaster(['camera(0.8, 0.9, 7, (0, 0, 20))', ...rows], 120, 120);
+    // Target 20 units up: the surface (and grid) leave the frame almost fully.
+    expect(inkFraction(shifted)).toBeLessThan(inkFraction(aimed) / 2);
+  });
+
   it('encodes a spec-shaped PNG', async () => {
     const png = await encodePng(renderRaster(['y = sin(x)'], OG_WIDTH, OG_HEIGHT));
     expect([...png.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
