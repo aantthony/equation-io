@@ -6,12 +6,25 @@
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    // Deployed static assets lose the charset on their Content-Type
-    // (cloudflare/workers-sdk#9599), which mangles the em dashes in llms.txt.
-    // Route the text assets through the Worker so it can put the charset back.
-    // Anything not listed here is served by the asset server alone, so /api
-    // has to be listed too or it falls through to not_found_handling.
-    "run_worker_first": ["/api", "/api/*", "/llms.txt", "/robots.txt"]
+    // EVERY path worker/index.ts handles has to be listed here. Anything not
+    // listed is served by the asset server alone: with
+    // not_found_handling=single-page-application a GET then returns the app
+    // shell (HTTP 200!) and a POST returns 405, so a missing entry looks like
+    // a half-working route rather than a routing failure. worker/routes.test.ts
+    // keeps this list in sync with the handler.
+    //
+    // /llms.txt and /robots.txt are here for a different reason: deployed
+    // static assets lose the charset on their Content-Type
+    // (cloudflare/workers-sdk#9599), which mangles the em dashes in llms.txt,
+    // so the Worker puts it back.
+    "run_worker_first": [
+      "/api",
+      "/api/*",
+      "/mcp",
+      "/g/*",
+      "/llms.txt",
+      "/robots.txt"
+    ]
   },
   "observability": {
     "enabled": true
