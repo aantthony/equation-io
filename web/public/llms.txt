@@ -64,10 +64,15 @@ An MCP endpoint (Streamable HTTP) lives at:
 
     https://equation.io/mcp
 
-Tools: `create_graph` (validates each equation through the app's own parser
-and returns url/share_url plus per-row classification or errors) and
+Tools: `create_graph` (validates each equation through the app's own parser,
+returns url/share_url plus per-row classification or errors, and attaches a
+rendered PNG preview of the graph; rows the preview renderer cannot draw are
+listed in `preview_omits` with the reason — the live app renders more than
+the static preview, so an omission never means the row failed) and
 `read_graph` (decodes an existing link back into its equation rows so you can
-edit a user's graph and build a new link). No authentication required.
+edit a user's graph and build a new link). This document is also served as
+the server's `syntax` MCP resource, so the full reference can be pulled on
+demand instead of living in a tool description. No authentication required.
 
 ## Expression syntax
 

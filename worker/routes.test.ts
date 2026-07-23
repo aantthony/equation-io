@@ -51,6 +51,12 @@ describe('/api/og images', () => {
     expect(res.headers.get('location')).toContain('/shots/hero.png');
   });
 
+  it('redirects for a general implicit 3D surface the renderer would draw as nothing', async () => {
+    const res = await get('/api/og/' + encodePayload(['x^2 + y^2 + z^2 = 9']));
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('/shots/hero.png');
+  });
+
   it('rejects an undecodable payload', async () => {
     expect((await get('/api/og/%E0%A4%A')).status).toBe(400);
   });

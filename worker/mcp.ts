@@ -1,38 +1,36 @@
 /**
  * Stateless MCP server (Streamable HTTP, JSON responses) at /mcp.
  *
- * Two tools: create_graph builds a shareable link from equation rows and
- * validates every row through the app's own parser; read_graph decodes an
- * existing link back into rows so an assistant can edit a user's graph.
+ * Two tools: create_graph builds a shareable link from equation rows,
+ * validates every row through the app's own parser, and attaches a rendered
+ * PNG of the result (the og.ts preview renderer) so the calling model can see
+ * what it made, not just that it parsed; read_graph decodes an existing link
+ * back into rows so an assistant can edit a user's graph. The full syntax
+ * manual is the "syntax" resource — served from the same /llms.txt asset the
+ * site publishes — because a manual inlined in the tool description gets
+ * truncated by clients, and truncation cuts exactly the advanced material
+ * (domain(), iter(), ODEs) that makes the grapher worth knowing.
  * No sessions, no SSE — each POST is a complete JSON-RPC exchange, which is
  * all these tools need and keeps the Worker stateless.
  */
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { analyze } from './graph.ts';
+import { MAX_PLOTS, previewGap, renderOgPng } from './og.ts';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
-const SYNTAX_GUIDE = `Each equation is one row of the graph. Syntax:
-- Operators + - * / ^, parentheses, |x| for absolute value. Multiplication is implicit: 2x, a(x-1), 2cos(t).
-- Constants pi, tau, e. Functions: sin cos tan asin acos atan atan2(y,x) sinh cosh tanh sech asinh acosh atanh sqrt abs exp ln log floor ceil round min max mod sign fract re im arg conj.
-- Variables: x,y = the 2D plane; z makes it 3D; t = seconds (animates); u,v in (0,1) for parametric; w = complex x+iy.
-- Row types: "y = x^2" or any implicit equation (curve); inequalities incl. chains "4 <= x^2+y^2 <= 9" (region); bare expression in x,y (scalar field); expression in w (complex field plot); "(2, 3)" (point); "(2cos(2pi u), sin(4pi u))" (parametric curve, 3 components for 3D); 3 components in u AND v (parametric surface); any equation in x,y,z (3D surface).
-- Definitions are rows too: "a = 2" (constant, shown as a draggable slider), "f(x) = x^3 - a x" (function), coordinate fields like "r = sqrt(x^2+y^2); theta = atan2(y,x)" (then "r = 2(1+cos(theta))" plots in polar).
-- Derivatives: d/dx (...) differentiates symbolically; also d^2/dx^2 and any single-letter variable.`;
-
+// Kept deliberately short: a client is known to truncate long tool
+// descriptions (the old inline syntax manual was cut mid-sentence), so this
+// names every capability and defers the actual syntax to the resource below.
 const TOOLS = [
   {
     name: 'create_graph',
     title: 'Create a graph link',
-    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating each one. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order. When editing an existing graph, include the unchanged equations too.
+    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row through the app's own parser. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order — when editing an existing graph (see read_graph), include the unchanged rows too. Note the asymmetry: the argument is "equations" (strings in); the result reports "rows" (per-row validation out).
 
-Note the asymmetry: the argument is "equations" (strings in); the result reports "rows" (per-equation validation out).
+Rows can be: equations and inequalities in x,y (curves, regions; z makes it 3D), bare expressions (scalar fields; complex plots via w), points, parametric tuples in u,v — and definitions: "a = 2" (a draggable slider), "f(x) = x^3 - a x", coordinate fields like "r = sqrt(x^2+y^2)" for polar. t animates. Also derivatives d/dx, sums sum[n=1..N], domain()/conformal()/iter() for complex analysis and fractals, and y' = ... for ODE slope fields. That is a menu, not the syntax: before your first non-trivial graph, read the "syntax" MCP resource (also at https://equation.io/llms.txt).
 
-${SYNTAX_GUIDE}
-
-Editing a user's graph: call read_graph on their link first, transform the strings, then call create_graph with the full new list. Prefer restructuring into named definitions so related objects stay linked. Example — the user has "y = x^2 - 2x" and asks for a tangent line at x = 3, so call create_graph with equations: ["f(x) = x^2 - 2x", "g(x) = d/dx f(x)", "a = 3", "y = f(x)", "y = f(a) + g(a)(x - a)"] — a becomes a draggable slider, so the tangent point stays explorable.
-
-If any equation fails validation, fix it and call again before giving the user the link. Give users the share_url: it carries a link-preview card in chat apps, with a rendered image of the graph for the common 2D and 3D plot types. url is the equivalent #-fragment form.`,
+The result attaches a PNG preview — a simplified CPU sketch (t = 0, 3D as wireframes) for checking shape and framing. It draws LESS than the app: rows it cannot draw are listed in "preview_omits" with the reason, so a sparse or missing preview never means the equations failed — "rows" is the validation verdict. Look at the image and check the interesting features are visible. If a row fails validation, fix it and call again. Give users the share_url (it unfurls to a preview card in chat apps); url is the equivalent #-fragment form.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -60,7 +58,31 @@ If any equation fails validation, fix it and call again before giving the user t
   },
 ];
 
-function createGraph(origin: string, args: Record<string, unknown>) {
+/**
+ * The syntax manual as an MCP resource. Its uri is the real /llms.txt URL on
+ * this origin, so even a client with no resource support can plainly fetch
+ * it, and resources/read serves the same asset byte-for-byte — one document,
+ * no drift.
+ */
+const syntaxResource = (origin: string) => ({
+  uri: `${origin}/llms.txt`,
+  name: 'syntax',
+  title: 'Equation syntax reference',
+  description:
+    'The full equation language: operators and functions, every row type (curves, regions, scalar and vector fields, complex plots incl. domain coloring, conformal maps and fractals, ODEs, parametrics, 3D surfaces), definitions and sliders, polar coordinates, sums, derivatives — with paste-ready examples.',
+  mimeType: 'text/markdown',
+});
+
+/** Chunked so String.fromCharCode never sees more arguments than V8 allows. */
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+async function createGraph(origin: string, args: Record<string, unknown>) {
   const equations = args.equations;
   if (!Array.isArray(equations) || !equations.every(e => typeof e === 'string')) {
     // Name what arrived, so a caller that guessed wrong fixes it in one retry
@@ -88,11 +110,48 @@ function createGraph(origin: string, args: Record<string, unknown>) {
         }),
   }));
   const payload = encodePayload(texts);
+
+  // Attach the same CPU-rendered PNG the /g/ link-preview uses, so the caller
+  // can SEE the graph it built rather than only that it parsed. The preview
+  // renderer draws less than the app (per-row gaps in previewGap), so any row
+  // missing from the image is disclosed in preview_omits with the reason —
+  // otherwise a sparse image reads as "the graph failed" when only the
+  // preview did, and the caller wrongly retreats to simpler equations.
+  const plotRows = analysis.rows.filter(r => r.cls);
+  const needs3D = plotRows.some(r => r.cls!.needs3D);
+  const omitted = plotRows
+    .map(r => ({ row: r.text, why: previewGap(r, needs3D) }))
+    .filter((g): g is { row: string; why: string } => g.why !== null);
+  let png: string | undefined;
+  let preview: string;
+  if (!plotRows.length) {
+    preview = 'none — no plot rows to draw';
+  } else if (omitted.length === plotRows.length) {
+    preview = 'none — the static preview cannot draw any of these rows (see preview_omits; this says nothing about whether the graph works)';
+  } else {
+    try {
+      png = toBase64(await renderOgPng(texts));
+      const notes = [
+        analysis.rows.some(r => r.cls?.animated) ? 'at t = 0; the live graph animates' : '',
+        omitted.length ? `${omitted.length} of ${plotRows.length} plot rows missing from this image — see preview_omits` : '',
+        plotRows.length > MAX_PLOTS ? `first ${MAX_PLOTS} plot rows only` : '',
+      ].filter(Boolean);
+      preview = notes.length ? `attached (${notes.join('; ')})` : 'attached';
+    } catch {
+      preview = 'none — preview renderer failed';
+    }
+  }
+
   return {
-    valid: rows.every(row => row.status === 'ok'),
-    url: `${origin}/#${payload}`,
-    share_url: `${origin}/g/${payload}`,
-    rows,
+    png,
+    value: {
+      valid: rows.every(row => row.status === 'ok'),
+      url: `${origin}/#${payload}`,
+      share_url: `${origin}/g/${payload}`,
+      preview,
+      ...(omitted.length ? { preview_omits: omitted } : {}),
+      rows,
+    },
   };
 }
 
@@ -117,8 +176,15 @@ interface RpcRequest {
   params?: Record<string, unknown>;
 }
 
-function handleRpc(req: RpcRequest, origin: string): object | null {
+interface RpcContext {
+  origin: string;
+  /** Reads the /llms.txt asset backing the "syntax" resource. */
+  syntaxText: () => Promise<string>;
+}
+
+async function handleRpc(req: RpcRequest, ctx: RpcContext): Promise<object | null> {
   const { id, method, params = {} } = req;
+  const { origin } = ctx;
   const result = (r: object) => ({ jsonrpc: '2.0', id, result: r });
   const error = (code: number, message: string) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
@@ -131,10 +197,10 @@ function handleRpc(req: RpcRequest, origin: string): object | null {
       const requested = (params as { protocolVersion?: string }).protocolVersion;
       return result({
         protocolVersion: PROTOCOL_VERSIONS.includes(requested ?? '') ? requested : PROTOCOL_VERSIONS[0],
-        capabilities: { tools: {} },
+        capabilities: { tools: {}, resources: {} },
         serverInfo: { name: 'equation', title: 'equation.io grapher', version: '1.0.0' },
         instructions:
-          'Graphing calculator whose entire state lives in the URL. Use create_graph to produce links that open with equations rendered, and read_graph to decode a link the user shares so you can edit their graph. Full syntax reference: ' +
+          'Graphing calculator whose entire state lives in the URL. create_graph turns a list of equations into a link that opens with them rendered — it validates every row and attaches a PNG preview so you can check the result. read_graph decodes a link the user shares so you can edit their graph. Before writing non-trivial equations, read the "syntax" resource: the full language reference, also served at ' +
           origin + '/llms.txt',
       });
     }
@@ -142,17 +208,35 @@ function handleRpc(req: RpcRequest, origin: string): object | null {
       return result({});
     case 'tools/list':
       return result({ tools: TOOLS });
+    case 'resources/list':
+      return result({ resources: [syntaxResource(origin)] });
+    case 'resources/templates/list':
+      return result({ resourceTemplates: [] });
+    case 'resources/read': {
+      const uri = (params as { uri?: string }).uri;
+      const expected = syntaxResource(origin).uri;
+      if (uri !== expected) return error(-32002, `Unknown resource: ${uri}. The only resource is ${expected}.`);
+      try {
+        return result({ contents: [{ uri: expected, mimeType: 'text/markdown', text: await ctx.syntaxText() }] });
+      } catch (e) {
+        return error(-32603, e instanceof Error ? e.message : String(e));
+      }
+    }
     case 'tools/call': {
       const { name, arguments: args = {} } = params as { name?: string; arguments?: Record<string, unknown> };
       try {
         let value: object;
-        if (name === 'create_graph') value = createGraph(origin, args);
-        else if (name === 'read_graph') value = readGraph(args);
-        else return error(-32602, `Unknown tool: ${name}`);
-        return result({
-          content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
-          structuredContent: value,
-        });
+        const content: object[] = [];
+        if (name === 'create_graph') {
+          const made = await createGraph(origin, args);
+          value = made.value;
+          content.push({ type: 'text', text: JSON.stringify(value, null, 2) });
+          if (made.png) content.push({ type: 'image', data: made.png, mimeType: 'image/png' });
+        } else if (name === 'read_graph') {
+          value = readGraph(args);
+          content.push({ type: 'text', text: JSON.stringify(value, null, 2) });
+        } else return error(-32602, `Unknown tool: ${name}`);
+        return result({ content, structuredContent: value });
       } catch (e) {
         return result({
           content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }],
@@ -177,7 +261,7 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Session-Id, Mcp-Protocol-Version',
 };
 
-export async function handleMcp(request: Request, url: URL): Promise<Response> {
+export async function handleMcp(request: Request, url: URL, env: Env): Promise<Response> {
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
@@ -201,10 +285,17 @@ export async function handleMcp(request: Request, url: URL): Promise<Response> {
     );
   }
 
-  const origin = url.origin;
-  const responses = (Array.isArray(body) ? body : [body])
-    .map(r => handleRpc(r as RpcRequest, origin))
-    .filter((r): r is object => r !== null);
+  const ctx: RpcContext = {
+    origin: url.origin,
+    syntaxText: async () => {
+      const res = await env.ASSETS.fetch(new Request(new URL('/llms.txt', url)));
+      if (!res.ok) throw new Error(`syntax reference unavailable (${res.status})`);
+      return res.text();
+    },
+  };
+  const responses = (await Promise.all(
+    (Array.isArray(body) ? body : [body]).map(r => handleRpc(r as RpcRequest, ctx)),
+  )).filter((r): r is object => r !== null);
 
   if (!responses.length) return new Response(null, { status: 202, headers: CORS_HEADERS });
   const payload = Array.isArray(body) ? responses : responses[0];

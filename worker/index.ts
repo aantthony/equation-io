@@ -130,7 +130,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/mcp') {
-      return handleMcp(request, url);
+      return handleMcp(request, url, env);
     }
     if (url.pathname === '/api' || url.pathname.startsWith('/api/')) {
       return handleApi(request, url, env);

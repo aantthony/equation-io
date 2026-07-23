@@ -25,7 +25,7 @@ const PALETTE: [number, number, number][] = [
 
 export const OG_WIDTH = 600;
 export const OG_HEIGHT = 315;
-const MAX_PLOTS = 6;
+export const MAX_PLOTS = 6;
 
 interface Raster {
   w: number;
@@ -242,6 +242,14 @@ function polyline3D(
 
 // --- per-row renderers ---
 
+const zVar = (e: Expr) => e.kind === 'var' && e.name === 'z';
+
+/** The g of a z = g(x, y) equation (either side), or null when not that form. */
+function heightmapExpr(expr: Expr): Expr | null {
+  if (expr.kind !== 'eq') return null;
+  return zVar(expr.l) ? expr.r : zVar(expr.r) ? expr.l : null;
+}
+
 function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [number, number, number]) {
   const { cls, expr } = row;
   if (!cls || !expr) return;
@@ -338,9 +346,8 @@ function renderRow3D(r: Raster, v: View3D, row: RowInfo, env: EvalEnv, color: [n
     case 'implicit3d': {
       // Only the z = f(x, y) heightmap form draws (as a wireframe); general
       // implicit surfaces would need a raymarcher, too slow on CPU here.
-      if (expr.kind !== 'eq') return;
-      const isZ = (e: Expr) => e.kind === 'var' && e.name === 'z';
-      const g = isZ(expr.l) ? expr.r : isZ(expr.r) ? expr.l : null;
+      // previewGap() reports this gap to callers — keep them in sync.
+      const g = heightmapExpr(expr);
       if (!g) return;
       let prog: Prog;
       try { prog = compile(g); } catch { return; }
@@ -395,6 +402,50 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
 };
 
 /**
+ * Why this renderer cannot draw a classified row — null when it draws.
+ *
+ * OG_COVERAGE is the type-level map; this is the row-level truth, because two
+ * gaps live WITHIN types it marks 'draws': implicit3d only draws the
+ * z = f(x, y) heightmap form, and a 3D scene draws none of the 2D-only rows.
+ * Without this, a sphere gets preview "attached" with a picture of an empty
+ * grid — which reads as "the graph failed" when only the preview did.
+ *
+ * The wording matters as much as the verdict: these strings are shown to
+ * assistants deciding whether the graph WORKS, so each says what the live app
+ * does with the row, and never implies the row itself is broken.
+ */
+export function previewGap(row: RowInfo, needs3D: boolean): string | null {
+  const { cls, expr } = row;
+  if (!cls || !expr) return null;
+  const type = cls.plot.type;
+  if (!needs3D) {
+    return OG_COVERAGE[type] === 'draws'
+      ? null
+      : `no static preview for ${type} rows; the live app renders them (WebGL)`;
+  }
+  switch (type) {
+    case 'psurface':
+      return null;
+    case 'implicit3d':
+      return heightmapExpr(expr)
+        ? null
+        : 'the static preview draws only z = f(x, y) surfaces; the live app renders general implicit surfaces in full';
+    case 'pcurve':
+    case 'point':
+      return cls.plot.dim === 3
+        ? null
+        : 'the static preview skips 2D rows in a 3D scene; the live app draws them on the z = 0 plane';
+    case 'implicit2d':
+      return 'the static preview skips 2D curves in a 3D scene; the live app extrudes them as vertical sheets';
+    default:
+      // scalar2d, ineq2d and the shader families have no 3D locus — the live
+      // app skips them in a 3D scene too (web/main.ts), so say that, not
+      // "renders in the app", which would be false here.
+      return `${type} rows are not drawn in a 3D scene (the live app skips them there too)`;
+  }
+}
+
+/**
  * True when every plot row in the graph is one this renderer draws. False for
  * an empty graph too: a bare grid is not worth an image.
  */
@@ -407,7 +458,8 @@ export function canRenderOg(texts: string[]): boolean {
   }
   const plots = analysis.rows.filter(r => r.cls);
   if (!plots.length) return false;
-  return plots.every(r => OG_COVERAGE[r.cls!.plot.type] === 'draws');
+  const needs3D = plots.some(r => r.cls!.needs3D);
+  return plots.every(r => previewGap(r, needs3D) === null);
 }
 
 /** Render equations to a raw RGB raster (exported for tests). */

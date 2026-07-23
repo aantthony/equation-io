@@ -9,7 +9,8 @@
  * honest, and that callers act on it.
  */
 import { describe, expect, it } from 'vitest';
-import { OG_COVERAGE, canRenderOg } from './og.ts';
+import { OG_COVERAGE, canRenderOg, previewGap } from './og.ts';
+import { analyze } from './graph.ts';
 
 describe('og renderer coverage', () => {
   it('draws the everyday 2D and 3D families', () => {
@@ -44,9 +45,48 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['y = sin(x)', 'iter(z^2 + w)'])).toBe(false);
   });
 
+  it('rejects the within-type gaps OG_COVERAGE cannot express', () => {
+    // implicit3d is a 'draws' type, but only the z = f(x, y) form draws:
+    // a sphere would preview as an EMPTY grid, the worst possible card.
+    expect(canRenderOg(['x^2 + y^2 + z^2 = 9'])).toBe(false);
+    // 2D rows are skipped in a 3D scene, so a mixed graph drops rows.
+    expect(canRenderOg(['z = x^2 + y^2', 'y = sin(x)'])).toBe(false);
+    expect(canRenderOg(['z = x^2 + y^2', '(2cos(2pi u), 2sin(2pi u))'])).toBe(false);
+    // The same rows are fine when the graph they are in stays 2D.
+    expect(canRenderOg(['y = sin(x)', '(2cos(2pi u), 2sin(2pi u))'])).toBe(true);
+  });
+
   it('rejects graphs with nothing to draw', () => {
     expect(canRenderOg([])).toBe(false);
     expect(canRenderOg(['a = 2'])).toBe(false); // definitions only
     expect(canRenderOg(['y = ('])).toBe(false); // parse error
+  });
+});
+
+describe('previewGap', () => {
+  // These strings go to assistants deciding whether the GRAPH works, so each
+  // must blame the preview and say what the live app does with the row.
+  const gap = (texts: string[], i = 0) => {
+    const rows = analyze(texts).rows.filter(r => r.cls);
+    return previewGap(rows[i], rows.some(r => r.cls!.needs3D));
+  };
+
+  it('is null for every row the renderer draws', () => {
+    expect(gap(['y = sin(x)'])).toBeNull();
+    expect(gap(['z = x^2 + y^2'])).toBeNull();
+    expect(gap(['(cos(2pi u), sin(2pi u), u)'])).toBeNull();
+  });
+
+  it('explains the sphere without impugning it', () => {
+    const why = gap(['x^2 + y^2 + z^2 = 9'])!;
+    expect(why).toContain('z = f(x, y)');
+    expect(why).toContain('live app renders');
+  });
+
+  it('says what the app does with 2D rows in a 3D scene', () => {
+    expect(gap(['z = x^2 + y^2', 'y = sin(x)'], 1)).toContain('vertical sheets');
+    expect(gap(['z = x^2 + y^2', '(2, 3)'], 1)).toContain('z = 0 plane');
+    // ...except the families the app itself skips in 3D — no false promises.
+    expect(gap(['z = x^2 + y^2', 'sin(x)cos(y)'], 1)).toContain('skips them there too');
   });
 });
