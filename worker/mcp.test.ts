@@ -94,6 +94,39 @@ describe('mcp endpoint', () => {
     }
   });
 
+  it('names the expected argument when a caller guesses wrong', async () => {
+    // "rows" is the guess to expect: the tool's own result calls the
+    // per-equation validation "rows", so a caller can reasonably reach for it.
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { rows: ['y = x^2'] },
+    });
+    const text = body.result.content[0].text;
+    expect(text).toContain('"equations"');
+    expect(text).toContain('"rows"'); // says what arrived, not just what was wanted
+    expect(text).toContain('{"equations": ["y = x^2", "y = sin(x)"]}'); // a copyable example
+  });
+
+  it('describes the argument it actually takes', async () => {
+    const { body } = await rpc('tools/list');
+    const create = body.result.tools.find((t: { name: string }) => t.name === 'create_graph');
+    expect(Object.keys(create.inputSchema.properties)).toEqual(['equations']);
+    expect(create.inputSchema.required).toEqual(['equations']);
+    // The prose must not tell a caller to send "rows:" — the schema says
+    // equations, and a description that disagrees is what caused the misuse.
+    expect(create.description).not.toMatch(/send rows|rows:\s*\[/i);
+    expect(create.description).toContain('"equations"');
+  });
+
+  it('feeds read_graph output straight back into create_graph', async () => {
+    const rows = ['a = 2', 'y = sin(a x)'];
+    const made = await rpc('tools/call', { name: 'create_graph', arguments: { equations: rows } });
+    const url = JSON.parse(made.body.result.content[0].text).share_url;
+    const read = await rpc('tools/call', { name: 'read_graph', arguments: { url } });
+    // read_graph returns "equations", the exact key create_graph consumes.
+    expect(JSON.parse(read.body.result.content[0].text)).toEqual({ equations: rows });
+  });
+
   it('answers preflights with a long-lived cacheable policy', async () => {
     const res = await handleMcp(new Request(URL_BASE, { method: 'OPTIONS' }), new URL(URL_BASE));
     expect(res.status).toBe(204);

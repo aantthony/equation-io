@@ -24,23 +24,26 @@ const TOOLS = [
   {
     name: 'create_graph',
     title: 'Create a graph link',
-    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row. Send the COMPLETE list of rows the graph should show (when editing, include the unchanged rows too).
+    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating each one. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order. When editing an existing graph, include the unchanged equations too.
+
+Note the asymmetry: the argument is "equations" (strings in); the result reports "rows" (per-equation validation out).
 
 ${SYNTAX_GUIDE}
 
-Editing a user's graph: call read_graph on their link first, transform the rows, then call create_graph with the full new list. Prefer restructuring into named definitions so related objects stay linked. Example — the user has "y = x^2 - 2x" and asks for a tangent line at x = 3. Send rows: ["f(x) = x^2 - 2x", "g(x) = d/dx f(x)", "a = 3", "y = f(x)", "y = f(a) + g(a)(x - a)"] — a becomes a draggable slider, so the tangent point stays explorable.
+Editing a user's graph: call read_graph on their link first, transform the strings, then call create_graph with the full new list. Prefer restructuring into named definitions so related objects stay linked. Example — the user has "y = x^2 - 2x" and asks for a tangent line at x = 3, so call create_graph with equations: ["f(x) = x^2 - 2x", "g(x) = d/dx f(x)", "a = 3", "y = f(x)", "y = f(a) + g(a)(x - a)"] — a becomes a draggable slider, so the tangent point stays explorable.
 
-If any row fails validation, fix it and call again before giving the user the link. Give users the share_url (it unfurls with a rendered preview image in chat apps); url is equivalent.`,
+If any equation fails validation, fix it and call again before giving the user the link. Give users the share_url: it carries a link-preview card in chat apps, with a rendered image of the graph for the common 2D and 3D plot types. url is the equivalent #-fragment form.`,
     inputSchema: {
       type: 'object',
       properties: {
         equations: {
           type: 'array',
           items: { type: 'string' },
-          description: 'All rows of the graph, in display order. One equation or definition per string; no semicolons.',
+          description: 'Every equation in the graph, in display order. One equation or definition per string; no semicolons.',
         },
       },
       required: ['equations'],
+      additionalProperties: false,
     },
   },
   {
@@ -60,7 +63,15 @@ If any row fails validation, fix it and call again before giving the user the li
 function createGraph(origin: string, args: Record<string, unknown>) {
   const equations = args.equations;
   if (!Array.isArray(equations) || !equations.every(e => typeof e === 'string')) {
-    throw new Error('equations must be an array of strings');
+    // Name what arrived, so a caller that guessed wrong fixes it in one retry
+    // rather than probing. "rows" is the guess to expect: it reads naturally
+    // and it is what this tool calls the per-equation results it returns.
+    const got = Object.keys(args).filter(k => k !== 'equations');
+    const hint = got.length ? ` Received ${got.map(k => `"${k}"`).join(', ')} instead.` : '';
+    throw new Error(
+      `create_graph takes "equations": a flat array of strings, one per equation, e.g. `
+        + `{"equations": ["y = x^2", "y = sin(x)"]}.${hint}`,
+    );
   }
   const texts = (equations as string[]).map(t => t.trim()).filter(Boolean);
   const bad = texts.find(t => t.includes(';'));
