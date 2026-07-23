@@ -14,7 +14,11 @@ import { HERO, SHOWCASE, type ShowcaseItem, hashUrl } from '../web/about/showcas
 
 const PORT = 5199;
 const ORIGIN = `http://localhost:${PORT}`;
-const OUT_DIR = fileURLToPath(new URL('../web/public/shots/', import.meta.url));
+// Gallery shots are imported by about.ts, so Vite content-hashes them into
+// assets/. The hero is the og:image and must keep a stable public URL, so it
+// stays in public/shots/ (copied verbatim by Vite).
+const SHOTS_DIR = fileURLToPath(new URL('../web/shots/', import.meta.url));
+const HERO_DIR = fileURLToPath(new URL('../web/public/shots/', import.meta.url));
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 async function waitForServer(): Promise<void> {
@@ -28,7 +32,8 @@ async function waitForServer(): Promise<void> {
   throw new Error(`vite dev server did not come up on ${ORIGIN}`);
 }
 
-mkdirSync(OUT_DIR, { recursive: true });
+mkdirSync(SHOTS_DIR, { recursive: true });
+mkdirSync(HERO_DIR, { recursive: true });
 
 // A leftover server on the port would silently serve some other checkout's
 // app; refuse to shoot against anything we didn't start ourselves.
@@ -48,7 +53,7 @@ try {
   // has no GPU (CI); locally the real GPU is used.
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
 
-  async function shoot(item: ShowcaseItem, opts: { width: number; height: number; panel: boolean }) {
+  async function shoot(item: ShowcaseItem, opts: { width: number; height: number; panel: boolean; dir: string }) {
     const page = await browser.newPage({
       viewport: { width: opts.width, height: opts.height },
       deviceScaleFactor: 2,
@@ -88,7 +93,7 @@ try {
       await page.mouse.click(fx * opts.width, fy * opts.height);
     }
     if (item.clicks?.length) await page.waitForTimeout(250);
-    const path = `${OUT_DIR}${item.slug}.png`;
+    const path = `${opts.dir}${item.slug}.png`;
     await page.screenshot({ path });
     await page.close();
     console.log(`✓ ${item.slug} (${item.eqs.join('; ')})`);
@@ -98,9 +103,9 @@ try {
   const only = process.argv.slice(2);
   const wanted = (s: string) => only.length === 0 || only.includes(s);
 
-  if (wanted(HERO.slug)) await shoot(HERO, { width: 1440, height: 900, panel: true });
+  if (wanted(HERO.slug)) await shoot(HERO, { width: 1440, height: 900, panel: true, dir: HERO_DIR });
   for (const item of SHOWCASE) {
-    if (wanted(item.slug)) await shoot(item, { width: 900, height: 600, panel: false });
+    if (wanted(item.slug)) await shoot(item, { width: 900, height: 600, panel: false, dir: SHOTS_DIR });
   }
 
   await browser.close();
