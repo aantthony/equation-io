@@ -408,6 +408,10 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   pcurve: 'draws',
   psurface: 'draws',
   implicit3d: 'draws',
+  // Straight-edged figures from segment()/polygon()/square() would be cheap to
+  // rasterize, but renderRow2D/renderRow3D have no case for them yet — marking
+  // 'draws' before one exists would ship the empty-grid preview.
+  polygon: 'fallback',
   // Each of these needs a per-pixel shader — domain coloring, conformal grids,
   // escape-time iteration, line-integral convolution — that a scanline
   // rasterizer cannot reproduce faithfully at preview size. They get the
