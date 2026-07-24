@@ -27,6 +27,7 @@ import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { type SpecialPoint, specialPoints } from '../lib/special.ts';
 import { splitStatements } from '../lib/statements.ts';
 import {
   type ViewSpec,
@@ -56,6 +57,8 @@ interface Equation {
   text: string;
   colorIndex: number;
   cls?: Classified;
+  /** The resolved expression behind cls (user functions/fields inlined). */
+  parsed?: Expr;
   error?: string;
   /** Extra readout under the line (e.g. the numeric value of a P(…) row). */
   info?: string;
@@ -77,6 +80,8 @@ interface Equation {
   curveUI?: CurveUI;
   errorEl?: HTMLElement;
   infoEl?: HTMLElement;
+  /** Cached hover points (axis intercepts/roots) for the cached view range. */
+  spCache?: { text: string; env: string; xlo: number; xhi: number; ylo: number; yhi: number; pts: SpecialPoint[] };
 }
 
 /**
@@ -185,7 +190,8 @@ function syncCanvasSize(): boolean {
   // The opening scale comes from the buffer we just sized, not from
   // window.innerWidth * devicePixelRatio — those agree only once the page has
   // settled, and a link opened mid-transition would otherwise keep whatever
-  // zoom the guess produced.
+  // zoom the guess produced. (This supersedes the non-finite-upp repair the
+  // hover work carried: the same boot bug, fixed at the source.)
   if (awaitingFirstSize) {
     awaitingFirstSize = false;
     view.upp = 12 / Math.min(w, h); // ~12 math units across the short edge
@@ -605,6 +611,7 @@ function render() {
     }
     r2d.render(view, layers, time, constEnv, gridSpecs);
     drawLabels2D(overlayCtx, view, dpr, extras, !gridFields.length);
+    drawHoverMarker(dpr);
   }
   grabbable = grabs;
 
@@ -634,10 +641,12 @@ function recompileAll() {
   const dupRows: Equation[] = [];
   for (const eq of equations) {
     eq.cls = undefined;
+    eq.parsed = undefined;
     eq.error = undefined;
     eq.info = undefined;
     eq.def = undefined;
     eq.viewSpec = undefined;
+    eq.spCache = undefined;
     const text = eq.text.trim();
     if (!text) continue;
     const d = scanDefinition(text);
@@ -755,10 +764,14 @@ function recompileAll() {
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       eq.cls = classify(parsed, constNames);
+      eq.parsed = parsed;
     } catch (e) {
       eq.error = e instanceof Error ? e.message : String(e);
     }
   }
+  spGen++; // queued hover recomputes predate this compile: drop them
+  spQueue.clear();
+  setHover(null);
 }
 
 // The address bar shows the /g/ share form: it survives chat-app URL
@@ -1696,6 +1709,179 @@ function movePoint(pt: Grabbable, x: number, y: number) {
   requestRender();
 }
 
+// --- hover: intercepts and roots ---
+
+let hover: { pt: SpecialPoint; color: string } | null = null;
+
+const tooltip = document.createElement('div');
+tooltip.id = 'tooltip';
+document.body.append(tooltip);
+
+/** Math units per CSS pixel and the canvas rect, for screen↔world mapping. */
+function screenMap() {
+  const rect = canvas.getBoundingClientRect();
+  const uppCss = view.upp * (window.devicePixelRatio || 1);
+  return {
+    rect,
+    toSx: (x: number) => (x - view.cx) / uppCss + rect.width / 2,
+    toSy: (y: number) => rect.height / 2 - (y - view.cy) / uppCss,
+  };
+}
+
+// specialPoints costs tens of milliseconds per row — far too much for a
+// pointermove handler, and pan/zoom invalidates spCache, so a pan-then-hover
+// would otherwise freeze once per row. Rows that miss the cache are queued
+// here and recomputed one per idle slot (one row per slot so a heavy row
+// cannot starve the rest); until a row's result lands, the pick reuses its
+// stale points when the equation itself is unchanged.
+const spQueue = new Set<Equation>();
+let spSlot: number | null = null;
+let spGen = 0; // bumped on recompile: slots scheduled before it do nothing
+let lastHoverAt: { x: number; y: number } | null = null;
+
+const idleSlot: (fn: () => void) => number =
+  typeof requestIdleCallback === 'function'
+    ? fn => requestIdleCallback(fn, { timeout: 250 })
+    : fn => window.setTimeout(fn, 80);
+
+function scheduleSpecialPoints(eq: Equation) {
+  spQueue.add(eq);
+  ensureSpSlot();
+}
+
+function ensureSpSlot() {
+  if (spSlot !== null) return;
+  const gen = spGen;
+  spSlot = idleSlot(() => {
+    spSlot = null;
+    if (gen !== spGen) return; // the document changed under this slot
+    const next: Equation | undefined = spQueue.values().next().value;
+    if (next) {
+      spQueue.delete(next);
+      if (equations.includes(next)) computeSpecialPoints(next);
+      if (spQueue.size) ensureSpSlot();
+    }
+    if (lastHoverAt) updateHover(lastHoverAt.x, lastHoverAt.y);
+  });
+}
+
+function hoverHalfSpan() {
+  const dpr = window.devicePixelRatio || 1;
+  return {
+    halfW: ((canvas.clientWidth * dpr) / 2) * view.upp,
+    halfH: ((canvas.clientHeight * dpr) / 2) * view.upp,
+  };
+}
+
+function hoverEnvKey(cls: Classified): string {
+  return cls.params.map(p => `${p}=${constEnv[p] ?? 0}`).join(',');
+}
+
+/**
+ * Recompute eq's intercept/root points over a padded view range. Reads the
+ * live view/env when it runs, so a queued row always lands current data;
+ * only ever called from the deferred slot, never from an input handler.
+ */
+function computeSpecialPoints(eq: Equation) {
+  const cls = eq.cls;
+  if (!cls || eq.error || !eq.parsed || cls.plot.type !== 'implicit2d' || cls.animated) return;
+  const { halfW, halfH } = hoverHalfSpan();
+  let expr = eq.parsed;
+  if (cls.params.length) {
+    expr = substVars(expr, Object.fromEntries(
+      cls.params.map(p => [p, { kind: 'num', value: constEnv[p] ?? 0 } as Expr]),
+    ));
+  }
+  const xlo = view.cx - halfW * 1.5;
+  const xhi = view.cx + halfW * 1.5;
+  const ylo = view.cy - halfH * 1.5;
+  const yhi = view.cy + halfH * 1.5;
+  const pts = specialPoints(expr, xlo, xhi, ylo, yhi);
+  eq.spCache = { text: eq.text, env: hoverEnvKey(cls), xlo, xhi, ylo, yhi, pts };
+}
+
+/**
+ * The equation's cached intercept/root points. On a cache miss this queues a
+ * deferred recompute and returns the stale points (same equation, older view
+ * range — slightly out of date beats a frozen frame), or nothing if the
+ * equation itself changed.
+ */
+function pointsFor(eq: Equation): SpecialPoint[] {
+  const cls = eq.cls;
+  if (!cls || eq.error || !eq.parsed || cls.plot.type !== 'implicit2d' || cls.animated) return [];
+  const { halfW, halfH } = hoverHalfSpan();
+  const envKey = hoverEnvKey(cls);
+  const c = eq.spCache;
+  if (c && c.text === eq.text && c.env === envKey
+    && c.xlo <= view.cx - halfW && c.xhi >= view.cx + halfW && c.xhi - c.xlo <= 6 * halfW
+    && c.ylo <= view.cy - halfH && c.yhi >= view.cy + halfH && c.yhi - c.ylo <= 6 * halfH) {
+    return c.pts;
+  }
+  scheduleSpecialPoints(eq);
+  return c && c.text === eq.text && c.env === envKey ? c.pts : [];
+}
+
+function setHover(next: { pt: SpecialPoint; color: string } | null) {
+  if (hover?.pt === next?.pt && hover?.color === next?.color) return;
+  hover = next;
+  if (!hover) {
+    tooltip.style.display = 'none';
+  } else {
+    const { rect, toSx, toSy } = screenMap();
+    tooltip.textContent = hover.pt.lines.join('\n');
+    tooltip.style.borderColor = hover.color;
+    tooltip.style.left = `${rect.left + toSx(hover.pt.x) + 14}px`;
+    tooltip.style.top = `${rect.top + toSy(hover.pt.y) + 12}px`;
+    tooltip.style.display = 'block';
+  }
+  requestRender();
+}
+
+function updateHover(clientX: number, clientY: number) {
+  if (mode !== '2d') {
+    setHover(null);
+    return;
+  }
+  const { rect, toSx, toSy } = screenMap();
+  const mx = clientX - rect.left;
+  const my = clientY - rect.top;
+  let best: { pt: SpecialPoint; color: string } | null = null;
+  let bestD = 16; // CSS px pick radius
+  for (const eq of equations) {
+    for (const pt of pointsFor(eq)) {
+      const d = Math.hypot(toSx(pt.x) - mx, toSy(pt.y) - my);
+      if (d < bestD) {
+        bestD = d;
+        best = { pt, color: cssColor(theme.palette[eq.colorIndex]) };
+      }
+    }
+  }
+  setHover(best);
+}
+
+/** Marker for the hovered point, drawn over the axis labels. */
+function drawHoverMarker(dpr: number) {
+  if (!hover || mode !== '2d') return;
+  const { toSx, toSy } = screenMap();
+  const sx = toSx(hover.pt.x);
+  const sy = toSy(hover.pt.y);
+  const ctx = overlayCtx;
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.beginPath();
+  ctx.arc(sx, sy, 5.5, 0, Math.PI * 2);
+  ctx.fillStyle = theme.pointOutline; // reads as a halo in either theme
+  ctx.fill();
+  ctx.lineWidth = 2.25;
+  ctx.strokeStyle = hover.color;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(sx, sy, 2, 0, Math.PI * 2);
+  ctx.fillStyle = hover.color;
+  ctx.fill();
+  ctx.restore();
+}
+
 // --- interaction ---
 
 let dragging = false;
@@ -1728,6 +1914,8 @@ function zoomAt(clientX: number, clientY: number, factor: number) {
 }
 
 canvas.addEventListener('pointerdown', e => {
+  setHover(null); // a tooltip must not survive the gesture that moves the plot
+  lastHoverAt = null; // nor may a deferred recompute re-pick mid-gesture
   pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
   try {
     canvas.setPointerCapture(e.pointerId);
@@ -1760,6 +1948,10 @@ canvas.addEventListener('pointerdown', e => {
   }
 });
 canvas.addEventListener('contextmenu', e => e.preventDefault());
+canvas.addEventListener('pointerleave', () => {
+  lastHoverAt = null;
+  setHover(null);
+});
 canvas.addEventListener('pointermove', e => {
   const p = pointers.get(e.pointerId);
   if (p) {
@@ -1796,6 +1988,8 @@ canvas.addEventListener('pointermove', e => {
     const hit = pointAt(e.clientX, e.clientY);
     canvas.style.cursor = hit ? 'grab' : '';
     setHot(hit?.key ?? null);
+    lastHoverAt = { x: e.clientX, y: e.clientY };
+    updateHover(e.clientX, e.clientY);
     return;
   }
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 3) dragMoved = true;
@@ -1878,6 +2072,7 @@ canvas.addEventListener('dblclick', () => {
 
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
+  setHover(null);
   const factor = Math.exp(Math.max(-60, Math.min(60, e.deltaY)) * 0.002);
   zoomAt(e.clientX, e.clientY, factor);
 }, { passive: false });

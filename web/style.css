@@ -87,6 +87,26 @@ html, body {
 #gl { touch-action: none; }
 #overlay { pointer-events: none; }
 
+#tooltip {
+  position: fixed;
+  display: none;
+  pointer-events: none;
+  background: var(--panel-bg);
+  color: var(--text);
+  border: 1.5px solid var(--muted);
+  border-radius: 6px;
+  box-shadow: 0 2px 10px var(--panel-shadow);
+  padding: 5px 9px;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  z-index: 20;
+}
+#tooltip::first-line {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 #panel {
   position: absolute;
   /* viewport-fit=cover lets the canvas fill the whole screen (under the iOS
