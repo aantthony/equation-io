@@ -21,6 +21,7 @@ import {
   scanDistribution,
   toProbability,
 } from '../lib/dist.ts';
+import { SLIDER_NUM_RE as NUM_RE, dragAxes } from '../lib/drag.ts';
 import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
@@ -811,13 +812,6 @@ function addEquation(text: string, at = equations.length): Equation {
   return eq;
 }
 
-/**
- * A slider appears when a constant's right-hand side is a plain number.
- * No exponent form: the grammar has no scientific notation, so `1e-3` is
- * 1·e − 3 and must stay an expression rather than become a 0.001 slider.
- */
-const NUM_RE = /^\s*-?(\d+\.?\d*|\.\d+)\s*$/;
-
 const fmtNum = (v: number) => String(parseFloat(v.toPrecision(6)));
 
 const lineEls = (): HTMLElement[] =>
@@ -1601,32 +1595,9 @@ function buildExamplesMenu() {
 // picked up and moved on the canvas; the drag rewrites those numbers, so the
 // equation list stays the source of truth and the move is undoable and
 // shareable. Coordinates that are computed — (2cos(t), 2sin(t)), (a+1, b) —
-// have nothing to write back to and stay pinned on that axis.
-
-const NUM_LITERAL_RE = /^-?(?:\d+\.?\d*|\.\d+)$/;
-const NAME_RE = /^[A-Za-z_]\w*$/;
-
-/** The two top-level coordinates of `(A, B)`, or null if it is not a pair. */
-function splitPair(text: string): [string, string] | null {
-  if (!text.startsWith('(') || !text.endsWith(')')) return null;
-  const inner = text.slice(1, -1);
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < inner.length; i++) {
-    const c = inner[i];
-    if (c === '(' || c === '[') depth++;
-    else if (c === ')' || c === ']') depth--;
-    else if (c === ',' && depth === 0) {
-      parts.push(inner.slice(start, i));
-      start = i + 1;
-    }
-    if (depth < 0) return null; // the outer parens don't wrap the whole row
-  }
-  if (depth !== 0) return null;
-  parts.push(inner.slice(start));
-  return parts.length === 2 ? [parts[0].trim(), parts[1].trim()] : null;
-}
+// have nothing to write back to and stay pinned on that axis. Which
+// coordinates can move is decided by lib/drag.ts, shared with the MCP server
+// so its "draggable" report matches what the app actually does.
 
 /** Round to roughly a pixel, so dragging writes short, readable numbers. */
 function snapToPixel(v: number): number {
@@ -1641,18 +1612,12 @@ function snapToPixel(v: number): number {
  * rewritten pair text.
  */
 function makePairWriter(pairText: string, commit: (pair: string) => void): ((x: number, y: number) => void) | null {
-  const parts = splitPair(pairText.trim());
-  if (!parts) return null;
-  const axes = parts.map(p => {
-    if (NUM_LITERAL_RE.test(p)) return 'literal' as const;
-    // A name moves only if it is a slider constant: a plain number in its own
-    // row is the only right-hand side a drag knows how to rewrite.
-    if (!NAME_RE.test(p)) return null;
-    const row = equations.find(r =>
-      r.def?.kind === 'const' && r.def.name === p && !r.error && NUM_RE.test(r.def.rhs));
-    return row ?? null;
-  });
-  if (!axes.some(Boolean)) return null;
+  // A name moves only if it is a slider constant: a plain number in its own
+  // row is the only right-hand side a drag knows how to rewrite.
+  const drag = dragAxes(pairText, p => equations.find(r =>
+    r.def?.kind === 'const' && r.def.name === p && !r.error && NUM_RE.test(r.def.rhs)));
+  if (!drag) return null;
+  const { parts, axes } = drag;
   return (x, y) => {
     const coords = [x, y];
     const text = [...parts];

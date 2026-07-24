@@ -13,6 +13,7 @@
  * No sessions, no SSE — each POST is a complete JSON-RPC exchange, which is
  * all these tools need and keeps the Worker stateless.
  */
+import { SLIDER_NUM_RE, dragAxes } from '../lib/drag.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { analyze } from './graph.ts';
 import { MAX_PLOTS, previewGap, renderOgPng } from './og.ts';
@@ -26,9 +27,9 @@ const TOOLS = [
   {
     name: 'create_graph',
     title: 'Create a graph link',
-    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row through the app's own parser. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order — when editing an existing graph (see read_graph), include the unchanged rows too. The argument is "equations"; the result reports per-row "rows".
+    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row through the app's own parser. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order — when editing an existing graph (see read_graph), include the unchanged rows too. The result reports per-row "rows".
 
-Rows can be: equations and inequalities in x,y (curves, regions; z makes it 3D), bare expressions (scalar fields; complex plots via w), points, parametric tuples in u,v — and definitions: "a = 2" (a draggable slider), "f(x) = x^3 - a x", coordinate fields like "r = sqrt(x^2+y^2)" for polar. t animates. Also derivatives d/dx, sums sum[n=1..N], domain()/conformal()/iter() for complex analysis and fractals, y' = ... for ODE slope fields, and "view(x = -5..5, y = -2..2)" / "camera(theta, phi)" rows to frame the viewport. That is a menu, not the syntax: before your first non-trivial graph, read the "syntax" MCP resource (also at https://equation.io/llms.txt).
+Rows can be: equations and inequalities in x,y (curves, regions; z makes it 3D), bare expressions (scalar fields; complex plots via w), points (rows report "draggable"), parametric tuples in u,v — and definitions: "a = 2" (a draggable slider), "f(x) = x^3 - a x", coordinate fields like "r = sqrt(x^2+y^2)" for polar. t animates. Also derivatives d/dx, sums sum[n=1..N], domain()/conformal()/iter() for complex analysis and fractals, y' = ... for ODE slope fields, and "view(x = -5..5, y = -2..2)" / "camera(theta, phi)" rows to frame the viewport. That is a menu, not the syntax: before your first non-trivial graph, read the "syntax" MCP resource (also at https://equation.io/llms.txt).
 
 The result attaches a PNG preview — a simplified CPU sketch (t = 0, 3D as wireframes) for checking shape and framing. It draws LESS than the app: rows it cannot draw are listed in "preview_omits" with the reason, so a sparse or missing preview never means the equations failed — "rows" is the validation verdict. Look at it: are the interesting features visible? If a row fails validation, fix it and call again. Give users the share_url (it unfurls to a preview card in chat apps); url is the equivalent #-fragment form.`,
     inputSchema: {
@@ -99,20 +100,42 @@ async function createGraph(origin: string, args: Record<string, unknown>) {
   const bad = texts.find(t => t.includes(';'));
   if (bad) throw new Error(`Row "${bad}" contains ';' — send each equation as its own array item.`);
   const analysis = analyze(texts);
-  const rows = analysis.rows.map(row => ({
-    text: row.text,
-    ...(row.error
-      ? { status: 'error' as const, error: row.error }
-      : {
-          status: 'ok' as const,
-          kind: row.def
-            ? `definition (${row.def.kind})`
-            : row.view
-              ? `viewport (${row.view.kind})`
-              : row.cls!.plot.type,
-          ...(row.cls?.animated ? { animated: true } : {}),
-        }),
-  }));
+  const plotRows = analysis.rows.filter(r => r.cls);
+  const needs3D = plotRows.some(r => r.cls!.needs3D);
+
+  // Mirror the app's drag test (web/main.ts pointWriter/defPointWriter) so
+  // "draggable" reports what the app will actually let the user grab: 2D
+  // graphs only, and only coordinates that are plain numbers or slider names.
+  const sliderRow = (name: string) => analysis.rows.find(r =>
+    r.def?.kind === 'const' && r.def.name === name && !r.error && SLIDER_NUM_RE.test(r.def.rhs));
+  const draggable = (row: (typeof analysis.rows)[number]): boolean | undefined => {
+    const pair = row.cls?.plot.type === 'point'
+      ? row.text
+      : row.def?.kind === 'const' && analysis.defs.points.has(row.def.name)
+        ? row.def.rhs
+        : null;
+    if (pair === null) return undefined;
+    return !needs3D && dragAxes(pair, sliderRow) !== null;
+  };
+
+  const rows = analysis.rows.map(row => {
+    const drag = row.error ? undefined : draggable(row);
+    return {
+      text: row.text,
+      ...(row.error
+        ? { status: 'error' as const, error: row.error }
+        : {
+            status: 'ok' as const,
+            kind: row.def
+              ? `definition (${row.def.kind})`
+              : row.view
+                ? `viewport (${row.view.kind})`
+                : row.cls!.plot.type,
+            ...(row.cls?.animated ? { animated: true } : {}),
+            ...(drag === undefined ? {} : { draggable: drag }),
+          }),
+    };
+  });
   const payload = encodePayload(texts);
 
   // Attach the same CPU-rendered PNG the /g/ link-preview uses, so the caller
@@ -121,8 +144,6 @@ async function createGraph(origin: string, args: Record<string, unknown>) {
   // missing from the image is disclosed in preview_omits with the reason —
   // otherwise a sparse image reads as "the graph failed" when only the
   // preview did, and the caller wrongly retreats to simpler equations.
-  const plotRows = analysis.rows.filter(r => r.cls);
-  const needs3D = plotRows.some(r => r.cls!.needs3D);
   const omitted = plotRows
     .map(r => ({ row: r.text, why: previewGap(r, needs3D) }))
     .filter((g): g is { row: string; why: string } => g.why !== null);

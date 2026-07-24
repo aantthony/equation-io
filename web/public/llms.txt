@@ -162,6 +162,13 @@ demand instead of living in a tool description. No authentication required.
   other points defined above: `C = B + D`, `M = midpoint(A, B)`,
   `P = midpoint(A, B) - perp(B - A)/2`. Scalars over points work too:
   `n = cross(B, D)`, `L = |B - A|`.
+- Dragging: a point (named or bare) is draggable only where the drag has
+  somewhere to write the new value: a coordinate that is a plain number
+  (`(2, 3)`) or a bare slider name (`(a, 3)` with `a = 1` above) moves;
+  computed coordinates (`C = B + D`, `(a+1, cos(t))`) are pinned, and 3D
+  graphs have no point dragging. The MCP create_graph result marks each
+  point row with `"draggable"` — write coordinates as literals or sliders
+  when the user is meant to move the point.
 - Coordinate field: a definition that depends on the plane, e.g.
   `r = sqrt(x^2+y^2); theta = atan2(y,x)`. Its level sets draw as a grid, and
   later rows may use it: adding `r = 2(1 + cos(theta))` plots a cardioid in

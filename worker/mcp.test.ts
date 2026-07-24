@@ -156,6 +156,41 @@ describe('mcp endpoint', () => {
   });
 });
 
+describe('draggable points', () => {
+  const rowsFor = async (equations: string[]) => {
+    const { body } = await rpc('tools/call', { name: 'create_graph', arguments: { equations } });
+    return body.result.structuredContent.rows as Array<{ text: string; kind?: string; draggable?: boolean }>;
+  };
+
+  it('marks literal and slider-coordinate points draggable', async () => {
+    const rows = await rowsFor(['(2, 3)', 'a = 1', '(a, 4)']);
+    expect(rows[0]).toMatchObject({ kind: 'point', draggable: true });
+    expect(rows[1].draggable).toBeUndefined(); // the slider itself is not a point
+    expect(rows[2]).toMatchObject({ kind: 'point', draggable: true });
+  });
+
+  it('marks fully computed points as not draggable', async () => {
+    const rows = await rowsFor(['a = 1', '(a+1, 2cos(1))']);
+    expect(rows[1]).toMatchObject({ kind: 'point', draggable: false });
+  });
+
+  it('reports named points (A = (…)) too', async () => {
+    const rows = await rowsFor(['A = (1, 2)', 'B = (2cos(1), sin(2))']);
+    expect(rows[0]).toMatchObject({ kind: 'definition (const)', draggable: true });
+    expect(rows[1]).toMatchObject({ kind: 'definition (const)', draggable: false });
+  });
+
+  it('never drags in 3D, where the app has no point dragging', async () => {
+    const rows = await rowsFor(['(1, 2)', 'z = x^2 + y^2']);
+    expect(rows[0]).toMatchObject({ kind: 'point', draggable: false });
+  });
+
+  it('omits the flag from non-point rows', async () => {
+    const rows = await rowsFor(['y = x^2', 'f(x) = x', 'view(x = -5..5)']);
+    for (const row of rows) expect(row).not.toHaveProperty('draggable');
+  });
+});
+
 describe('graph previews', () => {
   const call = (equations: string[]) =>
     rpc('tools/call', { name: 'create_graph', arguments: { equations } });
