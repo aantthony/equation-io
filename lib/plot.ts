@@ -51,10 +51,11 @@ export type Plot =
   /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
    *  comps keep the symbolic components for CPU integration (integral curves). */
   | { type: 'vfield2d'; fx: string; fy: string; comps: [Expr, Expr] }
-  /** tube: set by the explicit tube(…) form — sweep a lit tube of this radius
+  /** tube: set by the explicit tube(…) form — sweep a lit tube whose radius
+   *  is this expression, evaluated per frame (constants, sliders, and t only)
    *  instead of a line strip. d1..d3: symbolic d/du of comps for framing
    *  (κ, τ, tubes); absent → finite differences. */
-  | { type: 'pcurve'; dim: 2 | 3; comps: Expr[]; tube?: number; d1?: Expr[]; d2?: Expr[]; d3?: Expr[] }
+  | { type: 'pcurve'; dim: 2 | 3; comps: Expr[]; tube?: Expr; d1?: Expr[]; d2?: Expr[]; d3?: Expr[] }
   /** du/dv: symbolic tangents ∂P/∂u, ∂P/∂v for lighting; absent → finite differences. */
   | { type: 'psurface'; comps: [string, string, string]; du?: [string, string, string]; dv?: [string, string, string] }
   /** [3, 1, 4]: dots at (k, value), k = 1, 2, …; the UI can switch to bars. */
@@ -136,7 +137,7 @@ const WHOLE_EXPR_FORMS = new Set([...SPECIAL_FORMS, 'tube']);
  * swallow points, other curves, or anything else sharing the scene — you
  * ask for the solid only when the solid is the point.
  */
-function matchTube(e: Expr): { inner: Expr; radius: number } | null {
+function matchTube(e: Expr): { inner: Expr; radius: Expr } | null {
   if (e.kind !== 'call' || e.name !== 'tube') return null;
   // A parenthesized vector inside a call flattens into the argument list, so
   // tube((x, y, z)) and tube(x, y, z) arrive here identically — both spell
@@ -144,11 +145,11 @@ function matchTube(e: Expr): { inner: Expr; radius: number } | null {
   if (e.args.length !== 3 && e.args.length !== 4) {
     throw new Error('tube takes three components and an optional radius: tube(cos(u), sin(u), u/4, 0.1).');
   }
-  let radius = DEFAULT_TUBE_RADIUS;
+  let radius: Expr = { kind: 'num', value: DEFAULT_TUBE_RADIUS };
   if (e.args.length === 4) {
     const r = e.args[3];
-    if (r.kind !== 'num' || !(r.value > 0)) throw new Error('The tube radius must be a positive number.');
-    radius = r.value;
+    if (r.kind === 'num' && !(r.value > 0)) throw new Error('The tube radius must be a positive number.');
+    radius = r;
   }
   return { inner: { kind: 'vec', items: e.args.slice(0, 3) }, radius };
 }
@@ -217,6 +218,16 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   const nested = nestedSpecial(expr, true);
   if (nested) throw new Error(`${nested}(…) must be the whole expression.`);
   const vars = freeVars(expr);
+  if (tube) {
+    // The radius sweeps one circle for the whole tube, so it may vary with
+    // time and sliders but not along the curve or across space.
+    for (const v of freeVars(tube.radius)) {
+      if (SPACE_VARS.has(v) || PARAM_VARS.has(v) || v === 'w') {
+        throw new Error('The tube radius can only use constants, sliders, and t.');
+      }
+      vars.add(v);
+    }
+  }
   vars.delete('i');
   // iter binds z as the iterate: z ↦ step(z) starting from the seed.
   if (special === 'iter') vars.delete('z');

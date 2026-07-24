@@ -472,8 +472,16 @@ function render() {
             pts[k * 3 + 2] = plot.dim === 3 ? flat[k * plot.dim + 2] : 0;
           }
           // Tubes are opt-in through tube(…): a bare curve stays a line, so
-          // it never hides points or curves sharing the scene.
-          const radius = plot.dim === 3 ? plot.tube ?? 0 : 0;
+          // it never hides points or curves sharing the scene. The radius may
+          // use sliders and t; while it evaluates ≤ 0 (say, mid slider drag)
+          // the curve draws as a bare line instead of an inside-out tube.
+          let radius = 0;
+          if (plot.dim === 3 && plot.tube) {
+            try {
+              const r = evaluate(plot.tube, { ...constEnv, t: time });
+              if (isFinite(r) && r > 0) radius = r;
+            } catch { /* unevaluable this frame: draw the bare curve */ }
+          }
           const combs = plot.dim === 3 && (eq.combK || eq.combT);
           if (radius <= 0 && !combs) {
             scene.curves.push({ pts, color });
