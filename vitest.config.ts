@@ -4,6 +4,6 @@ import { defineConfig } from 'vitest/config';
 // tests live under lib/.
 export default defineConfig({
   test: {
-    include: ['lib/**/*.test.ts'],
+    include: ['lib/**/*.test.ts', 'worker/**/*.test.ts'],
   },
 });

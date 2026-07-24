@@ -11,16 +11,20 @@
 
 Format:
 
-    https://equation.io/#<equation>;<equation>;...
+    https://equation.io/g/<equation>;<equation>;...
 
-- Each equation is percent-encoded (JavaScript `encodeURIComponent`); encoded
-  equations are joined with `;`.
+- Percent-encode each equation (JavaScript `encodeURIComponent`), then
+  additionally escape ( ) ! ' * as %28 %29 %21 %27 %2A — chat apps cut
+  auto-linked URLs at bare parentheses, silently truncating the graph.
+- Encoded equations are joined with `;`. Never put a literal `;` inside an
+  equation; it is only the row separator.
 - Every equation gets its own row and color. Definitions (constants,
   functions, coordinate fields) are rows too — order does not matter.
-- Never put a literal `;` inside an equation; it is only the row separator.
-- Spaces mean multiplication is implicit anyway, so `y=sin(x)` and
-  `y%20%3D%20sin(x)` both work. When in doubt, encodeURIComponent the whole
-  equation.
+- `/g/` links unfurl with a rendered preview image (og:image) in chat apps
+  and social cards; the image itself is served at
+  `https://equation.io/api/og/<same payload>`. An equivalent fragment form,
+  `https://equation.io/#<same payload>`, also opens the graph and keeps the
+  equations out of server logs, but gets no preview card.
 
 Examples (paste-ready):
 
@@ -41,6 +45,34 @@ Examples (paste-ready):
 - [Pendulum phase portrait](https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))): `(x', y') = (y, -sin(x))`
 - [Slope field](https://equation.io/#y'%20%3D%20x%20-%20y): `y' = x - y`
 - [Polar cardioid](https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))): `r = sqrt(x^2+y^2); theta = atan2(y,x); r = 2(1 + cos(theta))`
+
+## Share links with preview images (/g/)
+
+The same payload also works as a path, and this form unfurls with a rendered
+preview image (og:image) in chat apps and social cards:
+
+    https://equation.io/g/<equation>;<equation>;...
+
+Prefer the `/g/` form when the link will be posted somewhere that shows link
+previews; prefer the `#` form otherwise (it keeps the equations out of server
+logs). Both open the same app with the same graph. The preview image itself is
+served at `https://equation.io/api/og/<same payload>`.
+
+## MCP server
+
+An MCP endpoint (Streamable HTTP) lives at:
+
+    https://equation.io/mcp
+
+Tools: `create_graph` (validates each equation through the app's own parser,
+returns url/share_url plus per-row classification or errors, and attaches a
+rendered PNG preview of the graph; rows the preview renderer cannot draw are
+listed in `preview_omits` with the reason — the live app renders more than
+the static preview, so an omission never means the row failed) and
+`read_graph` (decodes an existing link back into its equation rows so you can
+edit a user's graph and build a new link). This document is also served as
+the server's `syntax` MCP resource, so the full reference can be pulled on
+demand instead of living in a tool description. No authentication required.
 
 ## Expression syntax
 
@@ -117,13 +149,36 @@ Examples (paste-ready):
   later rows may use it: adding `r = 2(1 + cos(theta))` plots a cardioid in
   polar coordinates.
 
+## Viewport rows (framing)
+
+- `view(x = -5..5, y = -2..2)` sets the 2D window; either axis alone works
+  (`view(x = 0..0.01)`), the other is centered at 0 and sized by the canvas
+  aspect. The whole box is always visible (uniform scale).
+- `camera(theta, phi, radius, (tx, ty, tz))` aims the 3D orbit camera —
+  angles in radians (`camera(-pi/3, 0.6)`), radius and target optional.
+- Binding is two-way in the app: panning, zooming, or orbiting rewrites the
+  row the way dragging a slider rewrites its constant, so the URL always
+  names the exact picture on screen. Without a viewport row, interaction
+  stays ephemeral and the default framing applies.
+- Bounds and angles may use `pi` and defined constants, evaluated at load.
+- The /g/ preview card and the MCP create_graph preview image honor these
+  rows, so they show the framing you chose.
+
 ## Guidance for assistants
 
-- To show a user a graph, emit a single https://equation.io/#... link built as
-  above; the graph renders immediately on load, no interaction needed.
+- To show a user a graph, emit a single https://equation.io/g/... link built
+  as above; the graph renders immediately on load, no interaction needed.
+- To edit a graph the user already has, decode their link (or call the MCP
+  `read_graph` tool), transform the rows, and emit a new link. Prefer
+  restructuring into named definitions: e.g. given `y = x^2 - 2x`, "add a
+  tangent line at x = 3" becomes
+  `f(x) = x^2 - 2x; g(x) = d/dx f(x); a = 3; y = f(x); y = f(a) + g(a)(x - a)`
+  — with `a` as a draggable slider so the point of tangency stays explorable.
 - Prefer a slider constant (`a = 1; ...`) when the user may want to explore a
   parameter, and `t` when they ask for animation.
-- The app is client-side only; there is no API. The link is the interface.
+- The graph state lives entirely in the link, and the link is the interface.
+  The only server endpoints are /mcp (an MCP server that validates equations
+  and emits links) and /api/og (link-preview images).
 - If you are unsure whether a form is supported, emit the link anyway.
   Unsupported input fails loudly and visibly (an inline error on the offending
   row), never silently — so a graph either renders correctly or tells the user

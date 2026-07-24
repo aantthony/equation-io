@@ -1,0 +1,98 @@
+/**
+ * The og renderer is a second backend for lib/plot.ts, so it drifts: a type
+ * added for the GPU app draws nothing here, and a preview of an empty grid
+ * reads as a broken graph.
+ *
+ * Coverage itself is enforced by the compiler — OG_COVERAGE is a total Record
+ * over Plot['type'], so a new plot family fails `pnpm typecheck` until it is
+ * classified. These tests cover what types cannot: that the classification is
+ * honest, and that callers act on it.
+ */
+import { describe, expect, it } from 'vitest';
+import { OG_COVERAGE, canRenderOg, previewGap } from './og.ts';
+import { analyze } from './graph.ts';
+
+describe('og renderer coverage', () => {
+  it('draws the everyday 2D and 3D families', () => {
+    for (const t of ['implicit2d', 'ineq2d', 'scalar2d', 'point', 'pcurve', 'psurface', 'implicit3d'] as const) {
+      expect(OG_COVERAGE[t], t).toBe('draws');
+    }
+  });
+
+  it('falls back for every shader-only family', () => {
+    for (const t of ['complex2d', 'domain2d', 'conformal2d', 'fractal2d', 'vfield2d'] as const) {
+      expect(OG_COVERAGE[t], t).toBe('fallback');
+    }
+  });
+});
+
+describe('canRenderOg', () => {
+  it('accepts graphs built only from drawable rows', () => {
+    expect(canRenderOg(['y = sin(x)'])).toBe(true);
+    expect(canRenderOg(['x^2 + y^2 = 9', 'y < cos(x)'])).toBe(true);
+    expect(canRenderOg(['z = sin(x) cos(y)'])).toBe(true);
+    expect(canRenderOg(['(cos(2pi u), sin(2pi u), u)'])).toBe(true);
+    expect(canRenderOg(['a = 2', 'y = sin(a x)'])).toBe(true); // definition + plot
+  });
+
+  it('rejects graphs whose preview would be misleading', () => {
+    expect(canRenderOg(['domain((w^3 - 1)/w)'])).toBe(false);
+    expect(canRenderOg(['iter(z^2 + w)'])).toBe(false);
+    expect(canRenderOg(['conformal(w^2/4)'])).toBe(false);
+    expect(canRenderOg(['(-y, x)'])).toBe(false);
+    expect(canRenderOg(['ln(w-2) - ln(w+2)'])).toBe(false);
+    // One unsupported row poisons the graph: a partial picture is still wrong.
+    expect(canRenderOg(['y = sin(x)', 'iter(z^2 + w)'])).toBe(false);
+  });
+
+  it('rejects the within-type gaps OG_COVERAGE cannot express', () => {
+    // implicit3d is a 'draws' type, but only the z = f(x, y) form draws:
+    // a sphere would preview as an EMPTY grid, the worst possible card.
+    expect(canRenderOg(['x^2 + y^2 + z^2 = 9'])).toBe(false);
+    // 2D rows are skipped in a 3D scene, so a mixed graph drops rows.
+    expect(canRenderOg(['z = x^2 + y^2', 'y = sin(x)'])).toBe(false);
+    expect(canRenderOg(['z = x^2 + y^2', '(2cos(2pi u), 2sin(2pi u))'])).toBe(false);
+    // The same rows are fine when the graph they are in stays 2D.
+    expect(canRenderOg(['y = sin(x)', '(2cos(2pi u), 2sin(2pi u))'])).toBe(true);
+  });
+
+  it('rejects graphs with nothing to draw', () => {
+    expect(canRenderOg([])).toBe(false);
+    expect(canRenderOg(['a = 2'])).toBe(false); // definitions only
+    expect(canRenderOg(['y = ('])).toBe(false); // parse error
+    expect(canRenderOg(['view(x = 0..1)'])).toBe(false); // viewport only
+  });
+
+  it('treats viewport rows as framing, not plots', () => {
+    expect(canRenderOg(['view(x = 0..1)', 'y = sin(x)'])).toBe(true);
+    expect(canRenderOg(['camera(0, 1)', 'z = x^2 + y^2'])).toBe(true);
+  });
+});
+
+describe('previewGap', () => {
+  // These strings go to assistants deciding whether the GRAPH works, so each
+  // must blame the preview and say what the live app does with the row.
+  const gap = (texts: string[], i = 0) => {
+    const rows = analyze(texts).rows.filter(r => r.cls);
+    return previewGap(rows[i], rows.some(r => r.cls!.needs3D));
+  };
+
+  it('is null for every row the renderer draws', () => {
+    expect(gap(['y = sin(x)'])).toBeNull();
+    expect(gap(['z = x^2 + y^2'])).toBeNull();
+    expect(gap(['(cos(2pi u), sin(2pi u), u)'])).toBeNull();
+  });
+
+  it('explains the sphere without impugning it', () => {
+    const why = gap(['x^2 + y^2 + z^2 = 9'])!;
+    expect(why).toContain('z = f(x, y)');
+    expect(why).toContain('live app renders');
+  });
+
+  it('says what the app does with 2D rows in a 3D scene', () => {
+    expect(gap(['z = x^2 + y^2', 'y = sin(x)'], 1)).toContain('vertical sheets');
+    expect(gap(['z = x^2 + y^2', '(2, 3)'], 1)).toContain('z = 0 plane');
+    // ...except the families the app itself skips in 3D — no false promises.
+    expect(gap(['z = x^2 + y^2', 'sin(x)cos(y)'], 1)).toContain('skips them there too');
+  });
+});

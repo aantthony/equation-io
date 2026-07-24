@@ -22,9 +22,18 @@ import {
   toProbability,
 } from '../lib/dist.ts';
 import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { splitStatements } from '../lib/statements.ts';
+import {
+  type ViewSpec,
+  clampPhi,
+  fitView2D,
+  formatCameraRow,
+  formatViewRow,
+  parseViewRow,
+} from '../lib/view.ts';
 import { fullscreenQuad } from './gl.ts';
 import {
   type GridSpec,
@@ -50,6 +59,8 @@ interface Equation {
   info?: string;
   /** Set when the row is a definition (`a = 2`, `f(x) = …`) rather than a plot. */
   def?: Definition;
+  /** Set when the row is a viewport row (`view(…)` / `camera(…)`). */
+  viewSpec?: ViewSpec;
   sliderMin?: number;
   sliderMax?: number;
   /** Draw the whole family of level sets (for `f(x,y) = c` plots). */
@@ -182,8 +193,91 @@ function requestRender() {
 
 const startTime = performance.now();
 
+// --- viewport rows: the two-way binding ---
+//
+// A `view(…)` / `camera(…)` row is the framing as document state. Row → view:
+// applied before a frame whenever the row's text changed (load, edit, undo,
+// popstate). View → row: interaction rewrites the row the way dragging a
+// slider rewrites its constant — so the URL always names the exact picture on
+// screen. Without a viewport row, interaction stays ephemeral as it always
+// was. The applied-text markers make the loop convergent: a writeback marks
+// its own text as applied, so the re-apply never snaps the live view to the
+// row's rounded numbers mid-gesture.
+
+let appliedViewText: string | null = null;
+let appliedCameraText: string | null = null;
+
+/** The viewport row of the given kind, if any (duplicates carry errors). */
+function viewportRow(kind: ViewSpec['kind']): Equation | undefined {
+  return equations.find(eq => !eq.error && eq.viewSpec?.kind === kind);
+}
+
+function applyViewportRows() {
+  const vRow = viewportRow('view');
+  if (!vRow) appliedViewText = null;
+  else if (vRow.text !== appliedViewText && vRow.viewSpec!.kind === 'view') {
+    appliedViewText = vRow.text;
+    Object.assign(view, fitView2D(vRow.viewSpec!, canvas.width, canvas.height));
+  }
+  const cRow = viewportRow('camera');
+  if (!cRow) appliedCameraText = null;
+  else if (cRow.text !== appliedCameraText && cRow.viewSpec!.kind === 'camera') {
+    appliedCameraText = cRow.text;
+    const c = cRow.viewSpec!;
+    camera.theta = c.theta;
+    camera.phi = clampPhi(c.phi);
+    camera.radius = c.radius ?? 14;
+    camera.target = c.target ? [...c.target] : [0, 0, 0];
+  }
+}
+
+// Pointer moves are hotter than slider inputs, so the row rewrite trails the
+// gesture by a beat instead of running per move; release flushes it so the
+// row, URL, and undo entry are settled the moment the gesture ends.
+let viewportWriteTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleViewportWriteback() {
+  viewportWriteTimer ??= setTimeout(() => {
+    viewportWriteTimer = null;
+    writebackViewport();
+  }, 200);
+}
+
+function flushViewportWriteback() {
+  if (viewportWriteTimer !== null) {
+    clearTimeout(viewportWriteTimer);
+    viewportWriteTimer = null;
+  }
+  writebackViewport();
+}
+
+function writebackViewport() {
+  const eq = viewportRow(mode === '2d' ? 'view' : 'camera');
+  if (!eq) return;
+  let text: string;
+  if (mode === '2d') {
+    if (!canvas.width || !canvas.height) return;
+    const hw = (canvas.width / 2) * view.upp;
+    const hh = (canvas.height / 2) * view.upp;
+    text = formatViewRow(view.cx - hw, view.cx + hw, view.cy - hh, view.cy + hh);
+  } else {
+    text = formatCameraRow(camera);
+  }
+  if (text === eq.text) return;
+  pushUndo(`viewport:${eq.id}`);
+  if (mode === '2d') appliedViewText = text;
+  else appliedCameraText = text;
+  eq.text = text;
+  const line = lineEls()[equations.indexOf(eq)];
+  if (line) line.textContent = text;
+  recompileAll();
+  reconcile();
+  saveUrl();
+}
+
 function render() {
   if (!syncCanvasSize()) return;
+  applyViewportRows();
   const dpr = window.devicePixelRatio || 1;
   const time = (performance.now() - startTime) / 1000;
   const active = equations.filter(e => e.cls && !e.error);
@@ -465,6 +559,7 @@ function recompileAll() {
     eq.error = undefined;
     eq.info = undefined;
     eq.def = undefined;
+    eq.viewSpec = undefined;
     const text = eq.text.trim();
     if (!text) continue;
     const d = scanDefinition(text);
@@ -548,11 +643,19 @@ function recompileAll() {
     }
   }
 
+  const seenViewport = new Set<string>();
   for (const eq of equations) {
     if (eq.def || distRows.has(eq)) continue;
     const text = eq.text.trim();
     if (!text) continue;
     try {
+      const vspec = parseViewRow(text, constVals);
+      if (vspec) {
+        if (seenViewport.has(vspec.kind)) throw new Error(`${vspec.kind} is already set by another row.`);
+        seenViewport.add(vspec.kind);
+        eq.viewSpec = vspec;
+        continue;
+      }
       const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(text);
       if (probBody !== null) {
         if (!dists.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
@@ -577,45 +680,49 @@ function recompileAll() {
   }
 }
 
-function writeHash() {
-  const texts = equations.map(e => e.text).filter(t => t.trim());
-  history.replaceState(null, '', texts.length ? '#' + texts.map(encodeURIComponent).join(';') : '#');
+// The address bar shows the /g/ share form: it survives chat-app URL
+// linkifiers (lib/link.ts escapes parens etc.) and unfurls with a rendered
+// preview, so copying the URL is the share mechanism. /#payload links still
+// load (boot below) — they just normalize to /g/ on the next edit.
+function writeUrl() {
+  const payload = encodePayload(equations.map(e => e.text));
+  history.replaceState(null, '', payload ? '/g/' + payload : '/');
 }
 
 // Browsers rate-limit replaceState (Safari: 100 per 10s) and throw once it is
-// exceeded, so a fast slider drag must not write the hash on every frame.
+// exceeded, so a fast slider drag must not rewrite the URL on every frame.
 // Leading edge writes immediately; further calls coalesce into one trailing
 // write per second.
-const HASH_INTERVAL = 1000;
-let hashTimer: ReturnType<typeof setTimeout> | null = null;
-let hashPending = false;
-let hashLastWrite = 0;
+const URL_INTERVAL = 1000;
+let urlTimer: ReturnType<typeof setTimeout> | null = null;
+let urlPending = false;
+let urlLastWrite = 0;
 
-function saveHash() {
-  hashPending = true;
-  const wait = HASH_INTERVAL - (performance.now() - hashLastWrite);
+function saveUrl() {
+  urlPending = true;
+  const wait = URL_INTERVAL - (performance.now() - urlLastWrite);
   if (wait <= 0) {
-    flushHash();
+    flushUrl();
     return;
   }
-  if (hashTimer === null) hashTimer = setTimeout(flushHash, wait);
+  if (urlTimer === null) urlTimer = setTimeout(flushUrl, wait);
 }
 
-function flushHash() {
-  if (hashTimer !== null) {
-    clearTimeout(hashTimer);
-    hashTimer = null;
+function flushUrl() {
+  if (urlTimer !== null) {
+    clearTimeout(urlTimer);
+    urlTimer = null;
   }
-  if (!hashPending) return;
-  hashPending = false;
-  hashLastWrite = performance.now();
-  writeHash();
+  if (!urlPending) return;
+  urlPending = false;
+  urlLastWrite = performance.now();
+  writeUrl();
 }
 
 // Don't lose the last edit if the page goes away mid-interval.
-addEventListener('pagehide', flushHash);
+addEventListener('pagehide', flushUrl);
 addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushHash();
+  if (document.visibilityState === 'hidden') flushUrl();
 });
 
 function addEquation(text: string, at = equations.length): Equation {
@@ -738,7 +845,7 @@ function restoreSnapshot(s: Snapshot) {
   if (s.caret && s.caret.line < equations.length) {
     setCaret(s.caret.line, Math.min(s.caret.offset, equations[s.caret.line].text.length));
   }
-  saveHash();
+  saveUrl();
   requestRender();
 }
 
@@ -785,7 +892,7 @@ function makeSlider(eq: Equation): SliderUI {
     if (line) line.textContent = eq.text;
     recompileAll();
     reconcile();
-    saveHash();
+    saveUrl();
     requestRender();
   });
   // A drag is one undo entry: coalesced while it lasts, sealed on release.
@@ -1068,7 +1175,7 @@ function insertStatements(text: string) {
   recompileAll();
   renderAll();
   setCaret(start.line + inserted.length - 1, caretOffset);
-  saveHash();
+  saveUrl();
   requestRender();
 }
 
@@ -1151,7 +1258,7 @@ listEl.addEventListener('input', e => {
     recompileAll();
     reconcile();
   }
-  saveHash();
+  saveUrl();
   requestRender();
 });
 
@@ -1209,7 +1316,7 @@ listEl.addEventListener('beforeinput', e => {
   recompileAll();
   renderAll();
   setCaret(from - 1, offset);
-  saveHash();
+  saveUrl();
   requestRender();
 });
 
@@ -1365,7 +1472,7 @@ function insertExample(text: string) {
     eq.text = part.trim();
   }
   recompileAll();
-  saveHash();
+  saveUrl();
   renderAll();
   requestRender();
 }
@@ -1419,6 +1526,7 @@ function zoomAt(clientX: number, clientY: number, factor: number) {
     camera.radius = Math.min(1e6, Math.max(1e-4, camera.radius * factor));
   }
   requestRender();
+  scheduleViewportWriteback();
 }
 
 canvas.addEventListener('pointerdown', e => {
@@ -1468,6 +1576,7 @@ canvas.addEventListener('pointermove', e => {
     lastX = mx;
     lastY = my;
     requestRender();
+    scheduleViewportWriteback();
     return;
   }
   if (!dragging) return;
@@ -1491,9 +1600,10 @@ canvas.addEventListener('pointermove', e => {
     camera.target[2] += cp * dy * s;
   } else {
     camera.theta -= dx * 0.008;
-    camera.phi = Math.min(Math.PI / 2 - 0.01, Math.max(-Math.PI / 2 + 0.01, camera.phi + dy * 0.008));
+    camera.phi = clampPhi(camera.phi + dy * 0.008);
   }
   requestRender();
+  scheduleViewportWriteback();
 });
 const endPointer = (e: PointerEvent) => {
   pointers.delete(e.pointerId);
@@ -1506,6 +1616,9 @@ const endPointer = (e: PointerEvent) => {
     lastY = p.y;
   } else if (pointers.size === 0) {
     dragging = false;
+    // Settle the row/URL now and seal the gesture as one undo entry.
+    flushViewportWriteback();
+    coalesce = null;
   }
 };
 canvas.addEventListener('pointerup', e => {
@@ -1574,12 +1687,51 @@ themeToggle?.addEventListener('click', toggleTheme);
 
 // --- boot ---
 
-const fromHash = splitStatements(decodeURIComponent(location.hash.slice(1)))
-  .map(s => decodeURIComponent(s))
-  .filter(s => s.trim());
-if (fromHash.length) fromHash.forEach(t => addEquation(t));
+/** The graph payload the current URL names: the /g/ path, or a legacy
+ *  #fragment (which wins, so an appended #… can steer a /g/ page). */
+function urlPayload(): string {
+  const hash = location.hash.slice(1);
+  if (hash) return hash;
+  return location.pathname.startsWith('/g/') ? location.pathname.slice('/g/'.length) : '';
+}
+
+const initialPayload = urlPayload();
+// decodePayload splits bracket-aware and decodes each row exactly once, so it
+// reads both the /g/ form and legacy /#… links.
+const initialRows = decodePayload(initialPayload);
+if (initialRows.length) initialRows.forEach(t => addEquation(t));
 else addEquation('y = sin(x)');
 recompileAll();
+// Canonicalize what we loaded (re-encoded /g/ form; stray paths back to /).
+// A fresh visit stays at / — the default row only enters the URL once edited.
+if (initialPayload) saveUrl();
+else if (location.pathname !== '/') history.replaceState(null, '', '/');
+
+/**
+ * The URL is an input, not only an output.
+ *
+ * Back/forward and an externally set URL both have to reach the graph, and
+ * they have to reach it *without* a reload: re-navigating discards the WebGL
+ * context and the camera and costs a server round-trip. Editing the address is
+ * how browser automation drives this app, and until now setting location.hash
+ * did nothing at all — only a full reload took effect.
+ *
+ * saveUrl() writes with replaceState, which fires neither event, so the app
+ * cannot loop against its own writes; the equality check covers the rest.
+ */
+function loadFromUrl() {
+  const rows = decodePayload(urlPayload());
+  const wanted = rows.length ? rows : ['y = sin(x)'];
+  const current = equations.map(e => e.text);
+  if (wanted.length === current.length && wanted.every((t, i) => t === current[i])) return;
+  equations.length = 0;
+  wanted.forEach(t => addEquation(t));
+  recompileAll();
+  renderAll();
+  requestRender();
+}
+addEventListener('popstate', loadFromUrl);
+addEventListener('hashchange', loadFromUrl);
 
 // Size the canvas (which also picks the opening zoom) before the first frame.
 resize();
@@ -1587,4 +1739,4 @@ renderAll();
 buildExamplesMenu();
 
 // Dev-only handle for driving/inspecting the view in automated tests.
-if (import.meta.env.DEV) (window as any).__eq = { view, camera, requestRender };
+if (import.meta.env.DEV) (window as any).__eq = { view, camera, equations, requestRender, flushViewportWriteback };
