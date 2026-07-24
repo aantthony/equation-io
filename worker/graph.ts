@@ -14,6 +14,7 @@ import {
   scanDefinition,
 } from '../lib/defs.ts';
 import { type Expr, parseExpr, substVars } from '../lib/expr.ts';
+import { lowerGeom } from '../lib/geom.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { type ViewSpec, parseViewRow } from '../lib/view.ts';
 
@@ -95,6 +96,9 @@ export function analyze(texts: string[]): Analysis {
         continue;
       }
       let parsed = resolveExpr(parseExpr(row.text, fnNames), getFn);
+      // Expand point arithmetic and geometry statements (segment, polygon, …)
+      // into scalar expressions; a point name A becomes (A_x, A_y).
+      parsed = lowerGeom(parsed, n => defs.points.has(n));
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       row.cls = classify(parsed, constNames);
       row.expr = parsed;

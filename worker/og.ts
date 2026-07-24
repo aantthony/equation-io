@@ -143,6 +143,37 @@ function fillNegative(r: Raster, grid: Float64Array, c: [number, number, number]
   }
 }
 
+/**
+ * Scanline fill of a closed polygon given in screen coordinates, using the
+ * nonzero winding rule — the canvas default the live app fills with, so
+ * self-intersecting figures (a pentagram) fill the same way in both.
+ */
+function fillPolygon(r: Raster, sx: number[], sy: number[], c: [number, number, number], a: number) {
+  const n = sx.length;
+  const y0 = Math.max(0, Math.floor(Math.min(...sy)));
+  const y1 = Math.min(r.h - 1, Math.ceil(Math.max(...sy)));
+  for (let y = y0; y <= y1; y++) {
+    const yc = y + 0.5;
+    const hits: [number, number][] = [];
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const ya = sy[i], yb = sy[j];
+      if (ya <= yc === yb <= yc) continue;
+      hits.push([sx[i] + ((yc - ya) / (yb - ya)) * (sx[j] - sx[i]), yb > ya ? 1 : -1]);
+    }
+    hits.sort((p, q) => p[0] - q[0]);
+    let wind = 0, spanStart = 0;
+    for (const [x, dir] of hits) {
+      if (wind === 0) spanStart = x;
+      wind += dir;
+      if (wind !== 0) continue;
+      const xa = Math.max(0, Math.ceil(spanStart - 0.5));
+      const xb = Math.min(r.w - 1, Math.floor(x - 0.5));
+      for (let px = xa; px <= xb; px++) blend(r, px, y, c, a);
+    }
+  }
+}
+
 function shadeScalar(r: Raster, grid: Float64Array, c: [number, number, number]) {
   const { w, h } = r;
   for (let j = 0; j < h; j++) {
@@ -318,6 +349,22 @@ function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [n
       }
       return;
     }
+    case 'polygon': {
+      // Flat scalar vertex list [x0, y0, x1, y1, …], constant by
+      // classification; like the app, a single non-finite vertex drops the row.
+      const vals = cls.plot.pts.map(p => run(compile(p), env.vars, env.stack));
+      if (vals.length < 4 || !vals.every(Number.isFinite)) return;
+      const sx: number[] = [], sy: number[] = [];
+      for (let i = 0; i + 1 < vals.length; i += 2) {
+        sx.push(toScreenX(r, v, vals[i]));
+        sy.push(toScreenY(r, v, vals[i + 1]));
+      }
+      const { closed } = cls.plot;
+      if (closed) fillPolygon(r, sx, sy, color, 0.16);
+      for (let i = 0; i + 1 < sx.length; i++) drawLine(r, sx[i], sy[i], sx[i + 1], sy[i + 1], color);
+      if (closed) drawLine(r, sx[sx.length - 1], sy[sy.length - 1], sx[0], sy[0], color);
+      return;
+    }
   }
 }
 
@@ -408,10 +455,7 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   pcurve: 'draws',
   psurface: 'draws',
   implicit3d: 'draws',
-  // Straight-edged figures from segment()/polygon()/square() would be cheap to
-  // rasterize, but renderRow2D/renderRow3D have no case for them yet — marking
-  // 'draws' before one exists would ship the empty-grid preview.
-  polygon: 'fallback',
+  polygon: 'draws',
   // Each of these needs a per-pixel shader — domain coloring, conformal grids,
   // escape-time iteration, line-integral convolution — that a scanline
   // rasterizer cannot reproduce faithfully at preview size. They get the
@@ -460,7 +504,7 @@ export function previewGap(row: RowInfo, needs3D: boolean): string | null {
     case 'implicit2d':
       return 'the static preview skips 2D curves in a 3D scene; the live app extrudes them as vertical sheets';
     default:
-      // scalar2d, ineq2d and the shader families have no 3D locus — the live
+      // scalar2d, ineq2d, polygon and the shader families have no 3D locus — the live
       // app skips them in a 3D scene too (web/main.ts), so say that, not
       // "renders in the app", which would be false here.
       return `${type} rows are not drawn in a 3D scene (the live app skips them there too)`;
