@@ -22,6 +22,7 @@ import {
   toProbability,
 } from '../lib/dist.ts';
 import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
@@ -108,6 +109,10 @@ interface CurveUI {
 
 function cssColor([r, g, b]: [number, number, number]): string {
   return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
+function cssColorA([r, g, b]: [number, number, number], a: number): string {
+  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`;
 }
 
 const CURVE_SAMPLES = 400;
@@ -426,7 +431,8 @@ function render() {
         case 'fractal2d':
         case 'ineq2d':
         case 'vfield2d':
-          break; // density/complex/region/flow fields have no 3D locus; skipped in 3D scenes
+        case 'polygon':
+          break; // density/complex/region/flow/planar-figure plots have no 3D locus; skipped in 3D scenes
         case 'psurface':
           scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
@@ -532,6 +538,23 @@ function render() {
           break;
         }
         case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
+        case 'polygon': {
+          const env = { ...constEnv, t: time };
+          const pts: number[] = [];
+          try {
+            for (const c of plot.pts) pts.push(evaluate(c, env));
+          } catch {
+            break;
+          }
+          if (!pts.every(isFinite)) break;
+          extras.polylines.push({
+            pts,
+            color: cssColor(color),
+            closed: plot.closed,
+            fill: plot.closed ? cssColorA(color, 0.16) : undefined,
+          });
+          break;
+        }
         case 'point': {
           const p = samplePoint(eq);
           if (!p) break;
@@ -542,6 +565,25 @@ function render() {
           break;
         }
       }
+    }
+    // Named points (`A = (0, 0)` rows) draw labeled with their name; rows
+    // whose components are plain numbers or slider names can be dragged.
+    for (const eq of equations) {
+      if (eq.def?.kind !== 'const' || eq.error || !defs.points.has(eq.def.name)) continue;
+      const [cx, cy] = pointComps(eq.def.name);
+      const px = constEnv[cx];
+      const py = constEnv[cy];
+      if (!isFinite(px) || !isFinite(py)) continue;
+      const key = `def${eq.id}`;
+      extras.points.push({
+        x: px,
+        y: py,
+        color: cssColor(theme.palette[eq.colorIndex]),
+        hot: hotPoint === key,
+        label: eq.def.name,
+      });
+      const set = defPointWriter(eq);
+      if (set) grabs.push({ key, x: px, y: py, edits: true, set });
     }
     // A seed is one grabbable point however many fields trace a curve from it.
     if (layers.vfields.length) {
@@ -705,6 +747,9 @@ function recompileAll() {
         continue;
       }
       let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
+      // Expand point arithmetic and geometry statements (segment, polygon, …)
+      // into scalar expressions; a point name A becomes (A_x, A_y).
+      parsed = lowerGeom(parsed, n => defs.points.has(n));
       // Coordinate fields substitute in as functions of the plane, so
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
@@ -1479,6 +1524,16 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['lissajous', '(2cos(2pi u), sin(4pi u))'],
     ['spiral', '(u cos(6pi u) 3, u sin(6pi u) 3)'],
   ]],
+  ['geometry (drag the points)', [
+    ['segment + midpoint', 'A = (-2, -1); B = (2, 1.5); segment(A, B); midpoint(A, B)'],
+    ['circle through a point', 'C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)'],
+    ['square on a segment', 'A = (-1, 0); B = (2, 1); square(A, B)'],
+    ['thébault’s theorem', 'A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D; '
+      + 'polygon(A, B, C, D); square(B, A); square(C, B); square(D, C); square(A, D); '
+      + 'P = midpoint(A, B) - perp(B - A)/2; Q = midpoint(B, C) - perp(C - B)/2; '
+      + 'R = midpoint(C, D) - perp(D - C)/2; S = midpoint(D, A) - perp(A - D)/2; '
+      + 'polygon(P, Q, R, S)'],
+  ]],
   ['3d surfaces', [
     ['waves', 'z = sin(x)cos(y)'],
     ['sphere', 'x^2 + y^2 + z^2 = 9'],
@@ -1575,12 +1630,13 @@ function snapToPixel(v: number): number {
 }
 
 /**
- * How a dragged position writes back to a point row, or null if nothing about
- * it can move. Axes are independent: in `(a, 3)` the literal is rewritten in
- * place while `a` moves through its own row.
+ * How a dragged position writes back to a pair like `(2, a)`, or null if
+ * nothing about it can move. Axes are independent: a literal is rewritten in
+ * place while a slider name moves through its own row. `commit` receives the
+ * rewritten pair text.
  */
-function pointWriter(eq: Equation): ((x: number, y: number) => void) | null {
-  const parts = splitPair(eq.text.trim());
+function makePairWriter(pairText: string, commit: (pair: string) => void): ((x: number, y: number) => void) | null {
+  const parts = splitPair(pairText.trim());
   if (!parts) return null;
   const axes = parts.map(p => {
     if (NUM_LITERAL_RE.test(p)) return 'literal' as const;
@@ -1601,9 +1657,15 @@ function pointWriter(eq: Equation): ((x: number, y: number) => void) | null {
       if (axis === 'literal') text[k] = value;
       else axis.text = `${axis.def!.name} = ${value}`;
     });
-    eq.text = `(${text[0]}, ${text[1]})`;
+    commit(`(${text[0]}, ${text[1]})`);
   };
 }
+
+const pointWriter = (eq: Equation) => makePairWriter(eq.text, p => { eq.text = p; });
+
+/** Writer for a named-point row `A = (…)`: rewrites the pair after the '='. */
+const defPointWriter = (eq: Equation) =>
+  makePairWriter(eq.def!.rhs, p => { eq.text = `${eq.def!.name} = ${p}`; });
 
 /** Push text a drag rewrote back into the editor lines. */
 function syncLineTexts() {

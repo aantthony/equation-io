@@ -45,6 +45,9 @@ export type Plot =
    *  seed 'pixel' otherwise (fixed map → Julia). */
   | { type: 'fractal2d'; step: string; seed: 'pixel' | 'zero'; maxIter: number }
   | { type: 'point'; dim: 2 | 3; coords: Expr[] }
+  /** CPU-evaluated straight-edged figure from segment()/polygon()/square():
+   *  flat vertex expressions [x1, y1, x2, y2, …]. closed also fills. */
+  | { type: 'polygon'; pts: Expr[]; closed: boolean }
   /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
    *  comps keep the symbolic components for CPU integration (integral curves). */
   | { type: 'vfield2d'; fx: string; fy: string; comps: [Expr, Expr] }
@@ -229,6 +232,15 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
       || ((plot.type === 'point' || plot.type === 'pcurve') && plot.dim === 3),
     params,
   });
+
+  // Desugared segment()/polygon()/square(): CPU-evaluated each frame with the
+  // constants' original names, like points and parametric curves.
+  if (expr.kind === 'call' && (expr.name === '[polygon]' || expr.name === '[segment]')) {
+    if (hasSpace || hasParam) {
+      throw new Error('Polygon vertices must be constant — they cannot use x, y, u, or v.');
+    }
+    return done({ type: 'polygon', pts: expr.args, closed: expr.name === '[polygon]' });
+  }
 
   // GLSL compilation sees constants as u_<name> uniforms; CPU evaluation
   // (points, parametric curves) keeps the original names.
