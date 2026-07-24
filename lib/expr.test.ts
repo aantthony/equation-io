@@ -76,6 +76,15 @@ describe('parseExpr', () => {
     expect(evl('0.5x', { x: 4 })).toBe(2);
   });
 
+  it('has no scientific notation: 1e-3 is 1·e − 3, not 0.001', () => {
+    // The grammar treats `e` as Euler's constant with implicit multiplication,
+    // so anything gating on "plain number" (e.g. slider detection in the web
+    // UI) must not accept exponent forms.
+    expect(evl('1e-3')).toBeCloseTo(Math.E - 3);
+    expect(evl('2e5', { e5: 7 })).toBe(14); // e5 is one symbol
+    expect(evl('1E-3', { E: 2 })).toBe(-1);
+  });
+
   it('parses equations as l - r', () => {
     const e = parseExpr('y = x^2');
     expect(e.kind).toBe('eq');

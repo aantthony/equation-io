@@ -811,8 +811,12 @@ function addEquation(text: string, at = equations.length): Equation {
   return eq;
 }
 
-/** A slider appears when a constant's right-hand side is a plain number. */
-const NUM_RE = /^\s*-?(\d+\.?\d*|\.\d+)([eE]-?\d+)?\s*$/;
+/**
+ * A slider appears when a constant's right-hand side is a plain number.
+ * No exponent form: the grammar has no scientific notation, so `1e-3` is
+ * 1·e − 3 and must stay an expression rather than become a 0.001 slider.
+ */
+const NUM_RE = /^\s*-?(\d+\.?\d*|\.\d+)\s*$/;
 
 const fmtNum = (v: number) => String(parseFloat(v.toPrecision(6)));
 
