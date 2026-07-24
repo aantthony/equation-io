@@ -139,7 +139,8 @@ demand instead of living in a tool description. No authentication required.
   `(A + B)/2`, `midpoint(A, B)`, `perp(A)` (rotate 90° counterclockwise),
   `unit(A)`, `dot(A, B)`, `cross(A, B)`, `|A - B|` (distance). A parametric
   point like `A + u(B - A)` traces the segment. Tuple literals work directly
-  as arguments: `segment((0, 0), A)`.
+  as arguments (`segment((0, 0), A)`) and as operands: `A + (1, 2)`,
+  `((0, 0) + B)/2`, `|(3, 4)|`.
 - Vector field: a 2-tuple in x, y — `(-y, x)` — drawn as animated streamlines
   (line-integral convolution); clicking the canvas traces integral curves.
 - ODE / slope field: `dy/dx = x y` or `y' = sin(x) - y` plots the direction

@@ -125,9 +125,11 @@ function lower(e: Expr, isPoint: IsPoint): LV {
           case 'unit': return vc(div(ax, lenOf(ax, ay)), div(ay, lenOf(ax, ay)));
         }
       }
-      if (e.name === 'abs' && args.length === 1 && args[0].vec) {
-        const a = args[0] as LV & { vec: true };
-        return sc(lenOf(a.x, a.y));
+      // |P| is a point's length; |(3, 4)| arrives as abs(3, 4) because the
+      // tuple flattens into the argument list, so a scalar pair re-pairs too.
+      if (e.name === 'abs' && (args.length === 1 || args.length === 2)) {
+        const pts = args.some(a => a.vec) || args.length === 2 ? pairPoints('abs', args, 'A') : null;
+        if (pts && pts.length === 1) return sc(lenOf(pts[0][0], pts[0][1]));
       }
       const flatArgs: Expr[] = [];
       for (const a of args) {

@@ -43,6 +43,18 @@ describe('point arithmetic lowering', () => {
     expect(at('unit(B - A)')).toEqual([0.6, 0.8]);
   });
 
+  it('accepts tuple literals as operands', () => {
+    const at = (s: string) => (low(s) as { items: [never, never] }).items.map(e => evaluate(e, env));
+    expect(at('A + (1, 2)')).toEqual([2, 4]);
+    expect(at('((0, 0) + B)/2')).toEqual([2, 3]); // midpoint as plain arithmetic
+    expect(at('-(1, 2)')).toEqual([-1, -2]);
+    expect(at('2(1, 2)')).toEqual([2, 4]);
+    expect(evalAt('|(3, 4)|')).toBe(5);
+    expect(evalAt('|B - (1, 2)|')).toBe(5);
+    // A parenthesized series after a function name is still an argument list.
+    expect(evaluate(low('max(1, 2)'), {})).toBe(2);
+  });
+
   it('pairs flattened tuple literals back into points', () => {
     expect(evalAt('dot(A, (2, 3))')).toBe(8);
     expect(evalAt('dot((1, 0), (0, 1))')).toBe(0);
@@ -132,7 +144,7 @@ describe('geometry statements', () => {
 
 describe('point definitions', () => {
   it('registers pairs as points with component constants', () => {
-    const { defs, errors } = defsOf(['A = (1, 2)', 'B = A']);
+    const { defs, errors } = defsOf(['A = (1, 2)', 'B = A + (0, 0)']);
     expect(errors.size).toBe(0);
     expect([...defs.points]).toEqual(['A', 'B']);
     const values = evalConstEnv(defs, 0);
