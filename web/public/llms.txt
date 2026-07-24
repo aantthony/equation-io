@@ -2,8 +2,9 @@
 
 > Free in-browser graphing calculator (WebGL). Plots 2D curves, inequality
 > regions, scalar fields, vector fields and ODEs, complex functions (including
-> domain coloring, conformal maps and escape-time fractals), 3D surfaces, and
-> parametric curves/surfaces. No account, no server round-trips: the graph state
+> domain coloring, conformal maps and escape-time fractals), 3D surfaces,
+> parametric curves/surfaces, and plane geometry (named draggable points,
+> segments, polygons, squares, circles). No account, no server round-trips: the graph state
 > lives in the URL fragment, so you can construct a link that opens the app
 > with any set of equations already rendered.
 
@@ -45,6 +46,8 @@ Examples (paste-ready):
 - [Pendulum phase portrait](https://equation.io/#(x'%2C%20y')%20%3D%20(y%2C%20-sin(x))): `(x', y') = (y, -sin(x))`
 - [Slope field](https://equation.io/#y'%20%3D%20x%20-%20y): `y' = x - y`
 - [Polar cardioid](https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))): `r = sqrt(x^2+y^2); theta = atan2(y,x); r = 2(1 + cos(theta))`
+- [Circle through a draggable point](https://equation.io/#C%20%3D%20(0%2C%200);P%20%3D%20(2%2C%201);circle(C%2C%20%7CP%20-%20C%7C);segment(C%2C%20P)): `C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)`
+- [Thébault's theorem (squares on a parallelogram)](https://equation.io/#A%20%3D%20(0%2C%200);B%20%3D%20(4%2C%200.5);D%20%3D%20(1%2C%202.5);C%20%3D%20B%20%2B%20D%20-%20A;polygon(A%2C%20B%2C%20C%2C%20D);square(B%2C%20A);square(C%2C%20B);square(D%2C%20C);square(A%2C%20D);P%20%3D%20midpoint(A%2C%20B)%20-%20perp(B%20-%20A)%2F2;Q%20%3D%20midpoint(B%2C%20C)%20-%20perp(C%20-%20B)%2F2;R%20%3D%20midpoint(C%2C%20D)%20-%20perp(D%20-%20C)%2F2;S%20%3D%20midpoint(D%2C%20A)%20-%20perp(A%20-%20D)%2F2;polygon(P%2C%20Q%2C%20R%2C%20S)): `A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D - A; polygon(A, B, C, D); square(B, A); square(C, B); square(D, C); square(A, D); P = midpoint(A, B) - perp(B - A)/2; …; polygon(P, Q, R, S)` — drag A, B or D; the square centers stay a square
 
 ## Share links with preview images (/g/)
 
@@ -82,7 +85,8 @@ demand instead of living in a tool description. No authentication required.
 - Constants: `pi`, `tau`, `e`. Imaginary unit `i` in complex expressions.
 - Functions: sin cos tan asin acos atan atan2(y,x) sinh cosh tanh sech asinh
   acosh atanh sqrt abs exp ln (natural) log (base 10) floor ceil round min max
-  mod sign fract, and complex helpers re im arg conj. Function names are
+  mod sign fract, complex helpers re im arg conj, and point helpers
+  dot cross perp midpoint unit. Function names are
   case-insensitive: `Sin(x)`, `SQRT(x)` and `sin(x)` are the same call. Always
   use parentheses for arguments — write `sin(x)`, not `sin x`.
 - Derivatives: `d/dx (x^3)` differentiates symbolically; higher order
@@ -128,6 +132,15 @@ demand instead of living in a tool description. No authentication required.
   `iter(z^2 + w, 600)` (default 250, max 5000). Any expression works:
   `iter((|re(z)| - i |im(z)|)^2 + w)` is the burning ship.
 - Point: `(2, 3)`; animate with t: `(2cos(t), 2sin(t))`.
+- Geometry: with points defined in rows above (`A = (0, 0)`), `segment(A, B)`,
+  `line(A, B)` (the infinite line through A and B), `polygon(A, B, C, …)`
+  (filled), `square(A, B)` (erected on side A→B, to the left of the direction
+  A→B), and `circle(center, radius)` draw figures that follow their points. Point arithmetic works anywhere: `A + B`, `2A`,
+  `(A + B)/2`, `midpoint(A, B)`, `perp(A)` (rotate 90° counterclockwise),
+  `unit(A)`, `dot(A, B)`, `cross(A, B)`, `|A - B|` (distance). A parametric
+  point like `A + u(B - A)` traces the segment. Tuple literals work directly
+  as arguments (`segment((0, 0), A)`) and as operands: `A + (1, 2)`,
+  `((0, 0) + B)/2`, `|(3, 4)|`.
 - Vector field: a 2-tuple in x, y — `(-y, x)` — drawn as animated streamlines
   (line-integral convolution); clicking the canvas traces integral curves.
 - ODE / slope field: `dy/dx = x y` or `y' = sin(x) - y` plots the direction
@@ -144,6 +157,11 @@ demand instead of living in a tool description. No authentication required.
   constants allowed: `b = a^2 + t`.
 - Function: `f(x) = x^3 - a x` — call it from other rows; calls inline
   symbolically, so `d/dx f(x)` works.
+- Point: `A = (0, 0)` — a named, labeled point drawn on the canvas; the user
+  can drag it and every row using it follows. Points may be computed from
+  other points defined above: `C = B + D`, `M = midpoint(A, B)`,
+  `P = midpoint(A, B) - perp(B - A)/2`. Scalars over points work too:
+  `n = cross(B, D)`, `L = |B - A|`.
 - Coordinate field: a definition that depends on the plane, e.g.
   `r = sqrt(x^2+y^2); theta = atan2(y,x)`. Its level sets draw as a grid, and
   later rows may use it: adding `r = 2(1 + cos(theta))` plots a cardioid in

@@ -20,7 +20,9 @@ export type Expr =
   | { kind: 'eq'; l: Expr; r: Expr }
   /** An inequality; chains like 0 < y < x nest left: ((0 < y) < x). */
   | { kind: 'ineq'; op: IneqOp; l: Expr; r: Expr }
-  /** A vector literal like (2, 3) or (cos(u), sin(u), v). Top-level only. */
+  /** A vector literal like (2, 3) or (cos(u), sin(u), v): the whole
+   *  statement, an equation side, or an operand ((A + (1, 2))/2 — lowerGeom
+   *  expands 2-item operands; 3-item vectors stay top-level values). */
   | { kind: 'vec'; items: Expr[] };
 
 /** Functions available in expressions (all map to GLSL builtins or helpers). */
@@ -31,6 +33,10 @@ export const FUNCTIONS = new Set([
   'min', 'max', 'mod', 'sign', 'fract',
   'erf', 'normalpdf', 'normalcdf',
   're', 'im', 'arg', 'conj',
+  // Point (2D vector) helpers and geometry statements, lowered symbolically
+  // by lowerGeom before anything evaluates or compiles them.
+  'dot', 'cross', 'perp', 'midpoint', 'unit',
+  'segment', 'line', 'polygon', 'square', 'circle',
   // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
   'sum', 'prod',
   // Whole-expression plot modes (see classify): domain coloring, conformal
@@ -83,11 +89,15 @@ const asVecOrExpr = (n: PNode): Expr =>
     ? { kind: 'vec', items: n.items }
     : asExpr(n);
 
+// Operators take tuples as operands — a parenthesized pair used in arithmetic
+// is a vector literal, so (A + (1, 2))/2 works. Only a function application
+// keeps a parenthesized series as an argument list (max(1, 2) stays 2 args):
+// the [apply] operator binds before any of these see the series.
 const asBin = (op: '+' | '-' | '*' | '/' | '^') =>
-  BinaryInfix<PNode>((a, b) => bin(op)(asExpr(a), asExpr(b)));
+  BinaryInfix<PNode>((a, b) => bin(op)(asVecOrExpr(a), asVecOrExpr(b)));
 
 const asIneq = (op: IneqOp) =>
-  BinaryInfix<PNode>((a, b): Expr => ({ kind: 'ineq', op, l: asExpr(a), r: asExpr(b) }));
+  BinaryInfix<PNode>((a, b): Expr => ({ kind: 'ineq', op, l: asVecOrExpr(a), r: asVecOrExpr(b) }));
 
 const ops = operators<PNode>({
   EOF: Postfix(a => a),
@@ -126,11 +136,11 @@ const ops = operators<PNode>({
   '/': asBin('/'),
   '÷': asBin('/'),
 
-  '[neg]': Prefix<PNode>((a): Expr => ({ kind: 'neg', a: asExpr(a) })),
+  '[neg]': Prefix<PNode>((a): Expr => ({ kind: 'neg', a: asVecOrExpr(a) })),
 
   '[impl]': asBin('*'),
 
-  '^': BinaryRightInfix<PNode>((a, b): PNode => bin('^')(asExpr(a), asExpr(b))),
+  '^': BinaryRightInfix<PNode>((a, b): PNode => bin('^')(asVecOrExpr(a), asVecOrExpr(b))),
 
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {

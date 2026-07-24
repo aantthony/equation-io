@@ -674,8 +674,13 @@ export class Renderer2D {
 }
 
 export interface Overlay2D {
-  points: Array<{ x: number; y: number; color: string }>;
-  polylines: Array<{ pts: number[]; color: string }>;
+  /** hot: pointer is over it (or dragging it) — drawn with a grab halo.
+   *  label: text drawn beside the point (a named point's name). */
+  points: Array<{ x: number; y: number; color: string; hot?: boolean; label?: string }>;
+  /** closed joins the last vertex back to the first; fill (a CSS color,
+   *  usually translucent) paints the enclosed region when every vertex is
+   *  finite. */
+  polylines: Array<{ pts: number[]; color: string; closed?: boolean; fill?: string }>;
 }
 
 /** Axis labels plus CPU-sampled geometry (points, parametric curves).
@@ -727,12 +732,18 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
       ctx.lineJoin = 'round';
       ctx.beginPath();
       let pen = false;
+      let broken = false;
       for (let i = 0; i + 1 < line.pts.length; i += 2) {
         const sx = toScreenX(line.pts[i]);
         const sy = toScreenY(line.pts[i + 1]);
-        if (!isFinite(sx) || !isFinite(sy)) { pen = false; continue; }
+        if (!isFinite(sx) || !isFinite(sy)) { pen = false; broken = true; continue; }
         if (pen) ctx.lineTo(sx, sy);
         else { ctx.moveTo(sx, sy); pen = true; }
+      }
+      if (line.closed && pen && !broken) ctx.closePath();
+      if (line.fill && !broken) {
+        ctx.fillStyle = line.fill;
+        ctx.fill();
       }
       ctx.stroke();
     }
@@ -740,6 +751,18 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
       const sx = toScreenX(pt.x);
       const sy = toScreenY(pt.y);
       if (!isFinite(sx) || !isFinite(sy)) continue;
+      if (pt.hot) {
+        // A ring, not a wash: a translucent disc in the point's own color
+        // disappears into a field drawn in that same color.
+        ctx.beginPath();
+        ctx.arc(sx, sy, 10, 0, Math.PI * 2);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = theme.pointOutline;
+        ctx.stroke();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = pt.color;
+        ctx.stroke();
+      }
       ctx.beginPath();
       ctx.arc(sx, sy, 5, 0, Math.PI * 2);
       ctx.fillStyle = pt.color;
@@ -747,6 +770,12 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
       ctx.lineWidth = 2;
       ctx.strokeStyle = theme.pointOutline;
       ctx.stroke();
+      if (pt.label) {
+        ctx.font = 'bold 12px ui-sans-serif, system-ui';
+        ctx.fillStyle = pt.color;
+        ctx.fillText(pt.label, sx + 8, sy - 8);
+        ctx.font = '11px ui-sans-serif, system-ui';
+      }
     }
   }
   ctx.restore();

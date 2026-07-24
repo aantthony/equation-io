@@ -14,6 +14,7 @@
  */
 import { add, diff, div, mul, neg, pow, sub } from './diff.ts';
 import { FUNCTIONS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
+import { lowerGeom, pointComps } from './geom.ts';
 
 export type Definition =
   | { kind: 'const'; name: string; rhs: string }
@@ -36,9 +37,21 @@ export interface Defs {
    * cardioid.
    */
   fields: Map<string, Expr>;
+  /**
+   * Named points: constants whose right-hand side is a pair, like
+   * `A = (0, 0)` or `C = B + D`. A point named A lives in `consts` as the
+   * derived scalar components A_x, A_y (see pointComps); the name itself
+   * never appears in resolved expressions.
+   */
+  points: Set<string>;
 }
 
-export const emptyDefs = (): Defs => ({ consts: new Map(), fns: new Map(), fields: new Map() });
+export const emptyDefs = (): Defs => ({
+  consts: new Map(),
+  fns: new Map(),
+  fields: new Map(),
+  points: new Set(),
+});
 
 /** Names with built-in meaning that definitions may not shadow. */
 export const RESERVED = new Set(['x', 'y', 'z', 'u', 'v', 't', 'w', 'i', 'd', 'e', 'pi', 'tau']);
@@ -368,6 +381,9 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
     return p;
   };
 
+  /** Derived point component → the point row it belongs to (A_x → A). */
+  const compOwner = new Map<string, string>();
+
   const resolving = new Set<string>();
   const getFn: GetFn = name => {
     const hit = defs.fns.get(name);
@@ -392,20 +408,62 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
         if (new Set(d.params).size !== d.params.length) throw new Error('Duplicate parameter names.');
         getFn(d.name);
       } else {
-        const e = resolveExpr(parse(d), getFn, ropts);
-        defs.consts.set(d.name, e);
-        try {
-          const env: Record<string, number> = {};
-          for (const fv of freeVars(e)) {
-            if (!(fv in numEnv)) throw new Error('not static');
-            env[fv] = numEnv[fv];
+        // Lowering expands point arithmetic; a pair result names a point.
+        // Point-ness flows in definition order, so `C = B + D` needs B and D
+        // defined above (a stray point name below is reported after the loop).
+        const e = lowerGeom(resolveExpr(parse(d), getFn, ropts), n => defs.points.has(n));
+        const store: Array<[string, Expr]> = [[d.name, e]];
+        if (e.kind === 'vec') {
+          if (e.items.length !== 2) throw new Error('A named point needs exactly 2 components.');
+          const comps = pointComps(d.name);
+          for (const c of comps) {
+            if (byName.has(c)) {
+              throw new Error(`Cannot name a point ${d.name}: ${c} is already defined.`);
+            }
           }
-          const v = evaluate(e, env);
-          if (isFinite(v)) numEnv[d.name] = v;
-        } catch { /* time-dependent or forward-referencing: Σ bounds can't use it */ }
+          for (const item of e.items) {
+            for (const fv of freeVars(item)) {
+              if (fv === 'x' || fv === 'y') throw new Error('A point cannot depend on x or y.');
+            }
+          }
+          defs.points.add(d.name);
+          compOwner.set(comps[0], d.name);
+          compOwner.set(comps[1], d.name);
+          store.length = 0;
+          store.push([comps[0], e.items[0]], [comps[1], e.items[1]]);
+        }
+        for (const [name, expr] of store) {
+          defs.consts.set(name, expr);
+          try {
+            const env: Record<string, number> = {};
+            for (const fv of freeVars(expr)) {
+              if (!(fv in numEnv)) throw new Error('not static');
+              env[fv] = numEnv[fv];
+            }
+            const v = evaluate(expr, env);
+            if (isFinite(v)) numEnv[name] = v;
+          } catch { /* time-dependent or forward-referencing: Σ bounds can't use it */ }
+        }
       }
     } catch (e) {
       errors.set(d.name, msg(e));
+    }
+  }
+
+  // A bare point name surviving in a resolved expression means the point was
+  // defined below its use, so lowering saw it as a scalar: report and drop.
+  for (const [name, e] of [...defs.consts]) {
+    for (const fv of freeVars(e)) {
+      if (!defs.points.has(fv)) continue;
+      const owner = compOwner.get(name) ?? name;
+      errors.set(owner, `${fv} is a point — move its definition above ${owner}.`);
+      if (defs.points.has(owner)) {
+        defs.points.delete(owner);
+        for (const c of pointComps(owner)) defs.consts.delete(c);
+      } else {
+        defs.consts.delete(owner);
+      }
+      break;
     }
   }
 
@@ -425,7 +483,25 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
       }
     }
   }
+  // A point component that reaches x/y through another definition would
+  // otherwise become a grid field; a point is a constant, so reject it.
+  for (const name of [...fieldNames]) {
+    const owner = compOwner.get(name);
+    if (!owner || !defs.points.has(owner)) continue;
+    errors.set(owner, 'A point cannot depend on x or y.');
+    defs.points.delete(owner);
+    for (const c of pointComps(owner)) {
+      defs.consts.delete(c);
+      fieldNames.delete(c);
+    }
+  }
+
   const constNames = new Set(raw.filter(d => d.kind === 'const' && !fieldNames.has(d.name)).map(d => d.name));
+  // Point rows resolve to their component constants; dependencies see those.
+  for (const p of defs.points) {
+    constNames.delete(p);
+    for (const c of pointComps(p)) constNames.add(c);
+  }
 
   const pendingFields = new Map<string, Expr>();
   for (const [name, e] of defs.consts) {

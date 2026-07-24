@@ -22,6 +22,7 @@ import {
   toProbability,
 } from '../lib/dist.ts';
 import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
@@ -77,6 +78,20 @@ interface Equation {
   infoEl?: HTMLElement;
 }
 
+/**
+ * An on-screen point the pointer can pick up. `set` writes the dragged
+ * position back to whatever defines the point, so the equation list stays the
+ * source of truth.
+ */
+interface Grabbable {
+  key: string;
+  x: number;
+  y: number;
+  /** True when `set` rewrites row text (so the drag is undoable and re-saved). */
+  edits: boolean;
+  set: (x: number, y: number) => void;
+}
+
 interface SliderUI {
   box: HTMLElement;
   min: HTMLInputElement;
@@ -94,6 +109,10 @@ interface CurveUI {
 
 function cssColor([r, g, b]: [number, number, number]): string {
   return `rgb(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)})`;
+}
+
+function cssColorA([r, g, b]: [number, number, number], a: number): string {
+  return `rgba(${Math.round(r * 255)}, ${Math.round(g * 255)}, ${Math.round(b * 255)}, ${a})`;
 }
 
 const CURVE_SAMPLES = 400;
@@ -118,6 +137,10 @@ let sumBoundNames = new Set<string>();
 let gridFields: GridField[] = [];
 /** Click-dropped seeds for integral curves through vector fields / ODEs. */
 const drops: Array<{ x: number; y: number }> = [];
+/** What the pointer can grab, in math coords; rebuilt by every 2D frame. */
+let grabbable: Grabbable[] = [];
+/** Key of the point under the pointer (or being dragged): drawn with a ring. */
+let hotPoint: string | null = null;
 
 const view: View2D = { cx: 0, cy: 0, upp: 0.01 };
 const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, phi: Math.PI / 5.5 };
@@ -386,6 +409,8 @@ function render() {
     return out;
   };
 
+  const grabs: Grabbable[] = [];
+
   if (mode === '3d') {
     const scene: Scene3D = { implicits: [], psurfaces: [], curves: [], segments: [], tubes: [], points: [] };
     for (const eq of active) {
@@ -406,7 +431,8 @@ function render() {
         case 'fractal2d':
         case 'ineq2d':
         case 'vfield2d':
-          break; // density/complex/region/flow fields have no 3D locus; skipped in 3D scenes
+        case 'polygon':
+          break; // density/complex/region/flow/planar-figure plots have no 3D locus; skipped in 3D scenes
         case 'psurface':
           scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
@@ -505,19 +531,69 @@ function render() {
           break;
         case 'vfield2d': {
           layers.vfields.push({ fx: plot.fx, fy: plot.fy, color, params });
-          for (const d of drops) {
+          drops.forEach((d, i) => {
             extras.polylines.push({ pts: integralCurve(plot.comps, d.x, d.y, time), color: cssColor(color) });
-            extras.points.push({ x: d.x, y: d.y, color: cssColor(color) });
-          }
+            extras.points.push({ x: d.x, y: d.y, color: cssColor(color), hot: hotPoint === `drop${i}` });
+          });
           break;
         }
         case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
+        case 'polygon': {
+          const env = { ...constEnv, t: time };
+          const pts: number[] = [];
+          try {
+            for (const c of plot.pts) pts.push(evaluate(c, env));
+          } catch {
+            break;
+          }
+          if (!pts.every(isFinite)) break;
+          extras.polylines.push({
+            pts,
+            color: cssColor(color),
+            closed: plot.closed,
+            fill: plot.closed ? cssColorA(color, 0.16) : undefined,
+          });
+          break;
+        }
         case 'point': {
           const p = samplePoint(eq);
-          if (p) extras.points.push({ x: p[0], y: p[1], color: cssColor(color) });
+          if (!p) break;
+          const key = `eq${eq.id}`;
+          extras.points.push({ x: p[0], y: p[1], color: cssColor(color), hot: hotPoint === key });
+          const set = pointWriter(eq);
+          if (set) grabs.push({ key, x: p[0], y: p[1], edits: true, set });
           break;
         }
       }
+    }
+    // Named points (`A = (0, 0)` rows) draw labeled with their name; rows
+    // whose components are plain numbers or slider names can be dragged.
+    for (const eq of equations) {
+      if (eq.def?.kind !== 'const' || eq.error || !defs.points.has(eq.def.name)) continue;
+      const [cx, cy] = pointComps(eq.def.name);
+      const px = constEnv[cx];
+      const py = constEnv[cy];
+      if (!isFinite(px) || !isFinite(py)) continue;
+      const key = `def${eq.id}`;
+      extras.points.push({
+        x: px,
+        y: py,
+        color: cssColor(theme.palette[eq.colorIndex]),
+        hot: hotPoint === key,
+        label: eq.def.name,
+      });
+      const set = defPointWriter(eq);
+      if (set) grabs.push({ key, x: px, y: py, edits: true, set });
+    }
+    // A seed is one grabbable point however many fields trace a curve from it.
+    if (layers.vfields.length) {
+      drops.forEach((d, i) => grabs.push({
+        key: `drop${i}`,
+        x: d.x,
+        y: d.y,
+        edits: false,
+        set: (x, y) => { d.x = x; d.y = y; },
+      }));
     }
     let gridSpecs: GridSpec[] | undefined;
     if (gridFields.length) {
@@ -529,6 +605,7 @@ function render() {
     r2d.render(view, layers, time, constEnv, gridSpecs);
     drawLabels2D(overlayCtx, view, dpr, extras, !gridFields.length);
   }
+  grabbable = grabs;
 
   const gridAnimated = mode === '2d'
     && gridFields.some(f => freeVars(f.expr).has('t') || (defsAnimated && f.params.length > 0));
@@ -670,6 +747,9 @@ function recompileAll() {
         continue;
       }
       let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
+      // Expand point arithmetic and geometry statements (segment, polygon, …)
+      // into scalar expressions; a point name A becomes (A_x, A_y).
+      parsed = lowerGeom(parsed, n => defs.points.has(n));
       // Coordinate fields substitute in as functions of the plane, so
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
@@ -1436,11 +1516,24 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['fourier sawtooth', 'N = 5; y = 2 sum[n=1..N] (-1)^(n+1) sin(n x)/n'],
     ['taylor cosine', 'N = 2; y = sum(n=0..N, (-1)^n x^(2n)/prod(k=1..2n, k)); y = cos(x)'],
   ]],
-  ['points + motion', [
+  ['points (drag them)', [
     ['a point', '(2, 3)'],
+    ['point on sliders', 'a = 1; b = 2; (a, b)'],
+    ['point on a curve', 'a = 1; f(x) = x^3 - 3x; y = f(x); (a, f(a))'],
     ['orbit', '(2cos(t), 2sin(t))'],
     ['lissajous', '(2cos(2pi u), sin(4pi u))'],
     ['spiral', '(u cos(6pi u) 3, u sin(6pi u) 3)'],
+  ]],
+  ['geometry (drag the points)', [
+    ['segment + midpoint', 'A = (-2, -1); B = (2, 1.5); segment(A, B); midpoint(A, B)'],
+    ['perpendicular bisector', 'A = (-2, -1); B = (2, 1.5); segment(A, B); M = midpoint(A, B); line(M, M + perp(B - A))'],
+    ['circle through a point', 'C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)'],
+    ['square on a segment', 'A = (-1, 0); B = (2, 1); square(A, B)'],
+    ['thébault’s theorem', 'A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D - A; '
+      + 'polygon(A, B, C, D); square(B, A); square(C, B); square(D, C); square(A, D); '
+      + 'P = midpoint(A, B) - perp(B - A)/2; Q = midpoint(B, C) - perp(C - B)/2; '
+      + 'R = midpoint(C, D) - perp(D - C)/2; S = midpoint(D, A) - perp(A - D)/2; '
+      + 'polygon(P, Q, R, S)'],
   ]],
   ['3d surfaces', [
     ['waves', 'z = sin(x)cos(y)'],
@@ -1498,6 +1591,142 @@ function buildExamplesMenu() {
   }
 }
 
+// --- draggable points ---
+//
+// A point row whose coordinates are plain numbers or bare slider names can be
+// picked up and moved on the canvas; the drag rewrites those numbers, so the
+// equation list stays the source of truth and the move is undoable and
+// shareable. Coordinates that are computed — (2cos(t), 2sin(t)), (a+1, b) —
+// have nothing to write back to and stay pinned on that axis.
+
+const NUM_LITERAL_RE = /^-?(?:\d+\.?\d*|\.\d+)$/;
+const NAME_RE = /^[A-Za-z_]\w*$/;
+
+/** The two top-level coordinates of `(A, B)`, or null if it is not a pair. */
+function splitPair(text: string): [string, string] | null {
+  if (!text.startsWith('(') || !text.endsWith(')')) return null;
+  const inner = text.slice(1, -1);
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '(' || c === '[') depth++;
+    else if (c === ')' || c === ']') depth--;
+    else if (c === ',' && depth === 0) {
+      parts.push(inner.slice(start, i));
+      start = i + 1;
+    }
+    if (depth < 0) return null; // the outer parens don't wrap the whole row
+  }
+  if (depth !== 0) return null;
+  parts.push(inner.slice(start));
+  return parts.length === 2 ? [parts[0].trim(), parts[1].trim()] : null;
+}
+
+/** Round to roughly a pixel, so dragging writes short, readable numbers. */
+function snapToPixel(v: number): number {
+  const step = Math.pow(10, Math.floor(Math.log10(view.upp * 3)));
+  return Math.round(v / step) * step;
+}
+
+/**
+ * How a dragged position writes back to a pair like `(2, a)`, or null if
+ * nothing about it can move. Axes are independent: a literal is rewritten in
+ * place while a slider name moves through its own row. `commit` receives the
+ * rewritten pair text.
+ */
+function makePairWriter(pairText: string, commit: (pair: string) => void): ((x: number, y: number) => void) | null {
+  const parts = splitPair(pairText.trim());
+  if (!parts) return null;
+  const axes = parts.map(p => {
+    if (NUM_LITERAL_RE.test(p)) return 'literal' as const;
+    // A name moves only if it is a slider constant: a plain number in its own
+    // row is the only right-hand side a drag knows how to rewrite.
+    if (!NAME_RE.test(p)) return null;
+    const row = equations.find(r =>
+      r.def?.kind === 'const' && r.def.name === p && !r.error && NUM_RE.test(r.def.rhs));
+    return row ?? null;
+  });
+  if (!axes.some(Boolean)) return null;
+  return (x, y) => {
+    const coords = [x, y];
+    const text = [...parts];
+    axes.forEach((axis, k) => {
+      if (!axis) return;
+      const value = fmtNum(snapToPixel(coords[k]));
+      if (axis === 'literal') text[k] = value;
+      else axis.text = `${axis.def!.name} = ${value}`;
+    });
+    commit(`(${text[0]}, ${text[1]})`);
+  };
+}
+
+const pointWriter = (eq: Equation) => makePairWriter(eq.text, p => { eq.text = p; });
+
+/** Writer for a named-point row `A = (…)`: rewrites the pair after the '='. */
+const defPointWriter = (eq: Equation) =>
+  makePairWriter(eq.def!.rhs, p => { eq.text = `${eq.def!.name} = ${p}`; });
+
+/** Push text a drag rewrote back into the editor lines. */
+function syncLineTexts() {
+  const lines = lineEls();
+  equations.forEach((eq, i) => {
+    const line = lines[i];
+    if (line && lineText(line) !== eq.text) line.textContent = eq.text;
+  });
+}
+
+/** Pixels of slack around a point when grabbing it. */
+const GRAB_PX = 14;
+/** The point being dragged, with the offset from its centre to the pointer. */
+let grab: { pt: Grabbable; dx: number; dy: number } | null = null;
+
+/** Math coordinates under a client position. */
+function toMath(clientX: number, clientY: number): [number, number] {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const px = (clientX - rect.left - rect.width / 2) * dpr;
+  const py = (rect.height / 2 - (clientY - rect.top)) * dpr;
+  return [view.cx + px * view.upp, view.cy + py * view.upp];
+}
+
+/** The nearest grabbable point within GRAB_PX of a client position. */
+function pointAt(clientX: number, clientY: number): Grabbable | null {
+  if (mode !== '2d' || !grabbable.length) return null;
+  const [mx, my] = toMath(clientX, clientY);
+  const dpr = window.devicePixelRatio || 1;
+  let best: Grabbable | null = null;
+  let bestDist = GRAB_PX * dpr * view.upp;
+  for (const p of grabbable) {
+    const d = Math.hypot(p.x - mx, p.y - my);
+    if (d <= bestDist) {
+      bestDist = d;
+      best = p;
+    }
+  }
+  return best;
+}
+
+function setHot(key: string | null) {
+  if (hotPoint === key) return;
+  hotPoint = key;
+  requestRender();
+}
+
+function movePoint(pt: Grabbable, x: number, y: number) {
+  // One undo entry per drag: coalesced while it lasts, sealed on release.
+  if (pt.edits) pushUndo(`drag:${pt.key}`);
+  pt.set(x, y);
+  if (pt.edits) {
+    syncLineTexts();
+    recompileAll();
+    reconcile();
+    saveUrl();
+  }
+  requestRender();
+}
+
 // --- interaction ---
 
 let dragging = false;
@@ -1535,7 +1764,15 @@ canvas.addEventListener('pointerdown', e => {
     canvas.setPointerCapture(e.pointerId);
   } catch {} // synthetic events have no active pointer to capture
   if (pointers.size === 1) {
-    dragging = true;
+    // Grabbing an on-screen point wins over panning the view.
+    const hit = e.button === 0 && !e.shiftKey ? pointAt(e.clientX, e.clientY) : null;
+    if (hit) {
+      const [mx, my] = toMath(e.clientX, e.clientY);
+      grab = { pt: hit, dx: hit.x - mx, dy: hit.y - my };
+      setHot(hit.key);
+      canvas.style.cursor = 'grabbing';
+    }
+    dragging = !hit;
     panning = e.button === 2 || e.shiftKey;
     lastX = e.clientX;
     lastY = e.clientY;
@@ -1545,6 +1782,7 @@ canvas.addEventListener('pointerdown', e => {
   } else if (pointers.size === 2) {
     // Second finger: switch from drag to pinch, anchored at the midpoint.
     dragging = false;
+    grab = null;
     dragMoved = true; // a pinch is never a seed-dropping click
     const [a, b] = [...pointers.values()];
     pinchDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -1579,7 +1817,18 @@ canvas.addEventListener('pointermove', e => {
     scheduleViewportWriteback();
     return;
   }
-  if (!dragging) return;
+  if (grab) {
+    const [mx, my] = toMath(e.clientX, e.clientY);
+    movePoint(grab.pt, mx + grab.dx, my + grab.dy);
+    return;
+  }
+  if (!dragging) {
+    // Hover: show what can be picked up.
+    const hit = pointAt(e.clientX, e.clientY);
+    canvas.style.cursor = hit ? 'grab' : '';
+    setHot(hit?.key ?? null);
+    return;
+  }
   if (Math.hypot(e.clientX - downX, e.clientY - downY) > 3) dragMoved = true;
   const dx = e.clientX - lastX;
   const dy = e.clientY - lastY;
@@ -1607,6 +1856,7 @@ canvas.addEventListener('pointermove', e => {
 });
 const endPointer = (e: PointerEvent) => {
   pointers.delete(e.pointerId);
+  if (!pointers.size) grab = null;
   if (pointers.size === 1) {
     // Pinch ended with one finger still down: resume dragging from it.
     const [p] = pointers.values();
@@ -1622,21 +1872,35 @@ const endPointer = (e: PointerEvent) => {
   }
 };
 canvas.addEventListener('pointerup', e => {
+  const dragged = grab !== null;
   endPointer(e);
+  if (dragged) {
+    coalesce = null; // seal the drag as one undo entry
+    canvas.style.cursor = 'grab';
+    return; // releasing a point never drops a seed
+  }
   // A motionless primary-button click in 2D drops an integral-curve seed on
   // vector fields; right/shift clicks are pan gestures, not seeds.
   if (dragMoved || pointers.size || mode !== '2d' || e.button !== 0 || e.shiftKey) return;
   if (!equations.some(q => !q.error && q.cls?.plot.type === 'vfield2d')) return;
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const px = (e.clientX - rect.left - rect.width / 2) * dpr;
-  const py = (rect.height / 2 - (e.clientY - rect.top)) * dpr;
   // Each seed costs an RK4 integration per field per frame; keep the newest.
   if (drops.length >= MAX_DROPS) drops.shift();
-  drops.push({ x: view.cx + px * view.upp, y: view.cy + py * view.upp });
+  const [mx, my] = toMath(e.clientX, e.clientY);
+  drops.push({ x: mx, y: my });
   requestRender();
 });
-canvas.addEventListener('pointercancel', endPointer);
+canvas.addEventListener('pointercancel', e => {
+  endPointer(e);
+  if (!grab) canvas.style.cursor = '';
+});
+// Hover state is set on pointermove, so a pointer that exits the canvas
+// without another move would leave the last point haloed; clear it unless a
+// drag is in progress (pointer capture keeps those events flowing).
+canvas.addEventListener('pointerleave', () => {
+  if (grab || pointers.size) return;
+  setHot(null);
+  canvas.style.cursor = '';
+});
 canvas.addEventListener('dblclick', () => {
   if (!drops.length) return;
   drops.length = 0;
