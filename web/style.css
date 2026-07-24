@@ -1,11 +1,11 @@
 * { box-sizing: border-box; }
 
 /* The graph owns every gesture: one finger pans it, two pinch it (see the
-   pointer handlers in main.ts). Nothing in the app scrolls, so no touch should
-   reach the viewport's own pan/zoom — an accidental page zoom has no way back
-   short of a reload. Blanket rather than per-element so a pinch that happens to
-   start on the equation text can't leak through; `pan-x pan-y` rather than
-   `none` leaves the caret and text selection alone. */
+   pointer handlers in main.ts), so no touch should reach the viewport's own
+   pan/zoom — an accidental page zoom has no way back short of a reload.
+   Blanket rather than per-element so a pinch that happens to start on the
+   equation text can't leak through; `pan-x pan-y` rather than `none` leaves
+   the caret, text selection, and the panel's internal scrolling alone. */
 * { touch-action: pan-x pan-y; }
 
 /* Light theme (default). The dark overrides live in [data-theme="dark"] below;
@@ -94,6 +94,11 @@ html, body {
   top: calc(12px + env(safe-area-inset-top));
   left: calc(12px + env(safe-area-inset-left));
   width: 300px;
+  /* Keep the panel on screen with many equations: cap it at the viewport
+     (12px margin top and bottom) and let #equations scroll inside. */
+  max-height: calc(100% - 24px - env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
   background: var(--panel-bg);
   backdrop-filter: blur(8px);
   border: 1px solid var(--panel-border);
@@ -122,6 +127,12 @@ html, body {
 #theme-toggle:hover { background: var(--eq-focus); color: var(--muted-hover); }
 
 #equations {
+  /* Scrolls when the list outgrows the panel's max-height; `contain` stops a
+     scroll that hits the end from chaining into a page overscroll bounce. */
+  overflow-y: auto;
+  min-height: 0;
+  flex: 0 1 auto;
+  overscroll-behavior: contain;
   outline: none;
   color: var(--text);
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
@@ -256,6 +267,12 @@ html, body {
 #panel { position: relative; }
 
 #examples {
+  /* Never shrinks (the summary row stays visible), but caps itself and scrolls
+     internally so an open example tree can't push the panel past its max. */
+  flex: none;
+  max-height: 40%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border-top: 1px solid var(--divider);
   margin-top: 4px;
   padding: 4px;
