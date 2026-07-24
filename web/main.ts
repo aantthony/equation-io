@@ -1892,6 +1892,14 @@ canvas.addEventListener('pointercancel', e => {
   endPointer(e);
   if (!grab) canvas.style.cursor = '';
 });
+// Hover state is set on pointermove, so a pointer that exits the canvas
+// without another move would leave the last point haloed; clear it unless a
+// drag is in progress (pointer capture keeps those events flowing).
+canvas.addEventListener('pointerleave', () => {
+  if (grab || pointers.size) return;
+  setHot(null);
+  canvas.style.cursor = '';
+});
 canvas.addEventListener('dblclick', () => {
   if (!drops.length) return;
   drops.length = 0;

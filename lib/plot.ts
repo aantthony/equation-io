@@ -235,11 +235,12 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
 
   // Desugared segment()/polygon()/square(): CPU-evaluated each frame with the
   // constants' original names, like points and parametric curves.
-  if (expr.kind === 'call' && (expr.name === '[polygon]' || expr.name === '[segment]')) {
+  if (expr.kind === 'call' && (expr.name === '[polygon]' || expr.name === '[segment]' || expr.name === '[square]')) {
     if (hasSpace || hasParam) {
-      throw new Error('Polygon vertices must be constant — they cannot use x, y, u, or v.');
+      const what = expr.name === '[segment]' ? 'Segment endpoints' : `${expr.name === '[square]' ? 'Square' : 'Polygon'} vertices`;
+      throw new Error(`${what} must be constant — they cannot use x, y, u, or v.`);
     }
-    return done({ type: 'polygon', pts: expr.args, closed: expr.name === '[polygon]' });
+    return done({ type: 'polygon', pts: expr.args, closed: expr.name !== '[segment]' });
   }
 
   // GLSL compilation sees constants as u_<name> uniforms; CPU evaluation

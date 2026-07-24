@@ -43,8 +43,9 @@ const sq = (e: Expr): Expr => mul(e, e);
 const lenOf = (x: Expr, y: Expr): Expr => ({ kind: 'call', name: 'sqrt', args: [add(sq(x), sq(y))] });
 
 /** Re-pair a lowered argument list into points: vec args pass through, and
- *  adjacent scalar args (a flattened tuple literal) join into one point. */
-function pairPoints(name: string, args: LV[]): Array<[Expr, Expr]> {
+ *  adjacent scalar args (a flattened tuple literal) join into one point.
+ *  `usage` is the argument list shown in the error, e.g. 'A' or 'A, B'. */
+function pairPoints(name: string, args: LV[], usage: string): Array<[Expr, Expr]> {
   const out: Array<[Expr, Expr]> = [];
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
@@ -54,7 +55,7 @@ function pairPoints(name: string, args: LV[]): Array<[Expr, Expr]> {
     }
     const b = args[i + 1];
     if (!b || b.vec) {
-      throw new Error(`${name} takes points — write ${name}(A, B) with A = (0, 0) defined above.`);
+      throw new Error(`${name} takes points — write ${name}(${usage}), with A = (0, 0) defined above.`);
     }
     out.push([a.e, b.e]);
     i++;
@@ -111,7 +112,7 @@ function lower(e: Expr, isPoint: IsPoint): LV {
       const args = e.args.map(lo);
       const nPts = POINT_FNS[e.name];
       if (nPts !== undefined) {
-        const pts = pairPoints(e.name, args);
+        const pts = pairPoints(e.name, args, nPts === 1 ? 'A' : 'A, B');
         if (pts.length !== nPts) {
           throw new Error(`${e.name} takes ${nPts} point${nPts === 1 ? '' : 's'}.`);
         }
@@ -171,8 +172,11 @@ function lower(e: Expr, isPoint: IsPoint): LV {
 const num2: Expr = { kind: 'num', value: 2 };
 const spaceVar = (name: 'x' | 'y'): Expr => ({ kind: 'var', name });
 
-/** '[polygon]' (closed, filled) / '[segment]' (open) with flat scalar vertices. */
-const polyCall = (name: '[polygon]' | '[segment]', pts: Array<[Expr, Expr]>): Expr =>
+/** Internal figure calls with flat scalar vertices: '[segment]' is open,
+ *  '[polygon]' and '[square]' close and fill (the name only differs so
+ *  classify can word its errors after the statement the user wrote). */
+export type FigureName = '[polygon]' | '[segment]' | '[square]';
+const polyCall = (name: FigureName, pts: Array<[Expr, Expr]>): Expr =>
   ({ kind: 'call', name, args: pts.flat() });
 
 /**
@@ -186,7 +190,7 @@ export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
       // circle(C, r): the trailing argument is the scalar radius.
       const r = args[args.length - 1];
       if (args.length < 2 || !r || r.vec) throw new Error('circle takes circle(center, radius).');
-      const pts = pairPoints('circle', args.slice(0, -1));
+      const pts = pairPoints('circle', args.slice(0, -1), 'center, radius');
       if (pts.length !== 1) throw new Error('circle takes circle(center, radius).');
       const [cx, cy] = pts[0];
       return {
@@ -195,7 +199,7 @@ export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
         r: sq(r.e),
       };
     }
-    const pts = pairPoints(e.name, args);
+    const pts = pairPoints(e.name, args, e.name === 'polygon' ? 'A, B, C' : 'A, B');
     if (e.name === 'segment') {
       if (pts.length !== 2) {
         throw new Error('segment takes two points: segment(A, B), with A = (0, 0) defined above.');
@@ -208,7 +212,7 @@ export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
       const [[ax, ay], [bx, by]] = pts;
       const px = neg(sub(by, ay)); // perp(B - A)
       const py = sub(bx, ax);
-      return polyCall('[polygon]', [
+      return polyCall('[square]', [
         [ax, ay],
         [bx, by],
         [add(bx, px), add(by, py)],

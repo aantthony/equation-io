@@ -66,6 +66,8 @@ describe('point arithmetic lowering', () => {
     expect(() => low('2/A')).toThrow(/divide by a point/);
     expect(() => low('A^2')).toThrow(/length/);
     expect(() => low('sin(A)')).toThrow(/sin is not defined for points/);
+    expect(() => low('perp(3)')).toThrow(/write perp\(A\)/);
+    expect(() => low('dot(A, 3)')).toThrow(/write dot\(A, B\)/);
     expect(() => low('A < B')).toThrow(/compared/);
     expect(() => low('y = A')).toThrow(/One side is a point/);
     expect(() => low('(A, B)')).toThrow(/segment\(A, B\)/);
@@ -105,8 +107,10 @@ describe('geometry statements', () => {
     expect(() => lowerGeom(parseExpr('segment(P, Q)'), () => false)).toThrow(/defined above/);
   });
 
-  it('rejects vertices that depend on the plane or parameters', () => {
-    expect(() => classify(low('segment((x, 0), (1, 1))'))).toThrow(/cannot use x, y, u, or v/);
+  it('rejects vertices that depend on the plane, named for the statement', () => {
+    expect(() => classify(low('segment((x, 0), (1, 1))'))).toThrow(/Segment endpoints must be constant/);
+    expect(() => classify(low('square((x, 0), (1, 1))'))).toThrow(/Square vertices must be constant/);
+    expect(() => classify(low('polygon((x, 0), (1, 1), (0, 2))'))).toThrow(/Polygon vertices must be constant/);
   });
 
   it('animates vertices that use t', () => {
