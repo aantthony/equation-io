@@ -38,6 +38,23 @@ describe('og raster renderer', () => {
     expect(Math.min(cr, cg, cb)).toBeGreaterThan(230);
   });
 
+  it('strokes and fills polygon figures, leaving open segments unfilled', () => {
+    const tri = renderRaster(['A = (-4, -4)', 'B = (4, -4)', 'C = (0, 4)', 'polygon(A, B, C)'], 100, 100);
+    // Interior (world ~(1.4, -1.4), off the unit gridlines): tinted by the
+    // 0.16 fill in the row color (palette slot 3, purple — green channel dips).
+    const [, ig, ib] = pixel(tri, 62, 62);
+    expect(ig).toBeLessThan(235);
+    expect(ib).toBeGreaterThan(ig);
+    // The bottom edge (y = -4) strokes at full strength.
+    expect(pixel(tri, 55, 83)[0]).toBeLessThan(200);
+    // Outside the triangle stays near-white.
+    expect(Math.min(...pixel(tri, 90, 10))).toBeGreaterThan(230);
+    // segment() is the open figure: same span as the triangle's base, no fill.
+    const seg = renderRaster(['A = (-4, -4)', 'B = (4, -4)', 'segment(A, B)'], 100, 100);
+    expect(pixel(seg, 55, 83)[0]).toBeLessThan(200);
+    expect(Math.min(...pixel(seg, 62, 62))).toBeGreaterThan(240);
+  });
+
   it('renders definitions + slider constants (tangent-line graph)', () => {
     const rows = ['f(x) = x^2 - 2x', 'g(x) = d/dx f(x)', 'a = 3', 'y = f(x)', 'y = f(a) + g(a)(x - a)'];
     expect(inkFraction(renderRaster(rows, 120, 120))).toBeGreaterThan(0.02);

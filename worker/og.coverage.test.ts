@@ -14,7 +14,7 @@ import { analyze } from './graph.ts';
 
 describe('og renderer coverage', () => {
   it('draws the everyday 2D and 3D families', () => {
-    for (const t of ['implicit2d', 'ineq2d', 'scalar2d', 'point', 'pcurve', 'psurface', 'implicit3d'] as const) {
+    for (const t of ['implicit2d', 'ineq2d', 'scalar2d', 'point', 'pcurve', 'psurface', 'implicit3d', 'polygon'] as const) {
       expect(OG_COVERAGE[t], t).toBe('draws');
     }
   });
@@ -33,6 +33,7 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['z = sin(x) cos(y)'])).toBe(true);
     expect(canRenderOg(['(cos(2pi u), sin(2pi u), u)'])).toBe(true);
     expect(canRenderOg(['a = 2', 'y = sin(a x)'])).toBe(true); // definition + plot
+    expect(canRenderOg(['A = (0, 0)', 'B = (4, 0)', 'C = (0, 4)', 'polygon(A, B, C)'])).toBe(true);
   });
 
   it('rejects graphs whose preview would be misleading', () => {
@@ -94,5 +95,7 @@ describe('previewGap', () => {
     expect(gap(['z = x^2 + y^2', '(2, 3)'], 1)).toContain('z = 0 plane');
     // ...except the families the app itself skips in 3D — no false promises.
     expect(gap(['z = x^2 + y^2', 'sin(x)cos(y)'], 1)).toContain('skips them there too');
+    expect(gap(['z = x^2 + y^2', 'A = (0, 0)', 'B = (4, 0)', 'C = (0, 4)', 'polygon(A, B, C)'], 1))
+      .toContain('skips them there too');
   });
 });
