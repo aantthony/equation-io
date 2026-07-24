@@ -55,6 +55,24 @@ describe('og raster renderer', () => {
     expect(Math.min(...pixel(seg, 62, 62))).toBeGreaterThan(240);
   });
 
+  it('draws a cobweb: curve, diagonal, and iterated path', () => {
+    const rows = ['view(x = 0..1, y = 0..1)', 'r = 2.9', 'a_0 = 0.15', 'a_{n+1} = r a_n (1 - a_n)'];
+    const r = renderRaster(rows, 100, 100);
+    // The map's curve y = 2.9x(1 - x) peaks at (0.5, 0.725) → screen (50, ~27).
+    expect(pixel(r, 50, 27)[0]).toBeLessThan(200);
+    // The seed dot at (a_0, a_0) = (0.15, 0.15) → screen (15, 85), in the row
+    // color (palette slot 3, purple — blue above red).
+    const [sr, , sb] = pixel(r, 15, 85);
+    expect(sr).toBeLessThan(200);
+    expect(sb).toBeGreaterThan(sr);
+    // The first vertical step of the path: x = 0.15 rising to f(0.15) ≈ 0.37.
+    const [vr, , vb] = pixel(r, 15, 75);
+    expect(vr).toBeLessThan(220);
+    expect(vb).toBeGreaterThan(vr);
+    // The y = x diagonal, lighter than the axes but present: screen (90, 10).
+    expect(Math.max(...pixel(r, 90, 10))).toBeLessThan(245);
+  });
+
   it('renders definitions + slider constants (tangent-line graph)', () => {
     const rows = ['f(x) = x^2 - 2x', 'g(x) = d/dx f(x)', 'a = 3', 'y = f(x)', 'y = f(a) + g(a)(x - a)'];
     expect(inkFraction(renderRaster(rows, 120, 120))).toBeGreaterThan(0.02);

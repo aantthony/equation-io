@@ -14,7 +14,7 @@ import { analyze } from './graph.ts';
 
 describe('og renderer coverage', () => {
   it('draws the everyday 2D and 3D families', () => {
-    for (const t of ['implicit2d', 'ineq2d', 'scalar2d', 'point', 'pcurve', 'psurface', 'implicit3d', 'polygon'] as const) {
+    for (const t of ['implicit2d', 'ineq2d', 'scalar2d', 'point', 'pcurve', 'psurface', 'implicit3d', 'polygon', 'cobweb'] as const) {
       expect(OG_COVERAGE[t], t).toBe('draws');
     }
   });
@@ -25,8 +25,8 @@ describe('og renderer coverage', () => {
     }
   });
 
-  it('falls back for the sequence family', () => {
-    for (const t of ['sequence', 'cobweb', 'bifurcation', 'vlist', 'plist'] as const) {
+  it('falls back for the rest of the sequence family', () => {
+    for (const t of ['sequence', 'bifurcation', 'vlist', 'plist'] as const) {
       expect(OG_COVERAGE[t], t).toBe('fallback');
     }
   });
@@ -52,7 +52,8 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['y = sin(x)', 'iter(z^2 + w)'])).toBe(false);
     // Sequence rows classify without a resolved expr — the gap must still be seen.
     expect(canRenderOg(['a_n = 1/n^2'])).toBe(false);
-    expect(canRenderOg(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])).toBe(false);
+    // ...but a recurrence with no parameter axis is a cobweb, which draws.
+    expect(canRenderOg(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])).toBe(true);
   });
 
   it('rejects the within-type gaps OG_COVERAGE cannot express', () => {
@@ -93,9 +94,13 @@ describe('previewGap', () => {
     expect(gap(['(cos(2pi u), sin(2pi u), u)'])).toBeNull();
   });
 
-  it('blames the preview, not the row, for a cobweb', () => {
-    const why = gap(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])!;
-    expect(why).toContain('cobweb');
+  it('is null for a cobweb, which now draws', () => {
+    expect(gap(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])).toBeNull();
+  });
+
+  it('blames the preview, not the row, for an orbit diagram', () => {
+    const why = gap(['a_{n+1} = x a_n (1 - a_n)'])!;
+    expect(why).toContain('bifurcation');
     expect(why).toContain('live app renders');
   });
 

@@ -95,11 +95,10 @@ describe('mcp endpoint', () => {
     expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
       'definition (const)', 'definition (const)', 'cobweb', 'point',
     ]);
-    // The static preview cannot draw a cobweb; the gap must be disclosed
-    // rather than shipping an image with the recurrence silently missing.
-    expect(out.preview_omits).toEqual([
-      { row: 'a_{n+1} = r a_n (1 - a_n)', why: expect.stringContaining('live app') },
-    ]);
+    // The static preview draws cobwebs, so nothing is omitted and the image
+    // attaches with the recurrence included.
+    expect(out.preview_omits).toBeUndefined();
+    expect(out.preview).toBe('attached');
   });
 
   it('reports per-row errors without failing the call', async () => {

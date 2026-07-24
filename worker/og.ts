@@ -8,7 +8,7 @@
  * (parametric surfaces/curves, z = f(x,y) heightmaps). Output is a PNG built
  * with CompressionStream — no image library.
  */
-import type { Expr } from '../lib/expr.ts';
+import { type Expr, substVars } from '../lib/expr.ts';
 import type { Plot } from '../lib/plot.ts';
 import { clampPhi, fitView2D } from '../lib/view.ts';
 import { type Analysis, type RowInfo, analyze } from './graph.ts';
@@ -301,8 +301,41 @@ function heightmapExpr(expr: Expr): Expr | null {
 
 function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [number, number, number]) {
   const { cls, expr } = row;
-  if (!cls || !expr) return;
+  if (!cls) return;
   const compile = (e: Expr) => compileFor(env, e);
+  if (cls.plot.type === 'cobweb') {
+    // A recurrence a_{n+1} = f(a_n) draws the same three pieces as the app
+    // (web/main.ts): the map's curve y = f(x), the y = x diagonal the orbit
+    // reflects off, and the iterated path from the seed. Classification
+    // leaves row.expr unset for sequence-family rows — the recurrence lives
+    // in cls.plot.f — so this runs before the expr guard below.
+    const { f, recVar, a0Name } = cls.plot;
+    const fx = substVars(f, { [recVar]: { kind: 'var', name: 'x' } });
+    strokeZeroSet(r, sampleField(r, v, compile({ kind: 'bin', op: '-', a: { kind: 'var', name: 'y' }, b: fx }), env), color);
+    // y = x across the visible window, lighter than the axes.
+    const dLo = Math.max(v.cx - (r.w / 2) * v.upp, v.cy - (r.h / 2) * v.upp);
+    const dHi = Math.min(v.cx + (r.w / 2) * v.upp, v.cy + (r.h / 2) * v.upp);
+    if (dHi > dLo) {
+      drawLine(r, toScreenX(r, v, dLo), toScreenY(r, v, dLo), toScreenX(r, v, dHi), toScreenY(r, v, dHi), [0.65, 0.65, 0.65], 0.45);
+    }
+    const prog = compile(fx);
+    const seedSlot = a0Name === undefined ? undefined : env.slots.get(a0Name);
+    const seed = seedSlot === undefined ? 0.5 : env.vars[seedSlot];
+    let a = seed;
+    let ax = toScreenX(r, v, seed), ay = toScreenY(r, v, seed);
+    for (let k = 0; k < 80; k++) {
+      env.vars[env.slotX] = a;
+      const b = run(prog, env.vars, env.stack);
+      if (!Number.isFinite(b) || Math.abs(b) > 1e9) break;
+      const bx = toScreenX(r, v, b), by = toScreenY(r, v, b);
+      drawLine(r, ax, ay, ax, by, color); // vertically to the curve
+      drawLine(r, ax, by, bx, by, color); // across to the diagonal
+      a = b; ax = bx; ay = by;
+    }
+    drawDisc(r, toScreenX(r, v, seed), toScreenY(r, v, seed), 3.5, color);
+    return;
+  }
+  if (!expr) return;
   switch (cls.plot.type) {
     case 'implicit2d': {
       const f: Expr = expr.kind === 'eq'
@@ -456,6 +489,9 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   psurface: 'draws',
   implicit3d: 'draws',
   polygon: 'draws',
+  // Pure polyline work — the map's curve, the y = x diagonal, the iterated
+  // path — so the scanline renderer draws the full figure.
+  cobweb: 'draws',
   // Each of these needs a per-pixel shader — domain coloring, conformal grids,
   // escape-time iteration, line-integral convolution — that a scanline
   // rasterizer cannot reproduce faithfully at preview size. They get the
@@ -465,12 +501,11 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   conformal2d: 'fallback',
   fractal2d: 'fallback',
   vfield2d: 'fallback',
-  // The sequence family (dots, cobwebs, orbit diagrams) and data lists have
-  // no scanline path here yet; the site card beats a blank grid.
+  // The rest of the sequence family (term dots, orbit diagrams) and data
+  // lists have no scanline path here yet; the site card beats a blank grid.
   vlist: 'fallback',
   plist: 'fallback',
   sequence: 'fallback',
-  cobweb: 'fallback',
   bifurcation: 'fallback',
 };
 
