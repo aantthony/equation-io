@@ -219,10 +219,18 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   if (nested) throw new Error(`${nested}(…) must be the whole expression.`);
   const vars = freeVars(expr);
   if (tube) {
+    const r = tube.radius;
+    if (r.kind === 'vec' || r.kind === 'list' || r.kind === 'eq' || r.kind === 'ineq' || usesComplex(r)) {
+      throw new Error('The tube radius must be a single real number.');
+    }
+    // The radius was split off before the root-only check below, so whole-
+    // expression forms hiding inside it need their own rejection.
+    const form = nestedSpecial(r);
+    if (form) throw new Error(`${form}(…) must be the whole expression.`);
     // The radius sweeps one circle for the whole tube, so it may vary with
     // time and sliders but not along the curve or across space.
-    for (const v of freeVars(tube.radius)) {
-      if (SPACE_VARS.has(v) || PARAM_VARS.has(v) || v === 'w') {
+    for (const v of freeVars(r)) {
+      if (SPACE_VARS.has(v) || PARAM_VARS.has(v)) {
         throw new Error('The tube radius can only use constants, sliders, and t.');
       }
       vars.add(v);

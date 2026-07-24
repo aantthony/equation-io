@@ -74,6 +74,15 @@ describe('classify', () => {
     expect(() => cls('tube((cos(2pi u), sin(2pi u), u), 0)')).toThrow(/positive number/);
     expect(() => cls('tube((cos(2pi u), sin(2pi u), u), a)')).toThrow(/Unknown variable/);
     expect(() => cls('tube((cos(2pi u), sin(2pi u), u), u/2)')).toThrow(/constants, sliders, and t/);
+    // The radius must be a scalar real expression, not a list, comparison,
+    // complex value, or a whole-expression form smuggled in as a subterm.
+    // (A parenthesized vector radius can't even be spelled: it flattens into
+    // the argument list and trips the arity check instead.)
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), [1, 2])')).toThrow(/single real number/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), (1, 2))')).toThrow(/three components/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), 1 < 2)')).toThrow(/single real number/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), 2i)')).toThrow(/single real number/);
+    expect(() => cls('tube((cos(2pi u), sin(2pi u), u), iter(z^2))')).toThrow(/whole expression/);
     expect(() => cls('z = tube((cos(u), sin(u), u))')).toThrow(/whole expression/);
   });
 
