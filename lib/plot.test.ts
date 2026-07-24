@@ -190,3 +190,30 @@ describe('vector evaluate', () => {
     expect(evaluate(e.items[1], { u: 0.25 })).toBeCloseTo(1);
   });
 });
+
+describe('lists and piecewise plots', () => {
+  it('routes numeric lists to vlist', () => {
+    expect(cls('[1, 4, 2, 8]').plot.type).toBe('vlist');
+  });
+
+  it('routes point lists to plist with the right dimension', () => {
+    expect(cls('[(1, 2), (3, 4)]').plot).toMatchObject({ type: 'plist', dim: 2 });
+    expect(cls('[(1, 2, 3), (4, 5, 6)]').needs3D).toBe(true);
+  });
+
+  it('rejects malformed lists', () => {
+    expect(() => cls('[1, (2, 3)]')).toThrow(/mix/);
+    expect(() => cls('[x, 2]')).toThrow(/constants and t/);
+    expect(() => cls('[(1, 2), (3, 4, 5)]')).toThrow(/same number/);
+  });
+
+  it('rejects plot-mode forms nested inside a piecewise or list', () => {
+    expect(() => cls('y = {x < 0: domain(w), 1}')).toThrow(/whole expression/);
+    expect(() => cls('[1, conformal(w)]')).toThrow(/whole expression/);
+  });
+
+  it('routes piecewise equations through implicit curves', () => {
+    expect(cls('y = {x < 0: -x, x >= 0: x^2}').plot.type).toBe('implicit2d');
+    expect(cls('{x < 0: -x, x^2}').plot.type).toBe('implicit2d'); // bare → y = expr
+  });
+});

@@ -4,7 +4,7 @@
  * An equation l = r compiles to the scalar field F = l - r; the graph is the
  * zero set of F, which the renderers extract in a fragment shader.
  */
-import type { Expr } from './expr.ts';
+import { type Expr, ISPRIME_MAX, ineqComparisons } from './expr.ts';
 
 export const FN_GLSL: Record<string, string> = {
   ln: 'log',
@@ -16,6 +16,8 @@ export const FN_GLSL: Record<string, string> = {
   erf: 'eq_erf',
   normalpdf: 'eq_normalpdf',
   normalcdf: 'eq_normalcdf',
+  gcd: 'eq_gcd',
+  isprime: 'eq_isprime',
 };
 
 /** Helper functions some expressions need; prepend once to the shader. */
@@ -37,6 +39,29 @@ float eq_normalpdf(float x, float mean, float sd) {
 }
 float eq_normalcdf(float x, float mean, float sd) {
   return 0.5 * (1.0 + eq_erf((x - mean) * 0.7071067811865476 / sd));
+}
+float eq_gcd(float a, float b) {
+  a = abs(floor(a + 0.5)); b = abs(floor(b + 0.5));
+  for (int k = 0; k < 64; k++) {
+    if (b < 0.5) break;
+    float t = mod(a, b); a = b; b = t;
+  }
+  return a;
+}
+float eq_isprime(float x) {
+  float n = floor(x + 0.5);
+  if (abs(x - n) > 1e-6 || n < 2.0) return 0.0;
+  // Trial division; floats are exact for integers below 2^24 (cap covers n < ~4.2M).
+  // Beyond that the divisors run out before √n, so the answer is unknown, not
+  // prime — report NaN, matching the CPU twin (both bounded by ISPRIME_MAX).
+  if (n > ${ISPRIME_MAX}.0) return sqrt(-1.0);
+  for (int i = 2; i < 2048; i++) {
+    float fi = float(i);
+    if (fi * fi > n) break;
+    float m = mod(n, fi);
+    if (m < 0.5 || m > fi - 0.5) return 0.0;
+  }
+  return 1.0;
 }
 float eq_pow(float a, float b) {
   // Support negative bases for integer exponents (e.g. (-2)^3).
@@ -66,6 +91,28 @@ vec2 c_sinh(vec2 z) { return vec2(sinh(z.x) * cos(z.y), cosh(z.x) * sin(z.y)); }
 vec2 c_cosh(vec2 z) { return vec2(cosh(z.x) * cos(z.y), sinh(z.x) * sin(z.y)); }
 vec2 c_tanh(vec2 z) { return c_div(c_sinh(z), c_cosh(z)); }
 `;
+
+/**
+ * Compile a (possibly chained) inequality to a GLSL boolean via the given
+ * scalar emitter (toGLSL here; complex.ts passes its real-checked emitter).
+ */
+export function condGLSL(cond: Expr, emit: (x: Expr) => string): string {
+  if (cond.kind !== 'ineq') throw new Error('Piecewise conditions must be inequalities, like x < 0.');
+  return ineqComparisons(cond).map(c => `(${emit(c.l)} ${c.op} ${emit(c.r)})`).join(' && ');
+}
+
+/** Nested-ternary GLSL for a piecewise; NaN outside all cases when no default. */
+export function piecewiseGLSL(
+  e: Expr & { kind: 'piecewise' },
+  emit: (x: Expr) => string,
+): string {
+  let out = e.otherwise ? emit(e.otherwise) : 'sqrt(-1.0)';
+  for (let k = e.cases.length - 1; k >= 0; k--) {
+    const c = e.cases[k];
+    out = `((${condGLSL(c.cond, emit)}) ? ${emit(c.value)} : ${out})`;
+  }
+  return out;
+}
 
 function fmt(value: number): string {
   if (!isFinite(value)) throw new Error(`Cannot compile non-finite constant: ${value}`);
@@ -104,5 +151,9 @@ export function toGLSL(e: Expr): string {
       throw new Error('Inequality in scalar context.');
     case 'vec':
       throw new Error('Vector in scalar context.');
+    case 'list':
+      throw new Error('A list can only be plotted as its own row.');
+    case 'piecewise':
+      return piecewiseGLSL(e, toGLSL);
   }
 }

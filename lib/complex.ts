@@ -8,7 +8,7 @@
  * which lets equations like im(ln(w)) = 1 flow through the implicit-curve path.
  */
 import type { Expr } from './expr.ts';
-import { FN_GLSL, toGLSL } from './glsl.ts';
+import { FN_GLSL, piecewiseGLSL, toGLSL } from './glsl.ts';
 
 export type Typed = { type: 'real'; code: string } | { type: 'complex'; code: string };
 
@@ -31,6 +31,10 @@ export function usesComplex(e: Expr, extra?: ReadonlySet<string>): boolean {
     case 'eq': return usesComplex(e.l, extra) || usesComplex(e.r, extra);
     case 'ineq': return usesComplex(e.l, extra) || usesComplex(e.r, extra);
     case 'vec': return e.items.some(a => usesComplex(a, extra));
+    case 'list': return e.items.some(a => usesComplex(a, extra));
+    case 'piecewise':
+      return e.cases.some(c => usesComplex(c.cond, extra) || usesComplex(c.value, extra))
+        || (e.otherwise ? usesComplex(e.otherwise, extra) : false);
   }
 }
 
@@ -69,6 +73,10 @@ export function compileTyped(e: Expr, env: Record<string, Typed> = {}): Typed {
         case 'eq': return scan(n.l) || scan(n.r);
         case 'ineq': return scan(n.l) || scan(n.r);
         case 'vec': return n.items.some(scan);
+        case 'list': return n.items.some(scan);
+        case 'piecewise':
+          return n.cases.some(c => scan(c.cond) || scan(c.value))
+            || (n.otherwise ? scan(n.otherwise) : false);
         default: return false;
       }
     })(e);
@@ -151,6 +159,16 @@ export function compileTyped(e: Expr, env: Record<string, Typed> = {}): Typed {
       throw new Error('Unexpected inequality.');
     case 'vec':
       throw new Error('Vector in scalar context.');
+    case 'list':
+      throw new Error('A list can only be plotted as its own row.');
+    case 'piecewise': {
+      const emit = (x: Expr): string => {
+        const c = compileTyped(x);
+        if (c.type === 'complex') throw new Error('Complex piecewise: wrap values in re(…) or im(…).');
+        return c.code;
+      };
+      return { type: 'real', code: piecewiseGLSL(e, emit) };
+    }
   }
   throw new Error('Unreachable');
 }

@@ -28,6 +28,7 @@ import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { type SpecialPoint, specialPoints } from '../lib/special.ts';
+import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
 import { splitStatements } from '../lib/statements.ts';
 import {
   type ViewSpec,
@@ -74,6 +75,10 @@ interface Equation {
   combK?: boolean;
   /** Torsion comb: teeth along ±B of length |τ|. */
   combT?: boolean;
+  /** Sequence rows: plot partial sums S_N = Σ aₙ instead of the terms. */
+  partialSum?: boolean;
+  /** Numeric-list rows: draw bars instead of dots. */
+  barMode?: boolean;
   /** Interleaved non-editable widgets, created lazily and kept across edits. */
   sliderUI?: SliderUI;
   levelsBtn?: HTMLButtonElement;
@@ -82,6 +87,7 @@ interface Equation {
   infoEl?: HTMLElement;
   /** Cached hover points (axis intercepts/roots) for the cached view range. */
   spCache?: { text: string; env: string; xlo: number; xhi: number; ylo: number; yhi: number; pts: SpecialPoint[] };
+  toggleUI?: { box: HTMLElement; btn: HTMLButtonElement };
 }
 
 /**
@@ -439,7 +445,21 @@ function render() {
         case 'ineq2d':
         case 'vfield2d':
         case 'polygon':
-          break; // density/complex/region/flow/planar-figure plots have no 3D locus; skipped in 3D scenes
+        case 'vlist':
+        case 'sequence':
+        case 'cobweb':
+        case 'bifurcation':
+          break; // 2D-only plots (densities, flows, sequences, planar figures); skipped in 3D scenes
+        case 'plist': {
+          const env = { ...constEnv, t: time };
+          for (const comps of plot.pts) {
+            try {
+              const p = comps.map(c => evaluate(c, env));
+              if (p.every(isFinite)) scene.points.push({ pos: [p[0], p[1], p[2] ?? 0], color });
+            } catch { /* skip unevaluable points */ }
+          }
+          break;
+        }
         case 'psurface':
           scene.psurfaces.push({ comps: plot.comps, du: plot.du, dv: plot.dv, color, params });
           break;
@@ -497,26 +517,30 @@ function render() {
   } else {
     const layers: Required<Layers2D> = {
       levels: [], fractals: [], domains: [], conformals: [], vfields: [],
-      ineqs: [], scalars: [], complexes: [], curves: [],
+      ineqs: [], bifs: [], scalars: [], complexes: [], curves: [],
     };
-    const extras: Overlay2D = { points: [], polylines: [] };
+    const extras: Overlay2D = { points: [], polylines: [], bars: [] };
     // Spacing for any level-set family (custom grids, contour stacks): sample
     // |∇c| around the view to convert the target pixel gap into coordinate
     // units (π-based for angles).
     const halfW = (gl.drawingBufferWidth / 2) * view.upp;
     const halfH = (gl.drawingBufferHeight / 2) * view.upp;
+    const xmin = view.cx - halfW;
+    const xmax = view.cx + halfW;
     const viewPts: Array<[number, number]> = [
       [view.cx, view.cy],
       [view.cx - halfW / 2, view.cy], [view.cx + halfW / 2, view.cy],
       [view.cx, view.cy - halfH / 2], [view.cx, view.cy + halfH / 2],
     ];
-    const spacingEnv = { ...constEnv, t: time };
+    const env: Record<string, number> = { ...constEnv, t: time };
+    const seedOf = (a0Name?: string): number => (a0Name !== undefined ? constEnv[a0Name] : undefined) ?? 0.5;
     const levelSpacing = (f: GridField) => {
-      const cupp = sampleGradMag(f, viewPts, spacingEnv, view.upp * 4) * view.upp;
+      const cupp = sampleGradMag(f, viewPts, env, view.upp * 4) * view.upp;
       return f.angular ? angularSpacing(cupp, 90) : niceSpacing(cupp, 90);
     };
     for (const eq of active) {
       const color = theme.palette[eq.colorIndex];
+      const css = cssColor(color);
       const plot = eq.cls!.plot;
       const params = eq.cls!.params;
       switch (plot.type) {
@@ -539,14 +563,13 @@ function render() {
         case 'vfield2d': {
           layers.vfields.push({ fx: plot.fx, fy: plot.fy, color, params });
           drops.forEach((d, i) => {
-            extras.polylines.push({ pts: integralCurve(plot.comps, d.x, d.y, time), color: cssColor(color) });
-            extras.points.push({ x: d.x, y: d.y, color: cssColor(color), hot: hotPoint === `drop${i}` });
+            extras.polylines.push({ pts: integralCurve(plot.comps, d.x, d.y, time), color: css });
+            extras.points.push({ x: d.x, y: d.y, color: css, hot: hotPoint === `drop${i}` });
           });
           break;
         }
-        case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: cssColor(color) }); break;
+        case 'pcurve': extras.polylines.push({ pts: sampleCurve(eq, 2), color: css }); break;
         case 'polygon': {
-          const env = { ...constEnv, t: time };
           const pts: number[] = [];
           try {
             for (const c of plot.pts) pts.push(evaluate(c, env));
@@ -556,7 +579,7 @@ function render() {
           if (!pts.every(isFinite)) break;
           extras.polylines.push({
             pts,
-            color: cssColor(color),
+            color: css,
             closed: plot.closed,
             fill: plot.closed ? cssColorA(color, 0.16) : undefined,
           });
@@ -566,11 +589,87 @@ function render() {
           const p = samplePoint(eq);
           if (!p) break;
           const key = `eq${eq.id}`;
-          extras.points.push({ x: p[0], y: p[1], color: cssColor(color), hot: hotPoint === key });
+          extras.points.push({ x: p[0], y: p[1], color: css, hot: hotPoint === key });
           const set = pointWriter(eq);
           if (set) grabs.push({ key, x: p[0], y: p[1], edits: true, set });
           break;
         }
+        case 'vlist': {
+          plot.values.forEach((expr, k) => {
+            let v: number;
+            try { v = evaluate(expr, env); } catch { return; }
+            if (!isFinite(v)) return;
+            if (eq.barMode) extras.bars!.push({ x: k + 1, y: v, halfWidth: 0.35, color: css });
+            else extras.points.push({ x: k + 1, y: v, color: css, r: 4 });
+          });
+          break;
+        }
+        case 'plist': {
+          for (const comps of plot.pts) {
+            try {
+              const px = evaluate(comps[0], env);
+              const py = evaluate(comps[1], env);
+              if (isFinite(px) && isFinite(py)) extras.points.push({ x: px, y: py, color: css, r: 4 });
+            } catch { /* skip unevaluable points */ }
+          }
+          break;
+        }
+        case 'sequence': {
+          // Dots at integer n in view; partial-sum mode accumulates from n = 0
+          // (terms that are not finite, like 1/0², are skipped).
+          const termAt = (n: number): number => {
+            env[plot.index] = n;
+            try { return evaluate(plot.term, env); } catch { return NaN; }
+          };
+          const nEnd = Math.min(Math.floor(xmax), eq.partialSum ? 20000 : 100000);
+          const n0 = Math.max(0, Math.ceil(xmin));
+          const step = Math.max(1, Math.ceil((nEnd - n0 + 1) / 4000));
+          if (eq.partialSum) {
+            let sum = 0;
+            let started = false;
+            for (let n = 0; n <= nEnd; n++) {
+              const v = termAt(n);
+              if (isFinite(v)) { sum += v; started = true; }
+              if (started && n >= n0 && (n - n0) % step === 0) {
+                extras.points.push({ x: n, y: sum, color: css, r: 3.5 });
+              }
+            }
+          } else {
+            for (let n = n0; n <= nEnd; n += step) {
+              const v = termAt(n);
+              if (isFinite(v)) extras.points.push({ x: n, y: v, color: css, r: 3.5 });
+            }
+          }
+          delete env[plot.index];
+          break;
+        }
+        case 'cobweb': {
+          layers.curves.push({ field: plot.curveField, color, params });
+          const seed = seedOf(plot.a0Name);
+          const dLo = Math.max(xmin, view.cy - halfH);
+          const dHi = Math.min(xmax, view.cy + halfH);
+          if (dHi > dLo) {
+            // y = x, the guide the orbit reflects off; kept lighter than the axes.
+            extras.polylines.push({ pts: [dLo, dLo, dHi, dHi], color: cssColorA(theme.axis, 0.45), width: 1 });
+          }
+          const pts: number[] = [seed, seed];
+          let a = seed;
+          for (let k = 0; k < 80; k++) {
+            env[plot.recVar] = a;
+            let b: number;
+            try { b = evaluate(plot.f, env); } catch { break; }
+            if (!isFinite(b) || Math.abs(b) > 1e9) break;
+            pts.push(a, b, b, b);
+            a = b;
+          }
+          delete env[plot.recVar];
+          extras.polylines.push({ pts, color: css, width: 1.5 });
+          extras.points.push({ x: seed, y: seed, color: css, r: 3.5 });
+          break;
+        }
+        case 'bifurcation':
+          layers.bifs.push({ field: plot.field, color, params, uniforms: { uSeed: seedOf(plot.a0Name) } });
+          break;
       }
     }
     // Named points (`A = (0, 0)` rows) draw labeled with their name; rows
@@ -649,6 +748,8 @@ function recompileAll() {
     eq.spCache = undefined;
     const text = eq.text.trim();
     if (!text) continue;
+    // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not definitions.
+    if (scanSeqRec(text)) continue;
     const d = scanDefinition(text);
     if (!d) continue;
     eq.def = d;
@@ -754,6 +855,11 @@ function recompileAll() {
         } catch {
           // Not numerically computable right now (e.g. animated); no readout.
         }
+        continue;
+      }
+      const seq = scanSeqRec(text);
+      if (seq) {
+        eq.cls = classifySeqRec(seq, fnNames, getFn, constNames, ropts);
         continue;
       }
       let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
@@ -1063,6 +1169,48 @@ function makeCurveUI(eq: Equation): CurveUI {
 }
 
 /**
+ * The display toggle a row offers, if any. Read at click time as well as on
+ * reconcile, so one button element follows the row as its plot type changes.
+ */
+function rowToggle(eq: Equation): { label: string; title: string; on: boolean; flip: () => void } | null {
+  switch (eq.cls?.plot.type) {
+    case 'sequence':
+      return {
+        label: 'Σ partial sums',
+        title: 'Plot the partial sums S_N = Σ aₙ instead of the terms',
+        on: !!eq.partialSum,
+        flip: () => { eq.partialSum = !eq.partialSum; },
+      };
+    case 'vlist':
+      return {
+        label: 'bars',
+        title: 'Draw the list as bars instead of dots',
+        on: !!eq.barMode,
+        flip: () => { eq.barMode = !eq.barMode; },
+      };
+    default:
+      return null;
+  }
+}
+
+function makeToggle(eq: Equation): { box: HTMLElement; btn: HTMLButtonElement } {
+  const box = document.createElement('div');
+  box.className = 'eq-widget eq-toggles';
+  box.contentEditable = 'false';
+  const btn = document.createElement('button');
+  btn.className = 'eq-toggle';
+  btn.addEventListener('click', () => {
+    const t = rowToggle(eq);
+    if (!t) return;
+    t.flip();
+    reconcile();
+    requestRender();
+  });
+  box.append(btn);
+  return { box, btn };
+}
+
+/**
  * Sync per-line decorations (color, error state, placeholder) and the
  * interleaved widget blocks with current state. Never touches line text, so
  * it is safe to run while the user is typing (the caret stays put).
@@ -1114,6 +1262,15 @@ function reconcile() {
       eq.curveUI.kappa.checked = !!eq.combK;
       eq.curveUI.tau.checked = !!eq.combT;
       wanted.push(eq.curveUI.box);
+    }
+    const toggle = rowToggle(eq);
+    if (toggle) {
+      eq.toggleUI ??= makeToggle(eq);
+      const { box, btn } = eq.toggleUI;
+      btn.textContent = toggle.label;
+      btn.title = toggle.title;
+      btn.classList.toggle('on', toggle.on);
+      wanted.push(box);
     }
     if (eq.info) {
       eq.infoEl ??= (() => {
@@ -1513,6 +1670,19 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['closed disc', 'x^2 + y^2 <= 4'],
     ['annulus', '4 <= x^2 + y^2 <= 9'],
     ['band under a wave', '-1 <= y - sin(x) < 1'],
+  ]],
+  ['sequences + recurrences', [
+    ['sequence', 'a_n = 1/n^2'],
+    ['alternating harmonic', 'a_n = (-1)^(n+1)/n'],
+    ['prime indicator', 'a_n = isprime(n)'],
+    ['cobweb', 'r = 2.9; a_0 = 0.15; a_{n+1} = r a_n (1 - a_n)'],
+    ['logistic bifurcation', 'a_{n+1} = x a_n (1 - a_n)'],
+  ]],
+  ['data + piecewise', [
+    ['data list', '[3, 1, 4, 1, 5, 9, 2, 6]'],
+    ['scatter', '[(1, 2), (2, 3.5), (3, 3.1), (4, 5)]'],
+    ['piecewise', 'y = {x < 0: -x, x >= 0: x^2}'],
+    ['coprime cells', '1 / gcd(floor(x), floor(y))'],
   ]],
   ['sliders + calculus', [
     ['slider', 'a = 2; y = sin(a x)/a'],

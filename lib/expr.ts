@@ -23,7 +23,11 @@ export type Expr =
   /** A vector literal like (2, 3) or (cos(u), sin(u), v): the whole
    *  statement, an equation side, or an operand ((A + (1, 2))/2 — lowerGeom
    *  expands 2-item operands; 3-item vectors stay top-level values). */
-  | { kind: 'vec'; items: Expr[] };
+  | { kind: 'vec'; items: Expr[] }
+  /** A data list [1, 4, 2] or [(1,2), (3,4)]. Plottable as its own row only. */
+  | { kind: 'list'; items: Expr[] }
+  /** {cond: value, …, otherwise?}; conditions are inequalities, tried in order. */
+  | { kind: 'piecewise'; cases: Array<{ cond: Expr; value: Expr }>; otherwise?: Expr };
 
 /** Functions available in expressions (all map to GLSL builtins or helpers). */
 export const FUNCTIONS = new Set([
@@ -32,6 +36,7 @@ export const FUNCTIONS = new Set([
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
   'erf', 'normalpdf', 'normalcdf',
+  'gcd', 'isprime',
   're', 'im', 'arg', 'conj',
   // Point (2D vector) helpers and geometry statements, lowered symbolically
   // by lowerGeom before anything evaluates or compiles them.
@@ -43,6 +48,21 @@ export const FUNCTIONS = new Set([
   // grids, escape-time iteration, and swept tubes.
   'domain', 'conformal', 'iter', 'tube',
 ]);
+
+/**
+ * Flatten a (possibly chained) inequality into its comparisons; comparison k
+ * compares the previous comparison's right side, so 0 < y < x yields
+ * [0 < y, y < x].
+ */
+export function ineqComparisons(e: Expr & { kind: 'ineq' }): Array<{ op: IneqOp; l: Expr; r: Expr }> {
+  const chain: Array<Expr & { kind: 'ineq' }> = [];
+  let node: Expr = e;
+  while (node.kind === 'ineq') {
+    chain.unshift(node);
+    node = node.l;
+  }
+  return chain.map((c, k) => ({ op: c.op, l: k === 0 ? c.l : chain[k - 1].r, r: c.r }));
+}
 
 export const CONSTANTS: Record<string, number> = {
   pi: Math.PI,
@@ -73,20 +93,26 @@ const isFnName = (name: string): boolean => activeUserFns.has(name) || builtinFn
 const num = (value: number): Expr => ({ kind: 'num', value });
 const bin = (op: '+' | '-' | '*' | '/' | '^') => (a: Expr, b: Expr): Expr => ({ kind: 'bin', op, a, b });
 
-// A private node used only while parsing: a comma-joined argument list.
-type PNode = Expr | { kind: 'series'; items: Expr[] };
+// Private nodes used only while parsing: a comma-joined argument list, an
+// open-bracket marker, and a `cond: value` piecewise part.
+type PCase = { kind: 'pcase'; cond: Expr; value: Expr };
+type POpen = { kind: 'popen'; bracket: string; call: boolean };
+type PNode = Expr | { kind: 'series'; items: Array<Expr | PCase> } | PCase | POpen;
 
-function asExpr(n: PNode): Expr {
+function asExpr(n: PNode | undefined): Expr {
+  if (!n) throw new Error('Incomplete expression.');
   if (n.kind === 'series') {
-    if (n.items.length === 1) return n.items[0];
+    if (n.items.length === 1) return asExpr(n.items[0]);
     throw new Error('Unexpected argument list.');
   }
+  if (n.kind === 'pcase') throw new Error('A "condition: value" pair is only valid inside {…}.');
+  if (n.kind === 'popen') throw new Error('Incomplete expression.');
   return n;
 }
 
 const asVecOrExpr = (n: PNode): Expr =>
   n.kind === 'series' && (n.items.length === 2 || n.items.length === 3)
-    ? { kind: 'vec', items: n.items }
+    ? seriesToVec(n.items)
     : asExpr(n);
 
 // Operators take tuples as operands — a parenthesized pair used in arithmetic
@@ -99,18 +125,81 @@ const asBin = (op: '+' | '-' | '*' | '/' | '^') =>
 const asIneq = (op: IneqOp) =>
   BinaryInfix<PNode>((a, b): Expr => ({ kind: 'ineq', op, l: asVecOrExpr(a), r: asVecOrExpr(b) }));
 
+/** A comma series of 2–3 scalars in plain brackets is a vector literal. */
+function seriesToVec(items: Array<Expr | PCase>): Expr {
+  if (items.length === 2 || items.length === 3) return { kind: 'vec', items: items.map(asExpr) };
+  throw new Error('Expected 2 or 3 vector components.');
+}
+
+/** Assemble {…} content into a piecewise if it contains `cond: value` parts. */
+function bracePiecewise(content: PNode): PNode {
+  const items = content.kind === 'series' ? content.items : [content];
+  if (!items.some(n => n.kind === 'pcase')) {
+    return content.kind === 'series' ? seriesToVec(content.items) : content;
+  }
+  const cases: Array<{ cond: Expr; value: Expr }> = [];
+  let otherwise: Expr | undefined;
+  items.forEach((n, k) => {
+    if (n.kind === 'pcase') {
+      if (n.cond.kind !== 'ineq') throw new Error('Piecewise conditions must be inequalities, like x < 0.');
+      if (otherwise) throw new Error('The default value must come last in {…}.');
+      cases.push({ cond: n.cond, value: n.value });
+    } else {
+      if (k !== items.length - 1) throw new Error('Each piecewise part needs a "condition: value".');
+      otherwise = asExpr(n);
+    }
+  });
+  return { kind: 'piecewise', cases, otherwise };
+}
+
+/**
+ * Close-bracket handler. Shunting yields "content, openMarker" then the close
+ * token, so the marker is the last argument (or the only one, for empty
+ * brackets like `f()`).
+ */
+const closer = (open: string, finish: (content: PNode | null, call: boolean) => PNode) =>
+  BinaryInfix<PNode>((a, b) => {
+    const marker = b ?? a;
+    if (!marker || marker.kind !== 'popen') throw new Error('Mismatched brackets.');
+    if (marker.bracket !== open) throw new Error(`Mismatched brackets: "${marker.bracket}" closed by "${BRACKET_CLOSE[open]}".`);
+    return finish(b === undefined ? null : a, marker.call);
+  });
+
+const BRACKET_CLOSE: Record<string, string> = { '(': ')', '[': ']', '{': '}' };
+
 const ops = operators<PNode>({
   EOF: Postfix(a => a),
 
-  // Shunting yields "content, openMarker" then the close token, so arg 0 is the content.
-  '}': BinaryInfix<PNode>(inner => inner),
-  ')': BinaryInfix<PNode>(inner => inner),
-  ']': BinaryInfix<PNode>(inner => inner),
+  '}': closer('{', content => {
+    if (!content) throw new Error('Empty braces.');
+    return bracePiecewise(content);
+  }),
+  ')': closer('(', (content, call) => {
+    // Function-call parens keep their argument series for [apply]; plain
+    // parens turn a comma series into a vector literal like (2, 3).
+    if (call) return content ?? { kind: 'series', items: [] };
+    if (!content) throw new Error('Empty parentheses.');
+    return content.kind === 'series' ? seriesToVec(content.items) : content;
+  }),
+  ']': closer('[', content => {
+    if (!content) throw new Error('Empty list.');
+    // A comma series is a data list; a single item keeps its grouping meaning.
+    if (content.kind === 'series') return { kind: 'list', items: content.items.map(asExpr) };
+    return content;
+  }),
 
   // Either side of '=' may be a tuple, so (x', y') = (y, -sin(x)) parses.
   // (In `sum(n = 1..N, body)` the ',' binds tighter than '=', so the rhs
   // arrives as the tuple (1..N, body); sumCall unpacks that shape.)
   '=': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'eq', l: asVecOrExpr(a), r: asVecOrExpr(b) })),
+
+  ',': BinaryInfix<PNode>((a, b) => {
+    const items = (n: PNode): Array<Expr | PCase> =>
+      n.kind === 'series' ? n.items : n.kind === 'pcase' ? [n] : [asExpr(n)];
+    return { kind: 'series', items: [...items(a), ...items(b)] };
+  }),
+
+  ':': BinaryInfix<PNode>((a, b): PNode => ({ kind: 'pcase', cond: asExpr(a), value: asExpr(b) })),
 
   '<': asIneq('<'),
   '<=': asIneq('<='),
@@ -118,11 +207,6 @@ const ops = operators<PNode>({
   '>': asIneq('>'),
   '>=': asIneq('>='),
   '≥': asIneq('>='),
-
-  ',': BinaryInfix<PNode>((a, b) => {
-    const items = (n: PNode): Expr[] => (n.kind === 'series' ? n.items : [asExpr(n)]);
-    return { kind: 'series', items: [...items(a), ...items(b)] };
-  }),
 
   // Σ/Π index ranges: `1..N` (only meaningful inside sum()/prod()).
   '..': BinaryInfix<PNode>((a, b): Expr => ({ kind: 'call', name: '[range]', args: [asExpr(a), asExpr(b)] })),
@@ -144,10 +228,14 @@ const ops = operators<PNode>({
 
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
-    if (a.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
+    if (a?.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
     const name = canonicalFn(a.name);
     if (name === 'sum' || name === 'prod') return sumCall(name, b);
-    const args = b.kind === 'series' ? b.items : [asExpr(b)];
+    // Tuple literals inside a call flatten into the argument list, so
+    // tube((a, b, c)) === tube(a, b, c) and |(3, 4)| reaches abs as (3, 4);
+    // geometry statements re-pair adjacent scalars into points (lib/geom.ts).
+    const items = b?.kind === 'series' ? b.items.map(asExpr) : [asExpr(b)];
+    const args = items.flatMap(x => (x.kind === 'vec' ? x.items : [x]));
     return { kind: 'call', name, args };
   }),
 });
@@ -258,7 +346,7 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
         if (afterValue) yield op('[impl]');
         yield { ...token, type: 'symbol', str: 'abs' };
         yield op('[apply]');
-        const open: Token = { ...token, type: 'parenopen', str: '(' };
+        const open: Token = { ...token, type: 'parenopen', str: '(', call: true };
         yield open;
         last = open;
       }
@@ -274,19 +362,21 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
       }
     }
 
+    let emit = token;
     if (afterValue && (token.type === 'number' || token.type === 'symbol' || token.type === 'parenopen')) {
       const isFnCall = token.type === 'parenopen' && last!.type === 'symbol' && isFnName(last!.str);
       yield op(isFnCall ? '[apply]' : '[impl]');
+      if (isFnCall) emit = { ...token, call: true };
     }
 
-    yield token;
-    last = token;
+    yield emit;
+    last = emit;
   }
 }
 
 function createLeaf(token: Token): PNode {
   if (token.type === 'number') return num(Number(token.str));
-  if (token.type === 'parenopen') return { kind: 'series', items: [] };
+  if (token.type === 'parenopen') return { kind: 'popen', bracket: token.str, call: !!token.call };
   if (token.type === 'symbol') {
     if (token.str in CONSTANTS) return num(CONSTANTS[token.str]);
     return { kind: 'var', name: token.str };
@@ -312,11 +402,9 @@ export function parseExpr(str: string, userFns: ReadonlySet<string> = new Set())
     );
     if (stack.length !== 1) throw new Error('Incomplete expression.');
     const top = stack[0];
-    if (top.kind === 'series') {
-      if (top.items.length === 2 || top.items.length === 3) return { kind: 'vec', items: top.items };
-      throw new Error('Expected 2 or 3 vector components.');
-    }
-    return top;
+    // A bare top-level comma series (no parens) still reads as a vector.
+    if (top.kind === 'series') return seriesToVec(top.items);
+    return asExpr(top);
   } finally {
     activeUserFns = new Set();
   }
@@ -333,6 +421,12 @@ export function substVars(e: Expr, env: Record<string, Expr>): Expr {
     case 'eq': return { kind: 'eq', l: substVars(e.l, env), r: substVars(e.r, env) };
     case 'ineq': return { kind: 'ineq', op: e.op, l: substVars(e.l, env), r: substVars(e.r, env) };
     case 'vec': return { kind: 'vec', items: e.items.map(a => substVars(a, env)) };
+    case 'list': return { kind: 'list', items: e.items.map(a => substVars(a, env)) };
+    case 'piecewise': return {
+      kind: 'piecewise',
+      cases: e.cases.map(c => ({ cond: substVars(c.cond, env), value: substVars(c.value, env) })),
+      otherwise: e.otherwise && substVars(e.otherwise, env),
+    };
   }
 }
 
@@ -351,6 +445,14 @@ export const normalpdf = (x: number, mean: number, sd: number): number =>
 export const normalcdf = (x: number, mean: number, sd: number): number =>
   0.5 * (1 + erf((x - mean) / (sd * Math.SQRT2)));
 
+/**
+ * Largest argument `isprime` decides. Trial division stops at 2048 divisors —
+ * the cap the GLSL twin loops to, and within float32's exact-integer range —
+ * so both implementations agree wherever they answer at all. Above it they
+ * report NaN rather than guessing, and non-finite terms are skipped.
+ */
+export const ISPRIME_MAX = 2048 * 2048 - 1;
+
 const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
@@ -363,6 +465,22 @@ const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   mod: (a, b) => a - Math.floor(a / b) * b,
   fract: a => a - Math.floor(a),
   erf, normalpdf, normalcdf,
+  gcd: (a, b) => {
+    a = Math.abs(Math.round(a));
+    b = Math.abs(Math.round(b));
+    while (b) { const t = a % b; a = b; b = t; }
+    return a;
+  },
+  isprime: x => {
+    const n = Math.round(x);
+    if (!isFinite(x) || Math.abs(x - n) > 1e-6 || n < 2) return 0;
+    // Past the shared trial-division limit the answer is unknown, not prime.
+    // This runs per frame for sequence terms and points, where scanning √n
+    // divisors (3+ seconds once n nears 2^53) would freeze the frame.
+    if (n > ISPRIME_MAX) return NaN;
+    for (let i = 2; i * i <= n; i++) if (n % i === 0) return 0;
+    return 1;
+  },
 };
 
 /** Numerically evaluate a scalar expression with the given variable bindings. */
@@ -393,6 +511,19 @@ export function evaluate(e: Expr, env: Record<string, number>): number {
     case 'eq': return evaluate(e.l, env) - evaluate(e.r, env);
     case 'ineq': throw new Error('Cannot evaluate an inequality.');
     case 'vec': throw new Error('Vector in scalar context.');
+    case 'list': throw new Error('List in scalar context.');
+    case 'piecewise': {
+      for (const c of e.cases) {
+        if (c.cond.kind !== 'ineq') throw new Error('Piecewise conditions must be inequalities.');
+        const holds = ineqComparisons(c.cond).every(({ op, l, r }) => {
+          const a = evaluate(l, env);
+          const b = evaluate(r, env);
+          return op === '<' ? a < b : op === '<=' ? a <= b : op === '>' ? a > b : a >= b;
+        });
+        if (holds) return evaluate(c.value, env);
+      }
+      return e.otherwise ? evaluate(e.otherwise, env) : NaN;
+    }
   }
 }
 
@@ -407,6 +538,11 @@ export function freeVars(e: Expr, out = new Set<string>()): Set<string> {
     case 'eq': freeVars(e.l, out); freeVars(e.r, out); break;
     case 'ineq': freeVars(e.l, out); freeVars(e.r, out); break;
     case 'vec': e.items.forEach(a => freeVars(a, out)); break;
+    case 'list': e.items.forEach(a => freeVars(a, out)); break;
+    case 'piecewise':
+      e.cases.forEach(c => { freeVars(c.cond, out); freeVars(c.value, out); });
+      if (e.otherwise) freeVars(e.otherwise, out);
+      break;
   }
   return out;
 }

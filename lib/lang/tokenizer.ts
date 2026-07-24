@@ -7,6 +7,8 @@ export interface Token<TokenType=string> {
   str: string;
   line: number;
   loc: [number, number];
+  /** Marks a parenopen that is a function-call argument list (set by expr.ts). */
+  call?: boolean;
 }
 
 export default function Tokenizer(patternDict: PatternDict) {

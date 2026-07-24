@@ -15,8 +15,10 @@ import {
   scanDefinition,
 } from './defs.ts';
 import { parseExpr, substVars } from './expr.ts';
+import { lowerGeom } from './geom.ts';
 import { type Classified, classify } from './plot.ts';
 import { buildGridField, type GridField } from './grid.ts';
+import { classifySeqRec, scanSeqRec } from './seq.ts';
 
 export interface CompiledRows {
   classified: Classified[];
@@ -31,6 +33,12 @@ export function compileRows(rows: string[]): CompiledRows {
   for (const text0 of rows) {
     const text = text0.trim();
     if (!text) continue;
+    // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not
+    // definitions, exactly as recompileAll skips them before scanDefinition.
+    if (scanSeqRec(text)) {
+      plotTexts.push(text);
+      continue;
+    }
     const d = scanDefinition(text);
     if (d && !seen.has(d.name)) {
       seen.add(d.name);
@@ -56,9 +64,19 @@ export function compileRows(rows: string[]): CompiledRows {
     constVals = evalConstEnv(built.defs, 0);
   } catch {}
   for (const name of animatedConstNames(built.defs)) delete constVals[name];
+  const ropts = { consts: constVals, boundConsts: built.sumBoundConsts };
   const classified: Classified[] = [];
   for (const text of plotTexts) {
-    let parsed = resolveExpr(parseExpr(text, fnNames), getFn, { consts: constVals });
+    // Sequences/recurrences classify through their own path (lib/seq.ts),
+    // same as recompileAll; lists and piecewise ride the ordinary parse.
+    const seq = scanSeqRec(text);
+    if (seq) {
+      classified.push(classifySeqRec(seq, fnNames, getFn, constNames, ropts));
+      continue;
+    }
+    let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
+    // Expand point arithmetic and geometry statements like the app does.
+    parsed = lowerGeom(parsed, n => built.defs.points.has(n));
     if (built.defs.fields.size) parsed = substVars(parsed, fieldEnv);
     classified.push(classify(parsed, constNames));
   }
@@ -87,6 +105,19 @@ export const CORPUS: { name: string; rows: (c: number) => string[] }[] = [
   { name: 'domain2d', rows: c => [`a = ${c}`, 'domain((w^3 - a)/w)'] },
   { name: 'conformal2d', rows: c => [`a = ${c}`, 'conformal(w^2/a)'] },
   { name: 'fractal2d', rows: c => [`a = ${c}`, 'iter(z^2 + w/a)'] },
+  // Sequences, recurrences, lists, piecewise, and number theory (README rows).
+  { name: 'sequence', rows: c => [`a = ${c}`, 'a_n = a/n^2'] },
+  { name: 'seq-isprime', rows: c => [`a = ${c}`, 'a_n = a isprime(n)'] },
+  { name: 'seq-sum-term', rows: c => [`a = ${c}`, 'a_n = a sum(k=1..3, k^n)'] },
+  { name: 'cobweb', rows: c => [`r = ${c}`, 'a_{n+1} = r a_n (1 - a_n)'] },
+  { name: 'cobweb-seed', rows: c => [`a_0 = ${c}`, 'a_{n+1} = a_n/2 + 1'] },
+  { name: 'bifurcation', rows: c => [`a_0 = ${c}`, 'a_{n+1} = x a_n (1 - a_n)'] },
+  { name: 'vlist', rows: c => [`a = ${c}`, '[a, 1, 4, 1, 5]'] },
+  { name: 'plist', rows: c => [`a = ${c}`, '[(a, 2), (3, 4)]'] },
+  { name: 'plist3d', rows: c => [`a = ${c}`, '[(1, 2, a), (4, 5, 6)]'] },
+  { name: 'piecewise', rows: c => [`a = ${c}`, 'y = {x < 0: -a x, x >= 0: a x^2}'] },
+  { name: 'piecewise-default', rows: c => [`a = ${c}`, 'y = {x < a: sin(x), cos(x)}'] },
+  { name: 'gcd2d', rows: c => [`a = ${c}`, 'y = gcd(floor(x), floor(a x))'] },
 ];
 
 /**

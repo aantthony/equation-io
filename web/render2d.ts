@@ -21,6 +21,8 @@ export interface Curve2D {
   color: [number, number, number];
   /** User-defined constants the field references (as u_<name> uniforms). */
   params?: string[];
+  /** Extra per-item float uniforms set each draw (e.g. a recurrence seed). */
+  uniforms?: Record<string, number>;
 }
 
 export const paramDecls = (params: string[] = []): string =>
@@ -48,6 +50,9 @@ export interface Fractal2D {
   params?: string[];
 }
 
+/** An orbit diagram: field is f(a, x), iterated per pixel column from uSeed. */
+export type Bif2D = Curve2D;
+
 /** Everything drawable in a 2D frame, in back-to-front draw order. */
 export interface Layers2D {
   /** Contour stacks of f for `f(x,y) = c` rows; drawn under the other layers. */
@@ -57,6 +62,7 @@ export interface Layers2D {
   conformals?: Curve2D[];
   vfields?: VField2D[];
   ineqs?: Ineq2D[];
+  bifs?: Bif2D[];
   scalars?: Curve2D[];
   complexes?: Curve2D[];
   curves?: Curve2D[];
@@ -524,6 +530,44 @@ void main() {
 `;
 }
 
+function bifFrag(field: string, params?: string[]): string {
+  // Orbit diagram of the map a ← f(a, x): each pixel column fixes the
+  // parameter x, iterates past the transient from the seed, then accumulates
+  // how often the orbit lands within a pixel of this fragment's y. Stable
+  // orbits saturate to solid branches; chaotic bands stay as light dust.
+  return `#version 300 es
+precision highp float;
+uniform vec2 uCenter;
+uniform float uUpp;
+uniform vec2 uRes;
+uniform vec3 uColor;
+uniform float t;
+uniform float uSeed;
+${paramDecls(params)}
+out vec4 outColor;
+${GLSL_PRELUDE}
+float f(float a, float x) { return ${field}; }
+void main() {
+  vec2 p = uCenter + (gl_FragCoord.xy - 0.5 * uRes) * uUpp;
+  float a = uSeed;
+  for (int k = 0; k < 150; k++) {
+    a = f(a, p.x);
+    if (isnan(a) || isinf(a) || abs(a) > 1e12) discard;
+  }
+  float acc = 0.0;
+  for (int k = 0; k < 200; k++) {
+    a = f(a, p.x);
+    if (isnan(a) || isinf(a) || abs(a) > 1e12) break;
+    float d = abs(a - p.y) / uUpp;
+    acc += 0.35 * (1.0 - smoothstep(0.6, 1.4, d));
+  }
+  float alpha = min(acc, 1.0) * 0.92;
+  if (alpha < 0.01) discard;
+  outColor = vec4(uColor, alpha);
+}
+`;
+}
+
 function ineqFrag(field: string, edges: string[], params?: string[]): string {
   // Each non-strict comparison draws its boundary with the same two-scale
   // distance estimate as curveFrag, gated to the region's edge so a chain's
@@ -626,6 +670,7 @@ export class Renderer2D {
       frag: string,
       color: [number, number, number],
       params?: string[],
+      uniforms?: Record<string, number>,
       extra?: (prog: WebGLProgram) => void,
     ) => {
       let prog: WebGLProgram;
@@ -646,16 +691,20 @@ export class Renderer2D {
         const loc = gl.getUniformLocation(prog, 'u_' + p);
         if (loc) gl.uniform1f(loc, env[p] ?? 0);
       }
+      for (const [name, value] of Object.entries(uniforms ?? {})) {
+        const loc = gl.getUniformLocation(prog, name);
+        if (loc) gl.uniform1f(loc, value);
+      }
       extra?.(prog);
       this.quad.draw();
     };
     const drawField = (item: Curve2D, frag: (f: string, params?: string[]) => string) =>
-      drawProgram(frag(item.field, item.params), item.color, item.params);
+      drawProgram(frag(item.field, item.params), item.color, item.params, item.uniforms);
 
     // Contour stacks sit just above the grid, under everything else, so the
     // solid level and any other layer stay readable on top.
     for (const lv of layers.levels ?? []) {
-      drawProgram(levelsFrag(lv), lv.color, lv.params, prog => {
+      drawProgram(levelsFrag(lv), lv.color, lv.params, undefined, prog => {
         gl.uniform1f(gl.getUniformLocation(prog, 'uMajor'), lv.major);
         gl.uniform1f(gl.getUniformLocation(prog, 'uMinor'), lv.minor);
       });
@@ -667,6 +716,7 @@ export class Renderer2D {
     for (const c of layers.conformals ?? []) drawField(c, conformalFrag);
     for (const f of layers.vfields ?? []) drawProgram(vfieldFrag(f.fx, f.fy, f.params), f.color, f.params);
     for (const q of layers.ineqs ?? []) drawField(q, (f, ps) => ineqFrag(f, q.edges, ps));
+    for (const b of layers.bifs ?? []) drawField(b, bifFrag);
     for (const s of layers.scalars ?? []) drawField(s, scalarFrag);
     for (const c of layers.complexes ?? []) drawField(c, complexFrag);
     for (const c of layers.curves ?? []) drawField(c, curveFrag);
@@ -675,12 +725,15 @@ export class Renderer2D {
 
 export interface Overlay2D {
   /** hot: pointer is over it (or dragging it) — drawn with a grab halo.
-   *  label: text drawn beside the point (a named point's name). */
-  points: Array<{ x: number; y: number; color: string; hot?: boolean; label?: string }>;
+   *  label: text drawn beside the point (a named point's name).
+   *  r: dot radius in CSS px (sequence/list dots draw slightly smaller). */
+  points: Array<{ x: number; y: number; color: string; hot?: boolean; label?: string; r?: number }>;
   /** closed joins the last vertex back to the first; fill (a CSS color,
    *  usually translucent) paints the enclosed region when every vertex is
    *  finite. */
-  polylines: Array<{ pts: number[]; color: string; closed?: boolean; fill?: string }>;
+  polylines: Array<{ pts: number[]; color: string; closed?: boolean; fill?: string; width?: number }>;
+  /** Vertical bars from y = 0, halfWidth in math units (data-list bar mode). */
+  bars?: Array<{ x: number; y: number; halfWidth: number; color: string }>;
 }
 
 /** Axis labels plus CPU-sampled geometry (points, parametric curves).
@@ -726,9 +779,23 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
   }
 
   if (extras) {
+    for (const bar of extras.bars ?? []) {
+      const sx = toScreenX(bar.x);
+      const sy0 = toScreenY(0);
+      const sy = toScreenY(bar.y);
+      if (!isFinite(sx) || !isFinite(sy)) continue;
+      const hw = bar.halfWidth / upp;
+      ctx.globalAlpha = 0.3;
+      ctx.fillStyle = bar.color;
+      ctx.fillRect(sx - hw, Math.min(sy0, sy), hw * 2, Math.abs(sy - sy0));
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = bar.color;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sx - hw, Math.min(sy0, sy), hw * 2, Math.abs(sy - sy0));
+    }
     for (const line of extras.polylines) {
       ctx.strokeStyle = line.color;
-      ctx.lineWidth = 2.25;
+      ctx.lineWidth = line.width ?? 2.25;
       ctx.lineJoin = 'round';
       ctx.beginPath();
       let pen = false;
@@ -763,11 +830,12 @@ export function drawLabels2D(ctx: CanvasRenderingContext2D, view: View2D, dpr: n
         ctx.strokeStyle = pt.color;
         ctx.stroke();
       }
+      const r = pt.r ?? 5;
       ctx.beginPath();
-      ctx.arc(sx, sy, 5, 0, Math.PI * 2);
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.fillStyle = pt.color;
       ctx.fill();
-      ctx.lineWidth = 2;
+      ctx.lineWidth = r < 4 ? 1.25 : 2;
       ctx.strokeStyle = theme.pointOutline;
       ctx.stroke();
       if (pt.label) {

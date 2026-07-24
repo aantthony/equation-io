@@ -124,6 +124,14 @@ export function diff(e: Expr, v: string): Expr {
     case 'eq': return sub(diff(e.l, v), diff(e.r, v));
     case 'ineq': throw new Error('Cannot differentiate an inequality.');
     case 'vec': throw new Error('Differentiate vector components individually.');
+    case 'list': throw new Error('Cannot differentiate a list.');
+    case 'piecewise':
+      // Branchwise derivative (ignores the boundary points).
+      return {
+        kind: 'piecewise',
+        cases: e.cases.map(c => ({ cond: c.cond, value: diff(c.value, v) })),
+        otherwise: e.otherwise && diff(e.otherwise, v),
+      };
   }
   throw new Error('Unreachable');
 }

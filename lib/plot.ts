@@ -14,7 +14,7 @@
  */
 import { SPECIAL_FORMS, compileTyped, usesComplex } from './complex.ts';
 import { diff } from './diff.ts';
-import { builtinFn, type Expr, evaluate, freeVars, substVars } from './expr.ts';
+import { builtinFn, type Expr, evaluate, freeVars, ineqComparisons, substVars } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 import { type GridField, buildGridField } from './grid.ts';
 
@@ -56,7 +56,21 @@ export type Plot =
    *  (κ, τ, tubes); absent → finite differences. */
   | { type: 'pcurve'; dim: 2 | 3; comps: Expr[]; tube?: number; d1?: Expr[]; d2?: Expr[]; d3?: Expr[] }
   /** du/dv: symbolic tangents ∂P/∂u, ∂P/∂v for lighting; absent → finite differences. */
-  | { type: 'psurface'; comps: [string, string, string]; du?: [string, string, string]; dv?: [string, string, string] };
+  | { type: 'psurface'; comps: [string, string, string]; du?: [string, string, string]; dv?: [string, string, string] }
+  /** [3, 1, 4]: dots at (k, value), k = 1, 2, …; the UI can switch to bars. */
+  | { type: 'vlist'; values: Expr[] }
+  /** [(1,2), (3,4)]: a scatter of points. */
+  | { type: 'plist'; dim: 2 | 3; pts: Expr[][] }
+  /** a_n = f(n): dots at integer n ≥ 0; the UI can switch to partial sums. */
+  | { type: 'sequence'; term: Expr; index: string }
+  /**
+   * a_{n+1} = f(a_n): the map's curve y = f(x) plus a CPU-iterated cobweb
+   * path from the seed. recVar is the AST symbol for a_n; a0Name names the
+   * seed constant (a_0) if the user defined one.
+   */
+  | { type: 'cobweb'; f: Expr; recVar: string; curveField: string; a0Name?: string }
+  /** a_{n+1} = f(a_n, x): orbit attractor per pixel column, x as the parameter. */
+  | { type: 'bifurcation'; field: string; a0Name?: string };
 
 /** Symbolically differentiate each component; undefined if any is non-smooth. */
 function tryGrad(exprs: Expr[], v: string): [string, string, string] | undefined {
@@ -156,12 +170,20 @@ function nestedSpecial(e: Expr, isRoot = false): string | undefined {
     }
     case 'eq': return nestedSpecial(e.l) ?? nestedSpecial(e.r);
     case 'ineq': return nestedSpecial(e.l) ?? nestedSpecial(e.r);
+    case 'list':
     case 'vec': {
       for (const a of e.items) {
         const f = nestedSpecial(a);
         if (f) return f;
       }
       return undefined;
+    }
+    case 'piecewise': {
+      for (const c of e.cases) {
+        const f = nestedSpecial(c.cond) ?? nestedSpecial(c.value);
+        if (f) return f;
+      }
+      return e.otherwise ? nestedSpecial(e.otherwise) : undefined;
     }
   }
 }
@@ -229,7 +251,7 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
     // Vector-field streamlines drift continuously, so they always animate.
     animated: animated || plot.type === 'vfield2d',
     needs3D: plot.type === 'implicit3d' || plot.type === 'psurface'
-      || ((plot.type === 'point' || plot.type === 'pcurve') && plot.dim === 3),
+      || ((plot.type === 'point' || plot.type === 'pcurve' || plot.type === 'plist') && plot.dim === 3),
     params,
   });
 
@@ -241,6 +263,19 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
       throw new Error(`${what} must be constant — they cannot use x, y, u, or v.`);
     }
     return done({ type: 'polygon', pts: expr.args, closed: expr.name !== '[segment]' });
+  }
+
+  if (expr.kind === 'list') {
+    if (usesComplex(expr)) throw new Error('Complex values are not supported in lists.');
+    for (const v of vars) {
+      if (v !== 't') throw new Error(`A list may only use constants and t (found ${v}).`);
+    }
+    const vecs = expr.items.filter((it): it is Expr & { kind: 'vec' } => it.kind === 'vec');
+    if (vecs.length === 0) return done({ type: 'vlist', values: expr.items });
+    if (vecs.length !== expr.items.length) throw new Error('Lists cannot mix numbers and points.');
+    const dims = new Set(vecs.map(it => it.items.length));
+    if (dims.size > 1) throw new Error('All points in a list need the same number of coordinates.');
+    return done({ type: 'plist', dim: vecs[0].items.length as 2 | 3, pts: vecs.map(it => it.items) });
   }
 
   // GLSL compilation sees constants as u_<name> uniforms; CPU evaluation
@@ -332,19 +367,7 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
 
   if (g.kind === 'ineq') {
     if (vars.has('z')) throw new Error('Inequalities are 2D only.');
-    // Flatten a left-nested chain ((0 <= y) < x) into its comparisons;
-    // comparison k compares the previous comparison's right side.
-    const chain: Array<Expr & { kind: 'ineq' }> = [];
-    let node: Expr = g;
-    while (node.kind === 'ineq') {
-      chain.unshift(node);
-      node = node.l;
-    }
-    const comps = chain.map((c, k) => ({
-      op: c.op,
-      l: k === 0 ? c.l : chain[k - 1].r,
-      r: c.r,
-    }));
+    const comps = ineqComparisons(g);
     if (new Set(comps.map(c => c.op[0])).size > 1) {
       throw new Error('Chained inequalities must point the same way.');
     }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { evaluate, Expr, freeVars, parseExpr } from './expr.ts';
+import { evaluate, Expr, freeVars, ISPRIME_MAX, parseExpr } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 
 function evalExpr(e: Expr, env: Record<string, number>): number {
@@ -226,5 +226,102 @@ describe('case-insensitive builtin functions', () => {
     expect(parseExpr('F(x)')).toMatchObject({ kind: 'bin', op: '*' });
     // Declared as a user fn, it parses as a call under its exact name.
     expect(parseExpr('F(x)', new Set(['F']))).toMatchObject({ kind: 'call', name: 'F' });
+  });
+});
+
+describe('piecewise', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('parses and evaluates {cond: value} branches in order', () => {
+    const e = parseExpr('{x < 0: -x, x >= 0: x^2}');
+    expect(e.kind).toBe('piecewise');
+    expect(ev('{x < 0: -x, x >= 0: x^2}', { x: -3 })).toBe(3);
+    expect(ev('{x < 0: -x, x >= 0: x^2}', { x: 2 })).toBe(4);
+  });
+
+  it('supports chained conditions and a trailing default', () => {
+    expect(ev('{0 < x < 1: 1, 0}', { x: 0.5 })).toBe(1);
+    expect(ev('{0 < x < 1: 1, 0}', { x: 2 })).toBe(0);
+  });
+
+  it('is NaN outside all cases when there is no default', () => {
+    expect(ev('{x > 0: 1}', { x: -1 })).toBeNaN();
+  });
+
+  it('compiles to nested GLSL ternaries', () => {
+    const g = toGLSL(parseExpr('{x < 0: -x, 1}'));
+    expect(g).toContain('(x < 0.0)');
+    expect(g).toContain('?');
+  });
+
+  it('rejects non-inequality conditions', () => {
+    expect(() => parseExpr('{x: 1, 2}')).toThrow(/inequalities/);
+  });
+
+  it('keeps plain braces as grouping', () => {
+    expect(ev('2{x + 1}', { x: 2 })).toBe(6);
+  });
+});
+
+describe('lists', () => {
+  it('parses numeric lists', () => {
+    const e = parseExpr('[1, 4, 2, 8]');
+    if (e.kind !== 'list') throw new Error('expected list');
+    expect(e.items).toHaveLength(4);
+    expect(evaluate(e.items[3], {})).toBe(8);
+  });
+
+  it('parses point lists without flattening the pairs', () => {
+    const e = parseExpr('[(1, 2), (3, 4)]');
+    if (e.kind !== 'list') throw new Error('expected list');
+    expect(e.items).toHaveLength(2);
+    expect(e.items.every(i => i.kind === 'vec')).toBe(true);
+  });
+
+  it('keeps single-item brackets as grouping', () => {
+    expect(evaluate(parseExpr('2[x + 1]'), { x: 2 })).toBe(6);
+  });
+
+  it('rejects lists inside expressions', () => {
+    expect(() => toGLSL(parseExpr('[1, 2] + 1'))).toThrow(/own row/);
+  });
+
+  it('still parses parenthesized vectors and function arguments', () => {
+    expect(parseExpr('(1, 2)').kind).toBe('vec');
+    expect(evaluate(parseExpr('atan2(1, 1)'), {})).toBeCloseTo(Math.PI / 4);
+  });
+});
+
+describe('number theory', () => {
+  const ev = (s: string) => evaluate(parseExpr(s), {});
+
+  it('evaluates gcd', () => {
+    expect(ev('gcd(12, 18)')).toBe(6);
+    expect(ev('gcd(7, 3)')).toBe(1);
+    expect(ev('gcd(0, 5)')).toBe(5);
+  });
+
+  it('evaluates isprime', () => {
+    expect(ev('isprime(2)')).toBe(1);
+    expect(ev('isprime(97)')).toBe(1);
+    expect(ev('isprime(91)')).toBe(0);
+    expect(ev('isprime(1)')).toBe(0);
+    expect(ev('isprime(2.5)')).toBe(0);
+    expect(ev(`isprime(${ISPRIME_MAX})`)).toBe(0); // 4194303 = 3 · 1398101
+    expect(ev('isprime(4194301)')).toBe(1); // the largest prime it decides
+  });
+
+  it('bounds isprime instead of freezing the frame', () => {
+    // Trial division past the limit costs seconds per call, in a path that
+    // runs per frame; the answer is unknown rather than prime.
+    expect(ev(`isprime(${ISPRIME_MAX + 1})`)).toBeNaN();
+    const t0 = performance.now();
+    expect(ev('isprime(9007199254740881)')).toBeNaN(); // a prime near 2^53
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it('compiles to prelude helpers', () => {
+    expect(toGLSL(parseExpr('gcd(x, y)'))).toBe('eq_gcd(x, y)');
+    expect(toGLSL(parseExpr('isprime(x)'))).toBe('eq_isprime(x)');
   });
 });

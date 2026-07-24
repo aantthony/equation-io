@@ -83,6 +83,20 @@ describe('compiled size budgets', () => {
     domain2d: 240,
     conformal2d: 160,
     fractal2d: 170,
+    // Sequence/list rows carry Exprs (CPU-evaluated), so only their labels
+    // and the cobweb/bifurcation fields are GLSL — small floors again.
+    sequence: 25,
+    'seq-isprime': 25,
+    'seq-sum-term': 25,
+    cobweb: 110,
+    'cobweb-seed': 100,
+    bifurcation: 95,
+    vlist: 15,
+    plist: 15,
+    plist3d: 15,
+    piecewise: 240,
+    'piecewise-default': 130,
+    gcd2d: 140,
   };
 
   const glslOf = (rows: string[]): string => {

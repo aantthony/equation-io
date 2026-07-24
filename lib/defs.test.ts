@@ -81,6 +81,16 @@ describe('Σ sums and Π products', () => {
     expect(at('sum[n=1..3] n + 1')).toBe(7); // '+' ends the body
   });
 
+  it('keeps Σ brackets distinct from list literals and piecewise braces', () => {
+    // `[` after a function name opens a Σ header; elsewhere it is a data list
+    // or plain grouping, and `{…}` stays a piecewise.
+    expect(at('sum[n=1..3] n')).toBe(6);
+    expect(parseExpr('[1, 4, 2]').kind).toBe('list');
+    expect(at('2[x + 1]', { x: 2 })).toBe(6);
+    expect(at('{x > 0: sum(n=1..3, n), 0}', { x: 1 })).toBe(6);
+    expect(at('{x > 0: sum(n=1..3, n), 0}', { x: -1 })).toBe(0);
+  });
+
   it('accepts Σ and Π glyphs', () => {
     expect(at('Σ[n=1..4] n')).toBe(10);
     expect(at('Π(k=1..3, k)')).toBe(6);

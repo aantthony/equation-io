@@ -465,6 +465,13 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   conformal2d: 'fallback',
   fractal2d: 'fallback',
   vfield2d: 'fallback',
+  // The sequence family (dots, cobwebs, orbit diagrams) and data lists have
+  // no scanline path here yet; the site card beats a blank grid.
+  vlist: 'fallback',
+  plist: 'fallback',
+  sequence: 'fallback',
+  cobweb: 'fallback',
+  bifurcation: 'fallback',
 };
 
 /**

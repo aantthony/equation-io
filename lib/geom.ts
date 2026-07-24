@@ -167,6 +167,25 @@ function lower(e: Expr, isPoint: IsPoint): LV {
       if (flat.every((f, k) => f === e.items[k])) return sc(e);
       return sc({ kind: 'vec', items: flat });
     }
+    case 'list': {
+      // Items lower independently; a named point becomes its (A_x, A_y) vec,
+      // so [A, B] scatters named points like [(1, 2), (3, 4)] does literals.
+      const items = e.items.map(a => toExpr(lo(a)));
+      if (items.every((it, k) => it === e.items[k])) return sc(e);
+      return sc({ kind: 'list', items });
+    }
+    case 'piecewise': {
+      const one = (n: Expr): Expr => {
+        const v = lo(n);
+        if (v.vec) throw new Error('Points cannot appear in a piecewise expression.');
+        return v.e;
+      };
+      const cases = e.cases.map(c => ({ cond: one(c.cond), value: one(c.value) }));
+      const otherwise = e.otherwise && one(e.otherwise);
+      if (otherwise === e.otherwise
+        && cases.every((c, k) => c.cond === e.cases[k].cond && c.value === e.cases[k].value)) return sc(e);
+      return sc({ kind: 'piecewise', cases, otherwise });
+    }
   }
   throw new Error('Unreachable');
 }

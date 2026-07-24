@@ -283,6 +283,28 @@ html, body {
   font-family: ui-sans-serif, system-ui, sans-serif;
   padding: 0 6px 3px 28px;
 }
+/* Per-row display toggles (Σ partial sums on sequences, bars on data lists). */
+.eq-toggles {
+  display: flex;
+  gap: 6px;
+  padding: 0 6px 4px 28px;
+}
+.eq-toggle {
+  border: 1px solid var(--divider);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: 11px ui-sans-serif, system-ui, sans-serif;
+  line-height: 1;
+  cursor: pointer;
+  padding: 3px 8px;
+}
+.eq-toggle:hover { color: var(--muted-hover); }
+.eq-toggle.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
 
 #panel { position: relative; }
 

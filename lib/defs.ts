@@ -219,6 +219,12 @@ function substIdx(e: Expr, idx: string, val: Expr): Expr {
     case 'eq': return { kind: 'eq', l: substIdx(e.l, idx, val), r: substIdx(e.r, idx, val) };
     case 'ineq': return { kind: 'ineq', op: e.op, l: substIdx(e.l, idx, val), r: substIdx(e.r, idx, val) };
     case 'vec': return { kind: 'vec', items: e.items.map(a => substIdx(a, idx, val)) };
+    case 'list': return { kind: 'list', items: e.items.map(a => substIdx(a, idx, val)) };
+    case 'piecewise': return {
+      kind: 'piecewise',
+      cases: e.cases.map(c => ({ cond: substIdx(c.cond, idx, val), value: substIdx(c.value, idx, val) })),
+      otherwise: e.otherwise && substIdx(e.otherwise, idx, val),
+    };
   }
 }
 
@@ -244,6 +250,12 @@ function foldNums(e: Expr): Expr {
     case 'eq': return { kind: 'eq', l: foldNums(e.l), r: foldNums(e.r) };
     case 'ineq': return { kind: 'ineq', op: e.op, l: foldNums(e.l), r: foldNums(e.r) };
     case 'vec': return { kind: 'vec', items: e.items.map(foldNums) };
+    case 'list': return { kind: 'list', items: e.items.map(foldNums) };
+    case 'piecewise': return {
+      kind: 'piecewise',
+      cases: e.cases.map(c => ({ cond: foldNums(c.cond), value: foldNums(c.value) })),
+      otherwise: e.otherwise && foldNums(e.otherwise),
+    };
   }
 }
 
@@ -350,6 +362,12 @@ function rx(e: Expr, ctx: Ctx): Expr {
     case 'eq': return { kind: 'eq', l: rx(e.l, ctx), r: rx(e.r, ctx) };
     case 'ineq': return { kind: 'ineq', op: e.op, l: rx(e.l, ctx), r: rx(e.r, ctx) };
     case 'vec': return { kind: 'vec', items: e.items.map(x => rx(x, ctx)) };
+    case 'list': return { kind: 'list', items: e.items.map(x => rx(x, ctx)) };
+    case 'piecewise': return {
+      kind: 'piecewise',
+      cases: e.cases.map(c => ({ cond: rx(c.cond, ctx), value: rx(c.value, ctx) })),
+      otherwise: e.otherwise && rx(e.otherwise, ctx),
+    };
   }
 }
 

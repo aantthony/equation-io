@@ -38,6 +38,10 @@ function hasAtan2(e: Expr): boolean {
     case 'eq': return hasAtan2(e.l) || hasAtan2(e.r);
     case 'ineq': return hasAtan2(e.l) || hasAtan2(e.r);
     case 'vec': return e.items.some(hasAtan2);
+    case 'list': return e.items.some(hasAtan2);
+    case 'piecewise':
+      return e.cases.some(c => hasAtan2(c.cond) || hasAtan2(c.value))
+        || (e.otherwise ? hasAtan2(e.otherwise) : false);
   }
 }
 
