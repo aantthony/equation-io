@@ -83,6 +83,25 @@ describe('mcp endpoint', () => {
     ]);
   });
 
+  it('validates recurrence rows like the app does (logistic cobweb)', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: {
+        equations: ['r = 1.9', 'a_0 = 0.265', 'a_{n+1} = r a_n (1 - a_n)', '(a_0, a_0)'],
+      },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
+      'definition (const)', 'definition (const)', 'cobweb', 'point',
+    ]);
+    // The static preview cannot draw a cobweb; the gap must be disclosed
+    // rather than shipping an image with the recurrence silently missing.
+    expect(out.preview_omits).toEqual([
+      { row: 'a_{n+1} = r a_n (1 - a_n)', why: expect.stringContaining('live app') },
+    ]);
+  });
+
   it('reports per-row errors without failing the call', async () => {
     const { body } = await rpc('tools/call', {
       name: 'create_graph',

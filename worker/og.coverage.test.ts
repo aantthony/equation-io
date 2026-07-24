@@ -24,6 +24,12 @@ describe('og renderer coverage', () => {
       expect(OG_COVERAGE[t], t).toBe('fallback');
     }
   });
+
+  it('falls back for the sequence family', () => {
+    for (const t of ['sequence', 'cobweb', 'bifurcation', 'vlist', 'plist'] as const) {
+      expect(OG_COVERAGE[t], t).toBe('fallback');
+    }
+  });
 });
 
 describe('canRenderOg', () => {
@@ -44,6 +50,9 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['ln(w-2) - ln(w+2)'])).toBe(false);
     // One unsupported row poisons the graph: a partial picture is still wrong.
     expect(canRenderOg(['y = sin(x)', 'iter(z^2 + w)'])).toBe(false);
+    // Sequence rows classify without a resolved expr — the gap must still be seen.
+    expect(canRenderOg(['a_n = 1/n^2'])).toBe(false);
+    expect(canRenderOg(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])).toBe(false);
   });
 
   it('rejects the within-type gaps OG_COVERAGE cannot express', () => {
@@ -82,6 +91,12 @@ describe('previewGap', () => {
     expect(gap(['y = sin(x)'])).toBeNull();
     expect(gap(['z = x^2 + y^2'])).toBeNull();
     expect(gap(['(cos(2pi u), sin(2pi u), u)'])).toBeNull();
+  });
+
+  it('blames the preview, not the row, for a cobweb', () => {
+    const why = gap(['r = 1.9', 'a_{n+1} = r a_n (1 - a_n)'])!;
+    expect(why).toContain('cobweb');
+    expect(why).toContain('live app renders');
   });
 
   it('explains the sphere without impugning it', () => {

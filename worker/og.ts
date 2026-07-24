@@ -488,8 +488,10 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
  * does with the row, and never implies the row itself is broken.
  */
 export function previewGap(row: RowInfo, needs3D: boolean): string | null {
+  // Sequence-family rows classify without a resolved expr — judge them by
+  // type alone; only the implicit3d heightmap probe below needs the expr.
   const { cls, expr } = row;
-  if (!cls || !expr) return null;
+  if (!cls) return null;
   const type = cls.plot.type;
   if (!needs3D) {
     return OG_COVERAGE[type] === 'draws'
@@ -500,7 +502,7 @@ export function previewGap(row: RowInfo, needs3D: boolean): string | null {
     case 'psurface':
       return null;
     case 'implicit3d':
-      return heightmapExpr(expr)
+      return expr && heightmapExpr(expr)
         ? null
         : 'the static preview draws only z = f(x, y) surfaces; the live app renders general implicit surfaces in full';
     case 'pcurve':

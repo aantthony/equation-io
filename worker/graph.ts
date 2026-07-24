@@ -16,6 +16,7 @@ import {
 import { type Expr, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom } from '../lib/geom.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
 import { type ViewSpec, parseViewRow } from '../lib/view.ts';
 
 export interface RowInfo {
@@ -48,6 +49,8 @@ export function analyze(texts: string[]): Analysis {
   const dupRows: RowInfo[] = [];
   for (const row of rows) {
     if (!row.text) continue;
+    // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not definitions.
+    if (scanSeqRec(row.text)) continue;
     const d = scanDefinition(row.text);
     if (!d) continue;
     row.def = d;
@@ -93,6 +96,11 @@ export function analyze(texts: string[]): Analysis {
         if (seenViewKinds.has(view.kind)) throw new Error(`${view.kind} is already set by another row.`);
         seenViewKinds.add(view.kind);
         row.view = view;
+        continue;
+      }
+      const seq = scanSeqRec(row.text);
+      if (seq) {
+        row.cls = classifySeqRec(seq, fnNames, getFn, constNames);
         continue;
       }
       let parsed = resolveExpr(parseExpr(row.text, fnNames), getFn);
