@@ -1528,7 +1528,7 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['segment + midpoint', 'A = (-2, -1); B = (2, 1.5); segment(A, B); midpoint(A, B)'],
     ['circle through a point', 'C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)'],
     ['square on a segment', 'A = (-1, 0); B = (2, 1); square(A, B)'],
-    ['thébault’s theorem', 'A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D; '
+    ['thébault’s theorem', 'A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D - A; '
       + 'polygon(A, B, C, D); square(B, A); square(C, B); square(D, C); square(A, D); '
       + 'P = midpoint(A, B) - perp(B - A)/2; Q = midpoint(B, C) - perp(C - B)/2; '
       + 'R = midpoint(C, D) - perp(D - C)/2; S = midpoint(D, A) - perp(A - D)/2; '
