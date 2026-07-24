@@ -147,9 +147,12 @@ export const SHOWCASE: ShowcaseItem[] = [
     slug: 'seahorse-valley',
     title: 'Zoom until it surprises you',
     blurb: 'Seahorse valley, 200× in. A second argument buys more iterations for deep zooms.',
-    eqs: ['iter(z^2 + w, 600)'],
+    // The framing rides in the link as a view(…) row: landing on the default
+    // view would show the whole set, not the valley the caption promises.
+    // Equal x/y spans make fitView2D match the shot's span convention exactly
+    // (span 0.042 centered on -0.7627 + 0.1085i), so no `view:` override.
+    eqs: ['iter(z^2 + w, 600)', 'view(x = -0.7837..-0.7417, y = 0.0875..0.1295)'],
     group: 'Fractals',
-    view: { cx: -0.7627, cy: 0.1085, span: 0.042 },
     settle: 1.2,
   },
   {
