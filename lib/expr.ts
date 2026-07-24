@@ -34,7 +34,7 @@ export const FUNCTIONS = new Set([
   // Point (2D vector) helpers and geometry statements, lowered symbolically
   // by lowerGeom before anything evaluates or compiles them.
   'dot', 'cross', 'perp', 'midpoint', 'unit',
-  'segment', 'polygon', 'square', 'circle',
+  'segment', 'line', 'polygon', 'square', 'circle',
   // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
   'sum', 'prod',
   // Whole-expression plot modes (see classify): domain coloring, conformal

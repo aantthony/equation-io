@@ -90,6 +90,17 @@ describe('geometry statements', () => {
     expect(sq.pts.map(e => evaluate(e, {}))).toEqual([0, 0, 2, 0, 2, 2, 0, 2]);
   });
 
+  it('line desugars to an implicit equation through both points', () => {
+    expect(classify(low('line((0, 0), (1, 2))')).plot.type).toBe('implicit2d');
+    const e = low('line((0, 0), (1, 2))') as Extract<ReturnType<typeof low>, { kind: 'eq' }>;
+    // On-line points zero the field (including beyond the segment); off-line
+    // points do not.
+    expect(evaluate(e.l, { x: 2, y: 4 })).toBe(0);
+    expect(evaluate(e.l, { x: -3, y: -6 })).toBe(0);
+    expect(evaluate(e.l, { x: 1, y: 0 })).not.toBe(0);
+    expect(() => low('line(A)')).toThrow(/line takes two points/);
+  });
+
   it('circle desugars to an implicit equation', () => {
     const c = classify(low('circle((1, 2), 3)'));
     expect(c.plot.type).toBe('implicit2d');

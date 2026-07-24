@@ -22,7 +22,7 @@ import { add, div, mul, neg, sub } from './diff.ts';
 import type { Expr } from './expr.ts';
 
 /** Whole-statement geometry forms (like SPECIAL_FORMS, they never nest). */
-export const GEOM_STATEMENTS = new Set(['segment', 'polygon', 'square', 'circle']);
+export const GEOM_STATEMENTS = new Set(['segment', 'line', 'polygon', 'square', 'circle']);
 
 /** The derived scalar constants a point named `name` expands to. */
 export const pointComps = (name: string): [string, string] => [name + '_x', name + '_y'];
@@ -200,6 +200,22 @@ export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
       };
     }
     const pts = pairPoints(e.name, args, e.name === 'polygon' ? 'A, B, C' : 'A, B');
+    if (e.name === 'line') {
+      if (pts.length !== 2) {
+        throw new Error('line takes two points: line(A, B), with A = (0, 0) defined above.');
+      }
+      // The infinite line through A and B: cross(P - A, B - A) = 0, an
+      // ordinary implicit equation (so it renders on the GPU like any curve).
+      const [[ax, ay], [bx, by]] = pts;
+      return {
+        kind: 'eq',
+        l: sub(
+          mul(sub(spaceVar('x'), ax), sub(by, ay)),
+          mul(sub(spaceVar('y'), ay), sub(bx, ax)),
+        ),
+        r: { kind: 'num', value: 0 },
+      };
+    }
     if (e.name === 'segment') {
       if (pts.length !== 2) {
         throw new Error('segment takes two points: segment(A, B), with A = (0, 0) defined above.');

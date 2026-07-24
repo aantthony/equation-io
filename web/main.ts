@@ -1526,6 +1526,7 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
   ]],
   ['geometry (drag the points)', [
     ['segment + midpoint', 'A = (-2, -1); B = (2, 1.5); segment(A, B); midpoint(A, B)'],
+    ['perpendicular bisector', 'A = (-2, -1); B = (2, 1.5); segment(A, B); M = midpoint(A, B); line(M, M + perp(B - A))'],
     ['circle through a point', 'C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)'],
     ['square on a segment', 'A = (-1, 0); B = (2, 1); square(A, B)'],
     ['thébault’s theorem', 'A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D - A; '

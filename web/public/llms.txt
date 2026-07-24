@@ -133,9 +133,9 @@ demand instead of living in a tool description. No authentication required.
   `iter((|re(z)| - i |im(z)|)^2 + w)` is the burning ship.
 - Point: `(2, 3)`; animate with t: `(2cos(t), 2sin(t))`.
 - Geometry: with points defined in rows above (`A = (0, 0)`), `segment(A, B)`,
-  `polygon(A, B, C, …)` (filled), `square(A, B)` (erected on side A→B, to the
-  left of the direction A→B), and `circle(center, radius)` draw figures that
-  follow their points. Point arithmetic works anywhere: `A + B`, `2A`,
+  `line(A, B)` (the infinite line through A and B), `polygon(A, B, C, …)`
+  (filled), `square(A, B)` (erected on side A→B, to the left of the direction
+  A→B), and `circle(center, radius)` draw figures that follow their points. Point arithmetic works anywhere: `A + B`, `2A`,
   `(A + B)/2`, `midpoint(A, B)`, `perp(A)` (rotate 90° counterclockwise),
   `unit(A)`, `dot(A, B)`, `cross(A, B)`, `|A - B|` (distance). A parametric
   point like `A + u(B - A)` traces the segment. Tuple literals work directly
