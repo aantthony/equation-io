@@ -78,7 +78,13 @@ export type Plot =
    */
   | { type: 'cobweb'; f: Expr; recVar: string; curveField: string; a0Name?: string }
   /** a_{n+1} = f(a_n, x): orbit attractor per pixel column, x as the parameter. */
-  | { type: 'bifurcation'; field: string; a0Name?: string };
+  | { type: 'bifurcation'; field: string; a0Name?: string }
+  /** A derived random variable (`S = X + Y`, or a bare expression in random
+   *  variables): the sampled density estimate of the named variable. */
+  | { type: 'density'; rv: string }
+  /** A `P(…)` row estimated from samples. With `shade`, the area under rv's
+   *  density between the bounds fills in (single-variable bodies only). */
+  | { type: 'prob'; body: Expr; shade?: { rv: string; lo?: Expr; hi?: Expr } };
 
 /** Symbolically differentiate each component; undefined if any is non-smooth. */
 function tryGrad(exprs: Expr[], v: string): [string, string, string] | undefined {

@@ -128,6 +128,30 @@ describe('mcp endpoint', () => {
     expect(out.rows[0].error).toContain('X ~ Normal(0, 1)');
   });
 
+  it('validates random-variable rows: base, derived, and P(…) forms', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: {
+        equations: ['X ~ Normal(0, 1)', 'Y = {X > 0: X^2, 1}', 'P(-1 < X < 1)', 'P(Y > X)', 'X + X'],
+      },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    // Every member of the family reports the same human-readable kinds the
+    // base rows do, whether the density is exact (X, X + X) or sampled (Y).
+    expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
+      'random variable (density curve)',
+      'random variable (density curve)',
+      'probability (shaded area)',
+      'probability (shaded area)',
+      'random variable (density curve)',
+    ]);
+    // The exact P row reads its CDF value; the Monte Carlo one estimates.
+    expect(out.rows[2].value).toBe('≈ 0.6827');
+    expect(out.rows[3].value).toMatch(/^≈ 0\.\d{3}$/);
+    expect(out.preview).toBe('attached');
+  });
+
   it('reports per-row errors without failing the call', async () => {
     const { body } = await rpc('tools/call', {
       name: 'create_graph',

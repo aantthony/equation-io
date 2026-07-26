@@ -59,8 +59,10 @@ object must respect):
 | `a = 2`, `b = a² + t` | constant (slider / computed) | widget; uniform |
 | `f(x) = …` | function | inlined |
 | definition using x/y (`r = sqrt(x²+y²)`) | coordinate field | grid family (level sets) |
-| `X ~ Normal(m, s)` | random variable | its density curve |
-| `P(X < b)` | probability | shaded area + numeric readout |
+| `X ~ Normal(m, s)` (also Uniform, Exponential) | random variable | its exact density curve |
+| `Y = X^2`, `S = X1 + X2`, bare `X + Y` (X random) | derived random variable | affine-in-normals: exact pdf (shader); otherwise sampled density estimate (KDE polyline); μ/σ readout |
+| `P(X < b)` | probability | shaded area + exact numeric readout |
+| `P(Y > 0.5)`, `P(Y > X)` (derived / joint) | probability | Monte Carlo readout (+ shaded density area when one-variable) |
 
 Two consequences of invariant 4 worth naming because they already answer part
 of "what should render as what" in custom coordinates, and should stay:

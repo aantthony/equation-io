@@ -505,7 +505,7 @@ export function realPow(a: number, b: number): number {
   return NaN; // no small-denominator rational found: irrational-looking exponent
 }
 
-const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
+export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
   sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
