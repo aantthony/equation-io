@@ -97,6 +97,12 @@ describe('compiled size budgets', () => {
     piecewise: 240,
     'piecewise-default': 130,
     gcd2d: 140,
+    // System rows carry residual Exprs only — no GLSL at all.
+    system2d: 15,
+    system3d: 15,
+    // The plot row is ordinary scalar GLSL over the u_a uniform; the state's
+    // own deriv/init are CPU-side Exprs and contribute nothing.
+    state: 85,
   };
 
   const glslOf = (rows: string[]): string => {

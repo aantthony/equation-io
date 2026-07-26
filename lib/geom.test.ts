@@ -5,7 +5,7 @@ import { lowerGeom } from './geom.ts';
 import { classify } from './plot.ts';
 
 const POINTS = new Set(['A', 'B', 'C']);
-const isPt = (n: string) => POINTS.has(n);
+const isPt = (n: string) => (POINTS.has(n) ? [n + '_x', n + '_y'] : null);
 const low = (s: string) => lowerGeom(parseExpr(s), isPt);
 const env = { A_x: 1, A_y: 2, B_x: 4, B_y: 6, C_x: -1, C_y: 0 };
 const evalAt = (s: string) => evaluate(low(s), env);

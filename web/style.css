@@ -127,7 +127,8 @@ html, body {
   padding: 8px;
 }
 
-#theme-toggle {
+#theme-toggle,
+#state-reset {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -144,7 +145,11 @@ html, body {
   text-align: center;
   cursor: pointer;
 }
-#theme-toggle:hover { background: var(--eq-focus); color: var(--muted-hover); }
+/* Only present while a row defines a state (`a' = …`). */
+#state-reset { right: 34px; font-size: 14px; }
+#state-reset[hidden] { display: none; }
+#theme-toggle:hover,
+#state-reset:hover { background: var(--eq-focus); color: var(--muted-hover); }
 
 #equations {
   /* Scrolls when the list outgrows the panel's max-height; `contain` stops a

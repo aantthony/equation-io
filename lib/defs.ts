@@ -5,6 +5,10 @@
  *   defines a computed constant. Constants stay symbolic through GLSL
  *   compilation (they become uniforms) so dragging a slider never recompiles
  *   a shader.
+ * - `a' = …` defines a state: da/dt, integrated forward as the graph animates
+ *   (see state.ts), starting from `a(0) = …`. A state is a constant whose
+ *   value carries between frames instead of being a formula in t, so systems
+ *   with no closed form — a driven oscillator, a double pendulum — animate.
  * - `f(x) = x^3 - a x` defines a function; calls are inlined symbolically.
  * - `d/dx (…)` (also `d^2/dx^2`, any single-letter variable) differentiates
  *   symbolically at resolve time via diff().
@@ -14,16 +18,34 @@
  */
 import { add, diff, div, mul, neg, pow, sub } from './diff.ts';
 import { FUNCTIONS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
-import { lowerGeom, pointComps } from './geom.ts';
+import { lowerGeom, pointComps, vecStateComps } from './geom.ts';
+import { type Mat, matrixFromList } from './mat.ts';
 
 export type Definition =
   | { kind: 'const'; name: string; rhs: string }
-  | { kind: 'fn'; name: string; params: string[]; rhs: string };
+  | { kind: 'fn'; name: string; params: string[]; rhs: string }
+  /** `a' = …` — da/dt, integrated forward in time. */
+  | { kind: 'state'; name: string; rhs: string }
+  /** `a(0) = …` — where the state a starts. */
+  | { kind: 'init'; name: string; rhs: string };
+
+/**
+ * Row identity for duplicate detection. `a = 1` and `a' = 2` share a key —
+ * a cannot be both a constant and a state — but `a(0)` is its own row.
+ */
+export const defKey = (d: Definition): string => (d.kind === 'init' ? `${d.name}(0)` : d.name);
 
 export interface FnDef {
   params: string[];
   /** Fully resolved: no user-function calls or derivative nodes remain. */
   body: Expr;
+}
+
+export interface StateDef {
+  /** da/dt, resolved. Free vars in {t, constants, states}. */
+  deriv: Expr;
+  /** a at reset, resolved. Free vars in {constants}. */
+  init: Expr;
 }
 
 export interface Defs {
@@ -44,6 +66,26 @@ export interface Defs {
    * never appears in resolved expressions.
    */
   points: Set<string>;
+  /**
+   * Time-integrated states: `a' = …` with `a(0) = …`. Downstream they behave
+   * exactly like constants (uniforms in GLSL, entries in the constant
+   * environment on the CPU); only their value comes from the integrator in
+   * state.ts rather than from a formula.
+   */
+  states: Map<string, StateDef>;
+  /**
+   * Vector states by component count: `om' = …` whose derivative (or `om(0)`)
+   * is a 2- or 3-vector. The scalar states om_1, om_2(, om_3) do the
+   * integrating; the base name expands to them wherever expressions lower,
+   * exactly as a point name expands to A_x, A_y.
+   */
+  vecStates: Map<string, number>;
+  /**
+   * Named matrices: `M = [(a, b), (c, d)]`. Symbolic row-major entries;
+   * det/trace/matvec/solve expand against them during lowering, so no
+   * matrix survives into anything downstream (see mat.ts).
+   */
+  mats: Map<string, Mat>;
 }
 
 export const emptyDefs = (): Defs => ({
@@ -51,24 +93,42 @@ export const emptyDefs = (): Defs => ({
   fns: new Map(),
   fields: new Map(),
   points: new Set(),
+  states: new Map(),
+  vecStates: new Map(),
+  mats: new Map(),
 });
+
+/** Component names `name` expands to under geometry lowering, or null. */
+export const compsOf = (defs: Defs, name: string): readonly string[] | null =>
+  defs.points.has(name) ? pointComps(name)
+    : defs.vecStates.has(name) ? vecStateComps(name, defs.vecStates.get(name)!)
+      : null;
 
 /** Names with built-in meaning that definitions may not shadow. */
 export const RESERVED = new Set(['x', 'y', 'z', 'u', 'v', 't', 'w', 'i', 'd', 'e', 'pi', 'tau']);
 
 const FN_RE = /^\s*([A-Za-z_]\w*)\s*\(\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*\)\s*=(?!=)([\s\S]+)$/;
 const CONST_RE = /^\s*([A-Za-z_]\w*)\s*=(?!=)([\s\S]+)$/;
+const STATE_RE = /^\s*([A-Za-z_]\w*)'\s*=(?!=)([\s\S]+)$/;
+const INIT_RE = /^\s*([A-Za-z_]\w*)\s*\(\s*0\s*\)\s*=(?!=)([\s\S]+)$/;
+
+/** A name a definition may claim: not a builtin, not reserved, not a uniform. */
+const nameable = (n: string): boolean => !FUNCTIONS.has(n) && !RESERVED.has(n) && !n.startsWith('u_');
 
 /** Detect a definition row before parsing (so calls to it parse everywhere). */
 export function scanDefinition(text: string): Definition | null {
-  let m = FN_RE.exec(text);
-  if (m && !FUNCTIONS.has(m[1]) && !RESERVED.has(m[1]) && !m[1].startsWith('u_')) {
+  // Primes first: `a' = …` is a state, but the reserved coordinate names keep
+  // their ODE meaning, so `y' = x - y` stays a slope field (see plot.ts).
+  let m = STATE_RE.exec(text);
+  if (m && nameable(m[1])) return { kind: 'state', name: m[1], rhs: m[2] };
+  m = INIT_RE.exec(text);
+  if (m && nameable(m[1])) return { kind: 'init', name: m[1], rhs: m[2] };
+  m = FN_RE.exec(text);
+  if (m && nameable(m[1])) {
     return { kind: 'fn', name: m[1], params: m[2].split(/\s*,\s*/), rhs: m[3] };
   }
   m = CONST_RE.exec(text);
-  if (m && !FUNCTIONS.has(m[1]) && !RESERVED.has(m[1]) && !m[1].startsWith('u_')) {
-    return { kind: 'const', name: m[1], rhs: m[2] };
-  }
+  if (m && nameable(m[1])) return { kind: 'const', name: m[1], rhs: m[2] };
   return null;
 }
 
@@ -373,7 +433,7 @@ function rx(e: Expr, ctx: Ctx): Expr {
 
 export interface BuiltDefs {
   defs: Defs;
-  /** Per-definition errors by name; failed definitions are excluded from defs. */
+  /** Per-definition errors by defKey; failed definitions are excluded from defs. */
   errors: Map<string, string>;
   /** Constants referenced by Σ/Π bounds (the UI snaps their sliders to integers). */
   sumBoundConsts: Set<string>;
@@ -385,6 +445,7 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   const defs = emptyDefs();
   const byName = new Map(raw.map(d => [d.name, d]));
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
+  const stateNames = new Set(raw.filter(d => d.kind === 'state').map(d => d.name));
   const msg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
   // Numeric values of constants resolved so far: Σ/Π bounds in later
@@ -394,8 +455,9 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
 
   const parsed = new Map<string, Expr>();
   const parse = (d: Definition): Expr => {
-    let p = parsed.get(d.name);
-    if (!p) parsed.set(d.name, (p = parseExpr(d.rhs, fnNames)));
+    const key = defKey(d);
+    let p = parsed.get(key);
+    if (!p) parsed.set(key, (p = parseExpr(d.rhs, fnNames)));
     return p;
   };
 
@@ -420,16 +482,37 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
     }
   };
 
+  // Resolved right-hand sides of `a' = …` and `a(0) = …`, validated below
+  // once the constant/field split is known.
+  const derivs = new Map<string, Expr>();
+  const inits = new Map<string, Expr>();
+
   for (const d of raw) {
     try {
       if (d.kind === 'fn') {
         if (new Set(d.params).size !== d.params.length) throw new Error('Duplicate parameter names.');
         getFn(d.name);
+      } else if (d.kind === 'state') {
+        derivs.set(d.name, resolveExpr(parse(d), getFn, ropts));
+      } else if (d.kind === 'init') {
+        inits.set(d.name, resolveExpr(parse(d), getFn, ropts));
       } else {
         // Lowering expands point arithmetic; a pair result names a point.
         // Point-ness flows in definition order, so `C = B + D` needs B and D
         // defined above (a stray point name below is reported after the loop).
-        const e = lowerGeom(resolveExpr(parse(d), getFn, ropts), n => defs.points.has(n));
+        const e = lowerGeom(
+          resolveExpr(parse(d), getFn, ropts),
+          n => (defs.points.has(n) ? pointComps(n) : null),
+          n => defs.mats.get(n) ?? null,
+        );
+        if (e.kind === 'list') {
+          // A named list of rows is a matrix; anything else a list could
+          // mean has no definition-side meaning yet.
+          const m = matrixFromList(e);
+          if (!m) throw new Error(`${d.name} = […] defines a matrix — write rows: ${d.name} = [(a, b), (c, d)].`);
+          defs.mats.set(d.name, m);
+          continue;
+        }
         const store: Array<[string, Expr]> = [[d.name, e]];
         if (e.kind === 'vec') {
           if (e.items.length !== 2) throw new Error('A named point needs exactly 2 components.');
@@ -464,7 +547,7 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
         }
       }
     } catch (e) {
-      errors.set(d.name, msg(e));
+      errors.set(defKey(d), msg(e));
     }
   }
 
@@ -483,6 +566,91 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
       }
       break;
     }
+  }
+
+  // Vector states: a state whose derivative (or starting value) lowers to a
+  // 2- or 3-vector integrates componentwise. The base name splits into the
+  // scalar states om_1, om_2(, om_3) — the integrator and everything below
+  // it see only those — and the name itself expands to its components
+  // wherever expressions lower, exactly as a point name does, so `th' = om`
+  // and `segment((0, 0), om)` both work.
+  const vecOwnerKey = new Map<string, string>();
+  {
+    // Dims propagate (`th' = om` is scalar until om's own row makes om a
+    // vector), so discovery iterates to a fixed point. Lowering failures
+    // wait for the final pass below, where they are reported per row.
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [name, e] of [...derivs, ...inits]) {
+        if (defs.vecStates.has(name)) continue;
+        try {
+          const low = lowerGeom(e, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
+          if (low.kind === 'vec') {
+            defs.vecStates.set(name, low.items.length);
+            changed = true;
+          }
+        } catch { /* reported below */ }
+      }
+    }
+
+    // Final pass: lower every derivative and starting value against the full
+    // component map, split vector ones, and swap the scalar results in.
+    const flatDerivs = new Map<string, Expr>();
+    const flatInits = new Map<string, Expr>();
+    for (const [name, e] of derivs) {
+      try {
+        const low = lowerGeom(e, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
+        const dim = defs.vecStates.get(name);
+        if (dim === undefined) {
+          flatDerivs.set(name, low);
+          continue;
+        }
+        if (low.kind !== 'vec' || low.items.length !== dim) {
+          const got = low.kind === 'vec' ? `${low.items.length} components` : 'a single number';
+          throw new Error(`${name} is a ${dim}-component state, but ${name}' has ${got}.`);
+        }
+        const comps = vecStateComps(name, dim);
+        for (const c of comps) {
+          if (byName.has(c)) throw new Error(`Cannot make ${name} a vector state: ${c} is already defined.`);
+        }
+        comps.forEach((c, k) => {
+          flatDerivs.set(c, (low as Expr & { kind: 'vec' }).items[k]);
+          vecOwnerKey.set(c, name);
+        });
+      } catch (err) {
+        defs.vecStates.delete(name);
+        errors.set(name, msg(err));
+      }
+    }
+    for (const [name, e] of inits) {
+      const rowKey = `${name}(0)`;
+      try {
+        const low = lowerGeom(e, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
+        const dim = defs.vecStates.get(name);
+        if (dim === undefined) {
+          if (low.kind === 'vec') throw new Error(`${name}(0) has ${low.items.length} components, but ${name} is a single number.`);
+          flatInits.set(name, low);
+          continue;
+        }
+        if (low.kind !== 'vec' || low.items.length !== dim) {
+          const got = low.kind === 'vec' ? `has ${low.items.length} components` : 'is a single number';
+          throw new Error(`${name} is a ${dim}-component state, but ${name}(0) ${got}.`);
+        }
+        vecStateComps(name, dim).forEach((c, k) => {
+          flatInits.set(c, (low as Expr & { kind: 'vec' }).items[k]);
+          vecOwnerKey.set(c, name);
+        });
+      } catch (err) {
+        errors.set(rowKey, msg(err));
+      }
+    }
+    derivs.clear();
+    for (const [k, v] of flatDerivs) derivs.set(k, v);
+    inits.clear();
+    for (const [k, v] of flatInits) inits.set(k, v);
+    // Downstream validation runs over the scalar components.
+    stateNames.clear();
+    for (const k of derivs.keys()) stateNames.add(k);
   }
 
   // A definition whose value depends on the plane — x or y, directly or via
@@ -543,7 +711,7 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
       }
       if (Object.keys(sub).length) e = substVars(e, sub);
       for (const fv of freeVars(e)) {
-        if (fv !== 'x' && fv !== 'y' && fv !== 't' && !constNames.has(fv)) {
+        if (fv !== 'x' && fv !== 'y' && fv !== 't' && !constNames.has(fv) && !stateNames.has(fv)) {
           throw new Error(`${name} defines a coordinate (it uses x/y), so it may only use x, y, t, and constants (found ${fv}).`);
         }
       }
@@ -572,10 +740,10 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   }
   defs.fields = orderedFields;
 
-  // Constants may only depend on other constants and time.
+  // Constants may only depend on other constants, states, and time.
   for (const [name, e] of defs.consts) {
     for (const fv of freeVars(e)) {
-      if (fv !== 't' && !constNames.has(fv)) {
+      if (fv !== 't' && !constNames.has(fv) && !stateNames.has(fv)) {
         errors.set(name, `${name} can only depend on other constants and t (found ${fv}).`);
         defs.consts.delete(name);
         break;
@@ -584,6 +752,8 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   }
 
   // Trial-evaluate to surface cycles and unsupported calls at definition time.
+  // States are leaves here: the integrator supplies their values, so they
+  // stand in as 0 and never recurse.
   const check = (name: string, visiting: Set<string>): void => {
     const e = defs.consts.get(name);
     if (!e) throw new Error(`${name} is not defined.`);
@@ -592,7 +762,7 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
     const env: Record<string, number> = { t: 0 };
     for (const fv of freeVars(e)) {
       if (fv !== 't') {
-        check(fv, visiting);
+        if (!stateNames.has(fv)) check(fv, visiting);
         env[fv] = 0;
       }
     }
@@ -610,10 +780,54 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   }
   for (const name of bad) defs.consts.delete(name);
 
+  // States. A derivative sees time, constants, and the other states; an
+  // initial value is read once at reset, so it must be constant. Vector
+  // states validate per scalar component; their errors land on the base row.
+  const stateRow = (n: string): string => vecOwnerKey.get(n) ?? n;
+  for (const [name, deriv] of derivs) {
+    try {
+      if (defs.consts.has(name) || defs.fields.has(name)) {
+        throw new Error(`${name} is already defined as a constant.`);
+      }
+      const env: Record<string, number> = { t: 0 };
+      for (const fv of freeVars(deriv)) {
+        if (fv !== 't' && !constNames.has(fv) && !stateNames.has(fv)) {
+          throw new Error(`${stateRow(name)}' changes with time, so it may only use t, constants, and other states (found ${fv}).`);
+        }
+        env[fv] = 0;
+      }
+      evaluate(deriv, env); // surfaces unsupported calls (re, im, …) now
+      let init = inits.get(name) ?? num(0);
+      for (const fv of freeVars(init)) {
+        if (!constNames.has(fv)) {
+          errors.set(`${stateRow(name)}(0)`, `${stateRow(name)}(0) is a starting value, so it must be constant (found ${fv}).`);
+          init = num(0);
+          break;
+        }
+      }
+      defs.states.set(name, { deriv, init });
+    } catch (e) {
+      errors.set(stateRow(name), msg(e));
+    }
+  }
+  for (const name of inits.keys()) {
+    if (!defs.states.has(name) && !errors.has(stateRow(name)) && !errors.has(`${stateRow(name)}(0)`)) {
+      errors.set(`${stateRow(name)}(0)`, `${stateRow(name)}(0) is a starting value, but ${stateRow(name)}' is not defined.`);
+    }
+  }
+  // A vector state that lost every component to errors is not a state at all.
+  for (const [name, dim] of defs.vecStates) {
+    if (!vecStateComps(name, dim).every(c => defs.states.has(c))) defs.vecStates.delete(name);
+  }
+
   return { defs, errors, sumBoundConsts: ropts.boundConsts! };
 }
 
-/** Constants that depend on t — directly or through other constants. */
+/**
+ * Constants with no fixed value: those depending on t or on a state, directly
+ * or through other constants. (Σ/Π bounds may not use them — expansion is
+ * static.)
+ */
 export function animatedConstNames(defs: Defs): Set<string> {
   const out = new Set<string>();
   for (let changed = true; changed;) {
@@ -621,7 +835,7 @@ export function animatedConstNames(defs: Defs): Set<string> {
     for (const [name, e] of defs.consts) {
       if (out.has(name)) continue;
       for (const fv of freeVars(e)) {
-        if (fv === 't' || out.has(fv)) {
+        if (fv === 't' || out.has(fv) || defs.states.has(fv)) {
           out.add(name);
           changed = true;
           break;
@@ -632,9 +846,13 @@ export function animatedConstNames(defs: Defs): Set<string> {
   return out;
 }
 
-/** Evaluate every constant at the given time (t may appear in definitions). */
-export function evalConstEnv(defs: Defs, time: number): Record<string, number> {
-  const out: Record<string, number> = {};
+/**
+ * Evaluate every constant at the given time (t may appear in definitions).
+ * `seed` supplies values the definitions may read but not compute — the
+ * integrator's current state — and is returned alongside them.
+ */
+export function evalConstEnv(defs: Defs, time: number, seed: Record<string, number> = {}): Record<string, number> {
+  const out: Record<string, number> = { ...seed };
   const visiting = new Set<string>();
   const get = (name: string): number => {
     if (name in out) return out[name];

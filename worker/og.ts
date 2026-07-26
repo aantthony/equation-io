@@ -507,6 +507,9 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   plist: 'fallback',
   sequence: 'fallback',
   bifurcation: 'fallback',
+  // Solution marks require running the numeric solver, which is not wired
+  // into this backend yet.
+  system: 'fallback',
 };
 
 /**

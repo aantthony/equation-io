@@ -206,6 +206,40 @@ describe('level families', () => {
   });
 });
 
+describe('systems', () => {
+  it('reads a vector equation as a square system', () => {
+    const p = cls('(x^2 + y^2 - 4, x y - 1) = (0, 0)').plot;
+    expect(p.type).toBe('system');
+    if (p.type !== 'system') throw new Error('expected system');
+    expect(p.dim).toBe(2);
+    expect(p.residuals).toHaveLength(2);
+  });
+
+  it('takes a non-zero right-hand side as the fiber over that point', () => {
+    const p = cls('(x + y, x - y, z) = (1, 2, 3)').plot;
+    expect(p.type).toBe('system');
+    if (p.type !== 'system') throw new Error('expected system');
+    expect(p.dim).toBe(3);
+    // Residuals are left minus right, so the target moves into the equation.
+    expect(evaluate(p.residuals[2], { x: 0, y: 0, z: 3 })).toBe(0);
+  });
+
+  it('sends a 3-unknown system to the 3D view', () => {
+    expect(cls('(x, y, z) = (1, 2, 3)').needs3D).toBe(true);
+    expect(cls('(x, y) = (1, 2)').needs3D).toBe(false);
+  });
+
+  it('rejects a system that is not square', () => {
+    expect(() => cls('(x, y) = (1, 2, 3)')).toThrow(/Mismatched components/);
+    expect(() => cls('(x + z, y) = (0, 0)')).toThrow(/2 equations in 3 unknowns/);
+    expect(() => cls('(x, y, x - y) = (0, 0, 0)')).toThrow(/3 equations in 2 unknowns/);
+  });
+
+  it('still reads an ODE system as a direction field, not a system of equations', () => {
+    expect(cls("(x', y') = (y, -x)").plot.type).toBe('vfield2d');
+  });
+});
+
 describe('vector evaluate', () => {
   it('evaluates components', () => {
     const e = parseExpr('(cos(2pi u), sin(2pi u))');

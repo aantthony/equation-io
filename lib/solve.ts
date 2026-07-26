@@ -1,0 +1,229 @@
+/**
+ * Numeric solution of a square system F(p) = 0 in 2 or 3 real unknowns.
+ *
+ * One unknown has an exact enumerator (poly.ts, via roots.ts): every root
+ * once, with its true multiplicity. Nothing like that exists for arbitrary
+ * expressions in several unknowns, so this is a seeded search — damped Newton
+ * from a lattice of starts spread over the view box, then dedupe. The
+ * Jacobian is symbolic when the residuals differentiate and finite
+ * differences otherwise, the same fallback roots.ts uses.
+ *
+ * Seeds are a deterministic function of their index (a hashed lattice, never
+ * Math.random), so re-solving the same box returns the same points in the
+ * same order. Markers would otherwise jitter between frames.
+ *
+ * The search is honest but not certified: it reports what it finds, and a
+ * root can hide between seeds. Isolating every solution needs interval
+ * subdivision with a Krawczyk/Newton existence test — the natural next step,
+ * and the reason this lives behind a narrow interface.
+ */
+import { diff } from './diff.ts';
+import { type Expr, evaluate } from './expr.ts';
+
+/** Newton iterations per seed. Converging seeds take well under 20. */
+const MAX_ITER = 24;
+/** Step halvings before a seed is abandoned. */
+const MAX_BACKTRACK = 24;
+/** Lattice divisions per axis; 2D can afford a finer net than 3D. */
+const LATTICE = { 2: 24, 3: 6 } as const;
+/** Solutions returned at most, so a degenerate system cannot flood the scene. */
+const MAX_SOLUTIONS = 64;
+
+export interface SolveOptions {
+  /** Extra values in scope (constants, t). Unknowns are overwritten per step. */
+  env?: Record<string, number>;
+  /** Fraction of the box width a solution may sit outside and still count. */
+  margin?: number;
+}
+
+/**
+ * Every solution of `residuals = 0` found inside the box, as coordinate
+ * tuples in the order of `vars`. `lo`/`hi` are per-unknown bounds.
+ */
+export function solveSystem(
+  residuals: Expr[],
+  vars: string[],
+  lo: number[],
+  hi: number[],
+  opts: SolveOptions = {},
+): number[][] {
+  const n = residuals.length;
+  if (n !== vars.length || (n !== 2 && n !== 3)) return [];
+  if (lo.some((v, k) => !(hi[k] > v) || !isFinite(v) || !isFinite(hi[k]))) return [];
+
+  const env: Record<string, number> = { ...opts.env };
+  const margin = opts.margin ?? 0.05;
+
+  // Symbolic Jacobian where it exists; null entries fall back to differences.
+  const jac: Array<Array<Expr | null>> = residuals.map(r => vars.map(v => {
+    try {
+      return diff(r, v);
+    } catch {
+      return null;
+    }
+  }));
+
+  const evalAt = (e: Expr): number => {
+    try {
+      const y = evaluate(e, env);
+      return typeof y === 'number' ? y : NaN;
+    } catch {
+      return NaN;
+    }
+  };
+  const setPoint = (p: number[]): void => {
+    for (let k = 0; k < n; k++) env[vars[k]] = p[k];
+  };
+  const residualAt = (p: number[], out: number[]): boolean => {
+    setPoint(p);
+    for (let i = 0; i < n; i++) {
+      const v = evalAt(residuals[i]);
+      if (!isFinite(v)) return false;
+      out[i] = v;
+    }
+    return true;
+  };
+  /** Row-major Jacobian at p; false if any entry is not finite. */
+  const jacobianAt = (p: number[], out: number[][]): boolean => {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        const sym = jac[i][j];
+        let v: number;
+        if (sym) {
+          setPoint(p);
+          v = evalAt(sym);
+        } else {
+          const h = 1e-6 * (1 + Math.abs(p[j]));
+          const q = p.slice();
+          q[j] = p[j] + h;
+          setPoint(q);
+          const a = evalAt(residuals[i]);
+          q[j] = p[j] - h;
+          setPoint(q);
+          const b = evalAt(residuals[i]);
+          v = (a - b) / (2 * h);
+        }
+        if (!isFinite(v)) return false;
+        out[i][j] = v;
+      }
+    }
+    return true;
+  };
+
+  const norm = (v: number[]): number => Math.hypot(...v);
+  const r = new Array<number>(n).fill(0);
+  const rTrial = new Array<number>(n).fill(0);
+  const J = Array.from({ length: n }, () => new Array<number>(n).fill(0));
+
+  const width = lo.map((v, k) => hi[k] - v);
+  const boxScale = Math.max(...width);
+
+  /**
+   * Backward error: the residual has reached the noise floor of evaluating a
+   * linearization this steep at this point. An absolute threshold would
+   * reject badly scaled systems and accept flat ones.
+   */
+  const converged = (p: number[], res: number[]): boolean => {
+    let scale = 1;
+    for (let i = 0; i < n; i++) {
+      for (let k = 0; k < n; k++) scale = Math.max(scale, Math.abs(J[i][k]) * (1 + Math.abs(p[k])));
+    }
+    return norm(res) <= 1e-11 * scale * Math.max(1, boxScale);
+  };
+
+  /** Damped Newton from one seed; null when it fails to converge. */
+  const refine = (seed: number[]): number[] | null => {
+    const p = seed.slice();
+    if (!residualAt(p, r)) return null;
+    let rn = norm(r);
+    for (let it = 0; it < MAX_ITER; it++) {
+      if (!jacobianAt(p, J)) return null;
+      // Test with J freshly evaluated at p, so the scale matches the point.
+      if (converged(p, r)) return p;
+      const step = solveLinear(J, r, n);
+      if (!step) return null;
+      // Backtrack until the residual actually drops.
+      let scale = 1;
+      let accepted = false;
+      for (let k = 0; k < MAX_BACKTRACK; k++) {
+        const q = p.map((v, i) => v - scale * step[i]);
+        if (q.every(isFinite) && residualAt(q, rTrial) && norm(rTrial) < rn) {
+          for (let i = 0; i < n; i++) {
+            p[i] = q[i];
+            r[i] = rTrial[i];
+          }
+          rn = norm(rTrial);
+          accepted = true;
+          break;
+        }
+        scale /= 2;
+      }
+      if (!accepted) break; // stalled: either converged or stuck
+    }
+    return jacobianAt(p, J) && converged(p, r) ? p : null;
+  };
+
+  const found: number[][] = [];
+  const same = (a: number[], b: number[]): boolean =>
+    a.every((v, k) => Math.abs(v - b[k]) <= 1e-7 * (1 + Math.max(Math.abs(v), Math.abs(b[k]))));
+
+  const div = LATTICE[n as 2 | 3];
+  const total = div ** n;
+  for (let s = 0; s < total; s++) {
+    const seed: number[] = [];
+    let rest = s;
+    for (let k = 0; k < n; k++) {
+      const cell = rest % div;
+      rest = Math.floor(rest / div);
+      // Cell centre, nudged by a hash of the seed index so seeds do not line
+      // up with the symmetry axes that so many systems are built around.
+      seed.push(lo[k] + width[k] * (cell + 0.5 + 0.32 * (hash(s * 3 + k) - 0.5)) / div);
+    }
+    const sol = refine(seed);
+    if (!sol) continue;
+    if (sol.some((v, k) => v < lo[k] - margin * width[k] || v > hi[k] + margin * width[k])) continue;
+    if (found.some(f => same(f, sol))) continue;
+    found.push(sol);
+    if (found.length >= MAX_SOLUTIONS) break;
+  }
+
+  // Stable order so colours and labels do not shuffle between redraws.
+  found.sort((a, b) => {
+    for (let k = 0; k < n; k++) if (a[k] !== b[k]) return a[k] - b[k];
+    return 0;
+  });
+  return found;
+}
+
+/** Gaussian elimination with partial pivoting; null when J is singular. */
+function solveLinear(J: number[][], b: number[], n: number): number[] | null {
+  const m = J.map((row, i) => [...row, b[i]]);
+  for (let i = 0; i < n; i++) {
+    let piv = i;
+    for (let k = i + 1; k < n; k++) if (Math.abs(m[k][i]) > Math.abs(m[piv][i])) piv = k;
+    if (!(Math.abs(m[piv][i]) > 1e-300)) return null;
+    [m[i], m[piv]] = [m[piv], m[i]];
+    for (let k = 0; k < n; k++) {
+      if (k === i) continue;
+      const f = m[k][i] / m[i][i];
+      for (let j = i; j <= n; j++) m[k][j] -= f * m[i][j];
+    }
+  }
+  const out = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    out[i] = m[i][n] / m[i][i];
+    if (!isFinite(out[i])) return null;
+  }
+  return out;
+}
+
+/** Deterministic [0,1) hash of a seed index (xorshift-style integer mix). */
+function hash(i: number): number {
+  let h = (i + 1) * 0x9e3779b1;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}

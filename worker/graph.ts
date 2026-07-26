@@ -6,17 +6,20 @@
  * by using the exact same lib functions.
  */
 import {
-  type Definition,
-  type Defs,
   buildDefs,
+  compsOf,
+  defKey,
   evalConstEnv,
   resolveExpr,
   scanDefinition,
+  type Definition,
+  type Defs,
 } from '../lib/defs.ts';
 import { type Expr, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom } from '../lib/geom.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
+import { buildStateSystem, initialState } from '../lib/state.ts';
 import { type ViewSpec, parseViewRow } from '../lib/view.ts';
 
 export interface RowInfo {
@@ -58,32 +61,37 @@ export function analyze(texts: string[]): Analysis {
     const d = scanDefinition(row.text);
     if (!d) continue;
     row.def = d;
-    if (defNames.has(d.name)) { dupRows.push(row); continue; }
-    defNames.add(d.name);
+    if (defNames.has(defKey(d))) { dupRows.push(row); continue; }
+    defNames.add(defKey(d));
     raw.push(d);
   }
 
   const built = buildDefs(raw);
   const defs = built.defs;
-  for (const [name, message] of built.errors) {
-    const row = rows.find(r => r.def?.name === name);
+  for (const [key, message] of built.errors) {
+    const row = rows.find(r => r.def && defKey(r.def) === key);
     if (row) row.error = message;
   }
   for (const row of dupRows) {
     if (defs.fields.has(row.def!.name)) row.def = undefined;
-    else row.error = `${row.def!.name} is already defined.`;
+    else row.error = `${defKey(row.def!)} is already defined.`;
   }
 
   // Constants at t = 0, needed by pass 2: viewport-row bounds may use them.
+  // States are seeded at their `a(0)` values, so the static render shows the
+  // simulation's first frame (constants like the pendulum's D resolve too).
+  const sys = buildStateSystem(defs);
+  const stateVals = sys ? initialState(defs, sys) : {};
   let constEnv: Record<string, number> = {};
   try {
-    constEnv = evalConstEnv(defs, 0);
+    constEnv = evalConstEnv(defs, 0, stateVals);
   } catch {
     // A broken constant already carries a row error; rendering treats it as 0.
+    constEnv = { ...stateVals };
   }
 
-  // Pass 2: viewport rows and plots.
-  const constNames = new Set(defs.consts.keys());
+  // Pass 2: viewport rows and plots. States are constants to every consumer.
+  const constNames = new Set([...defs.consts.keys(), ...defs.states.keys()]);
   const fieldEnv = Object.fromEntries(defs.fields);
   const fnNames = new Set(raw.filter(d => d.kind === 'fn').map(d => d.name));
   const getFn = (name: string) => {
@@ -110,7 +118,7 @@ export function analyze(texts: string[]): Analysis {
       let parsed = resolveExpr(parseExpr(row.text, fnNames), getFn);
       // Expand point arithmetic and geometry statements (segment, polygon, …)
       // into scalar expressions; a point name A becomes (A_x, A_y).
-      parsed = lowerGeom(parsed, n => defs.points.has(n));
+      parsed = lowerGeom(parsed, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       row.cls = classify(parsed, constNames);
       row.expr = parsed;

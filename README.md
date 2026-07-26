@@ -64,6 +64,25 @@ Try: `y = x^2` · `x^2+y^2=4` · `y = tan(x)` · `z = sin(x)cos(y)` · `x^2+y^2+
   `(1, f)`; click the canvas to drop an RK4 integral curve through that point,
   double-click to clear) · `(x', y') = (y, -sin(x))` (a system plots its
   phase portrait, with the same click-to-trace trajectories)
+· `th' = om` (angle) with `om' = -sin(th)` (angular velocity) and `th(0) = 3`
+  (a *state*: a prime on a name of your own is d/dt of it, integrated forward
+  by RK4 at a fixed step as the graph animates — see [`lib/state.ts`](lib/state.ts).
+  Everywhere else `th` behaves exactly like a constant, uniform and all, so
+  drawing the system is ordinary plotting: `(sin(th), -cos(th))` is the bob,
+  `(u sin(th), -u cos(th))` the rod. It is the one value in a graph that is not
+  a formula in `t`, which is what makes a double pendulum — chaotic, no closed
+  form — possible. Initial values get a slider that relaunches the run; ↻ in
+  the panel restarts it)
+· `r' = vel` with `vel' = -r/|r|^3` and `r(0) = (1, 0)` (a *vector state*: a
+  derivative that is a 2- or 3-vector integrates componentwise as `r_1`,
+  `r_2`(, `r_3`), and the bare name draws as a moving point and joins point
+  arithmetic — an orbit in two rows)
+· `M = [(a, b), (c, d)]` (a 2×2 or 3×3 *matrix*; `det(M)`, `trace(M)`, the
+  matvec `M v`, and `solve(M, v)` — Cramer's rule — expand symbolically at
+  lowering time, see [`lib/mat.ts`](lib/mat.ts), so `(x', y') = A (x, y)` is
+  a phase portrait with sliders in the entries, and `om' = solve(M, f)`
+  integrates the double pendulum in the Lagrangian form M(θ)ω′ = f it is
+  derived in)
 · `(2cos(t), 2sin(t))` (t = seconds since load → animated)
 · `(2cos(2pi u), 2sin(2pi u), 3u)` (parametric curve, u ∈ (0,1))
 · `(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))`

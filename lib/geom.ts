@@ -20,6 +20,7 @@
  */
 import { add, div, mul, neg, sub } from './diff.ts';
 import type { Expr } from './expr.ts';
+import { type GetMat, detOf, matVec, matrixFromList, solveVec, traceOf } from './mat.ts';
 
 /** Whole-statement geometry forms (like SPECIAL_FORMS, they never nest). */
 export const GEOM_STATEMENTS = new Set(['segment', 'line', 'polygon', 'square', 'circle']);
@@ -27,22 +28,42 @@ export const GEOM_STATEMENTS = new Set(['segment', 'line', 'polygon', 'square', 
 /** The derived scalar constants a point named `name` expands to. */
 export const pointComps = (name: string): [string, string] => [name + '_x', name + '_y'];
 
-type LV = { vec: false; e: Expr } | { vec: true; x: Expr; y: Expr };
+/** The derived scalar states an n-vector state expands to: om_1, om_2(, om_3). */
+export const vecStateComps = (name: string, dim: number): string[] =>
+  Array.from({ length: dim }, (_, k) => `${name}_${k + 1}`);
+
+/** A vector value under lowering: 2 components (a point) or 3 (a 3-vector). */
+type LV = { vec: false; e: Expr } | { vec: true; items: Expr[] };
 
 const sc = (e: Expr): LV => ({ vec: false, e });
-const vc = (x: Expr, y: Expr): LV => ({ vec: true, x, y });
-const vnode = (x: Expr, y: Expr): Expr => ({ kind: 'vec', items: [x, y] });
-const toExpr = (v: LV): Expr => (v.vec ? vnode(v.x, v.y) : v.e);
+const vc = (...items: Expr[]): LV => ({ vec: true, items });
+const toExpr = (v: LV): Expr => (v.vec ? { kind: 'vec', items: v.items } : v.e);
 
-export type IsPoint = (name: string) => boolean;
+/**
+ * Component names for a vector-valued definition, or null for scalars.
+ * Named points return [A_x, A_y]; vector states return [om_1, om_2(, om_3)].
+ */
+export type GetComps = (name: string) => readonly string[] | null;
 
 /** Functions over points, by how many point arguments they take. */
 const POINT_FNS: Record<string, number> = { dot: 2, cross: 2, midpoint: 2, perp: 1, unit: 1 };
 
 const sq = (e: Expr): Expr => mul(e, e);
-const lenOf = (x: Expr, y: Expr): Expr => ({ kind: 'call', name: 'sqrt', args: [add(sq(x), sq(y))] });
+const lenOfN = (items: Expr[]): Expr => {
+  let s = sq(items[0]);
+  for (let k = 1; k < items.length; k++) s = add(s, sq(items[k]));
+  return { kind: 'call', name: 'sqrt', args: [s] };
+};
 
-/** Re-pair a lowered argument list into points: vec args pass through, and
+/** Both vectors, same length — the shape componentwise arithmetic needs. */
+function sameDims(op: string, a: LV, b: LV): asserts a is LV & { vec: true } {
+  if (!a.vec || !b.vec) return;
+  if (a.items.length !== b.items.length) {
+    throw new Error(`Cannot ${op} a ${a.items.length}-component and a ${b.items.length}-component vector.`);
+  }
+}
+
+/** Re-pair a lowered argument list into 2D points: vec args pass through, and
  *  adjacent scalar args (a flattened tuple literal) join into one point.
  *  `usage` is the argument list shown in the error, e.g. 'A' or 'A, B'. */
 function pairPoints(name: string, args: LV[], usage: string): Array<[Expr, Expr]> {
@@ -50,7 +71,8 @@ function pairPoints(name: string, args: LV[], usage: string): Array<[Expr, Expr]
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.vec) {
-      out.push([a.x, a.y]);
+      if (a.items.length !== 2) throw new Error(`${name} takes 2D points, not ${a.items.length}-component vectors.`);
+      out.push([a.items[0], a.items[1]]);
       continue;
     }
     const b = args[i + 1];
@@ -63,21 +85,38 @@ function pairPoints(name: string, args: LV[], usage: string): Array<[Expr, Expr]
   return out;
 }
 
-function lower(e: Expr, isPoint: IsPoint): LV {
-  const lo = (n: Expr): LV => lower(n, isPoint);
+function lower(e: Expr, getComps: GetComps, getMat: GetMat): LV {
+  const lo = (n: Expr): LV => lower(n, getComps, getMat);
   switch (e.kind) {
     case 'num': return sc(e);
     case 'var': {
-      if (!isPoint(e.name)) return sc(e);
-      const [cx, cy] = pointComps(e.name);
-      return vc({ kind: 'var', name: cx }, { kind: 'var', name: cy });
+      if (getMat(e.name)) {
+        throw new Error(`${e.name} is a matrix — use ${e.name} v, solve(${e.name}, v), det(${e.name}), or trace(${e.name}).`);
+      }
+      const comps = getComps(e.name);
+      if (!comps) return sc(e);
+      return vc(...comps.map((name): Expr => ({ kind: 'var', name })));
     }
     case 'neg': {
       const a = lo(e.a);
-      if (a.vec) return vc(neg(a.x), neg(a.y));
+      if (a.vec) return vc(...a.items.map(neg));
       return a.e === e.a ? sc(e) : sc({ kind: 'neg', a: a.e });
     }
     case 'bin': {
+      // The matvec M v: a matrix name as the direct left factor of a product.
+      if (e.op === '*') {
+        const m = e.a.kind === 'var' ? getMat(e.a.name) : null;
+        if (m) {
+          const v = lo(e.b);
+          if (!v.vec || v.items.length !== m.length) {
+            throw new Error(`${(e.a as Expr & { kind: 'var' }).name} is ${m.length}×${m.length}, so it multiplies a ${m.length}-component vector: ${(e.a as Expr & { kind: 'var' }).name} (x, y${m.length === 3 ? ', z' : ''}).`);
+          }
+          return vc(...matVec(m, v.items));
+        }
+        if (e.b.kind === 'var' && getMat(e.b.name)) {
+          throw new Error(`Matrices multiply on the left — write ${e.b.name} v.`);
+        }
+      }
       const a = lo(e.a);
       const b = lo(e.b);
       if (!a.vec && !b.vec) {
@@ -90,17 +129,18 @@ function lower(e: Expr, isPoint: IsPoint): LV {
         case '+':
         case '-':
           if (a.vec && b.vec) {
+            sameDims(e.op === '+' ? 'add' : 'subtract', a, b);
             const f = e.op === '+' ? add : sub;
-            return vc(f(a.x, b.x), f(a.y, b.y));
+            return vc(...a.items.map((ai, k) => f(ai, (b as LV & { vec: true }).items[k])));
           }
           throw new Error(`Cannot ${e.op === '+' ? 'add' : 'subtract'} a point and a number.`);
         case '*':
           if (a.vec && b.vec) throw new Error('Use dot(A, B) or cross(A, B) to multiply points.');
-          if (a.vec && !b.vec) return vc(mul(a.x, b.e), mul(a.y, b.e));
-          if (!a.vec && b.vec) return vc(mul(a.e, b.x), mul(a.e, b.y));
+          if (a.vec && !b.vec) return vc(...a.items.map(ai => mul(ai, (b as LV & { vec: false }).e)));
+          if (!a.vec && b.vec) return vc(...b.items.map(bi => mul((a as LV & { vec: false }).e, bi)));
           break;
         case '/':
-          if (a.vec && !b.vec) return vc(div(a.x, b.e), div(a.y, b.e));
+          if (a.vec && !b.vec) return vc(...a.items.map(ai => div(ai, (b as LV & { vec: false }).e)));
           throw new Error('Cannot divide by a point.');
         case '^':
           throw new Error('Cannot raise a point to a power — |A| is its length.');
@@ -109,27 +149,90 @@ function lower(e: Expr, isPoint: IsPoint): LV {
     }
     case 'call': {
       if (GEOM_STATEMENTS.has(e.name)) throw new Error(`${e.name}(…) must be a whole statement.`);
+      if (e.name === 'det' || e.name === 'trace' || e.name === 'solve') {
+        const matArg = (raw: Expr | undefined): ReturnType<GetMat> => {
+          if (!raw) return null;
+          if (raw.kind === 'var') return getMat(raw.name);
+          if (raw.kind === 'list') {
+            // Inline literal: lower the rows, then read the shape.
+            return matrixFromList(toExpr(lo(raw)));
+          }
+          return null;
+        };
+        const m = matArg(e.args[0]);
+        if (!m) {
+          throw new Error(`${e.name} takes a matrix — define one with M = [(a, b), (c, d)].`);
+        }
+        if (e.name === 'det' || e.name === 'trace') {
+          if (e.args.length !== 1) throw new Error(`${e.name} takes one matrix.`);
+          return sc(e.name === 'det' ? detOf(m) : traceOf(m));
+        }
+        // solve(M, v): the remaining arguments are the right-hand side — one
+        // vector, or its components flattened out of a tuple literal.
+        const rest = e.args.slice(1).map(lo);
+        let v: Expr[];
+        if (rest.length === 1 && rest[0].vec) v = rest[0].items;
+        else if (rest.length === m.length && rest.every(r => !r.vec)) {
+          v = rest.map(r => (r as LV & { vec: false }).e);
+        } else {
+          throw new Error(`solve takes solve(M, v) with v a ${m.length}-component vector.`);
+        }
+        if (v.length !== m.length) {
+          throw new Error(`${m.length}×${m.length} matrix, ${v.length}-component vector — solve needs them to match.`);
+        }
+        return vc(...solveVec(m, v));
+      }
       const args = e.args.map(lo);
       const nPts = POINT_FNS[e.name];
       if (nPts !== undefined) {
-        const pts = pairPoints(e.name, args, nPts === 1 ? 'A' : 'A, B');
-        if (pts.length !== nPts) {
+        // Vector args of any dim pass straight through; runs of flattened
+        // scalars still pair into 2D points as before.
+        const vs: Expr[][] = [];
+        for (let i = 0; i < args.length; i++) {
+          const a = args[i];
+          if (a.vec) {
+            vs.push(a.items);
+            continue;
+          }
+          const b = args[i + 1];
+          if (!b || b.vec) {
+            throw new Error(`${e.name} takes points — write ${e.name}(${nPts === 1 ? 'A' : 'A, B'}), with A = (0, 0) defined above.`);
+          }
+          vs.push([a.e, b.e]);
+          i++;
+        }
+        if (vs.length !== nPts) {
           throw new Error(`${e.name} takes ${nPts} point${nPts === 1 ? '' : 's'}.`);
         }
-        const [ax, ay] = pts[0];
+        const dim = vs[0].length;
+        if (vs.some(v => v.length !== dim)) {
+          throw new Error(`${e.name} needs vectors with the same number of components.`);
+        }
+        const twoOnly = () => {
+          if (dim !== 2) throw new Error(`${e.name} is only defined for 2D points.`);
+        };
+        const p = vs[0];
+        const q = vs[1];
         switch (e.name) {
-          case 'dot': return sc(add(mul(ax, pts[1][0]), mul(ay, pts[1][1])));
-          case 'cross': return sc(sub(mul(ax, pts[1][1]), mul(ay, pts[1][0])));
-          case 'midpoint': return vc(div(add(ax, pts[1][0]), num2), div(add(ay, pts[1][1]), num2));
-          case 'perp': return vc(neg(ay), ax);
-          case 'unit': return vc(div(ax, lenOf(ax, ay)), div(ay, lenOf(ax, ay)));
+          case 'dot': {
+            let s = mul(p[0], q[0]);
+            for (let k = 1; k < dim; k++) s = add(s, mul(p[k], q[k]));
+            return sc(s);
+          }
+          case 'cross': twoOnly(); return sc(sub(mul(p[0], q[1]), mul(p[1], q[0])));
+          case 'midpoint': return vc(...p.map((pk, k) => div(add(pk, q[k]), num2)));
+          case 'perp': twoOnly(); return vc(neg(p[1]), p[0]);
+          case 'unit': return vc(...p.map(pk => div(pk, lenOfN(p))));
         }
       }
       // |P| is a point's length; |(3, 4)| arrives as abs(3, 4) because the
       // tuple flattens into the argument list, so a scalar pair re-pairs too.
-      if (e.name === 'abs' && (args.length === 1 || args.length === 2)) {
-        const pts = args.some(a => a.vec) || args.length === 2 ? pairPoints('abs', args, 'A') : null;
-        if (pts && pts.length === 1) return sc(lenOf(pts[0][0], pts[0][1]));
+      if (e.name === 'abs' && args.length === 1 && args[0].vec) {
+        return sc(lenOfN(args[0].items));
+      }
+      if (e.name === 'abs' && args.length === 2) {
+        const pts = pairPoints('abs', args, 'A');
+        if (pts.length === 1) return sc(lenOfN([pts[0][0], pts[0][1]]));
       }
       const flatArgs: Expr[] = [];
       for (const a of args) {
@@ -162,8 +265,9 @@ function lower(e: Expr, isPoint: IsPoint): LV {
         throw new Error('A point cannot be a component of a vector.');
       }
       const flat = items.map(a => (a as LV & { vec: false }).e);
-      if (e.items.length === 2) return vc(flat[0], flat[1]);
-      // 3-component vectors (3D points, surfaces) pass through unchanged.
+      // 2- and 3-vectors become vector values so arithmetic works on both;
+      // toExpr rebuilds the same node shape for anything that reaches root.
+      if (e.items.length === 2 || e.items.length === 3) return vc(...flat);
       if (flat.every((f, k) => f === e.items[k])) return sc(e);
       return sc({ kind: 'vec', items: flat });
     }
@@ -204,9 +308,9 @@ const polyCall = (name: FigureName, pts: Array<[Expr, Expr]>): Expr =>
  * Lower a whole statement: desugar a root-level geometry form, expand all
  * point arithmetic, and return an expression classify already understands.
  */
-export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
+export function lowerGeom(e: Expr, getComps: GetComps, getMat: GetMat = () => null): Expr {
   if (e.kind === 'call' && GEOM_STATEMENTS.has(e.name)) {
-    const args = e.args.map(a => lower(a, isPoint));
+    const args = e.args.map(a => lower(a, getComps, getMat));
     if (e.name === 'circle') {
       // circle(C, r): the trailing argument is the scalar radius.
       const r = args[args.length - 1];
@@ -259,5 +363,5 @@ export function lowerGeom(e: Expr, isPoint: IsPoint): Expr {
     if (pts.length < 3) throw new Error('polygon needs at least 3 vertices.');
     return polyCall('[polygon]', pts);
   }
-  return toExpr(lower(e, isPoint));
+  return toExpr(lower(e, getComps, getMat));
 }

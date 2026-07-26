@@ -30,6 +30,9 @@ export interface Surface3D {
   params?: string[];
 }
 
+/** Half-width of the axis-aligned box every 3D plot is clipped to. */
+export const cameraBoxR = (cam: Camera3D): number => cam.radius * 0.85;
+
 export function cameraEye(cam: Camera3D): [number, number, number] {
   const cp = Math.cos(cam.phi);
   return [
@@ -77,6 +80,13 @@ float depthOf(vec3 p) {
 
 const STEPS = 220;
 const BISECT = 24;
+/** Coarsest step, as a fraction of the ray's span through the box. */
+const MIN_SAMPLES = 48;
+/** Finest step: STEPS × FINEST of them cover the span, so a ray that grinds
+ *  the whole way still reaches 1/FINEST of it. */
+const FINEST = 4;
+/** Fraction of the estimated distance-to-zero actually stepped. */
+const SAFETY = 0.6;
 
 function surfaceFrag(field: string, grad?: [string, string, string], params?: string[]): string {
   const gradFn = grad
@@ -118,16 +128,27 @@ void main() {
   float t1 = span.y;
   if (t1 <= t0) discard;
 
-  float dt = (t1 - t0) / float(${STEPS});
+  // Adaptive march. Uniform steps miss any zero set thinner than the step —
+  // a high-degree surface seen edge-on, or a tube like Q^2 + R^2 = e^2, which
+  // a uniform march renders as stipple. The secant through the last two
+  // samples estimates the distance to the next zero ALONG THE RAY (|F| over
+  // the directional derivative), which costs nothing: both samples are
+  // already in hand. Steps stretch across empty space and collapse as the
+  // field approaches zero. Overshoot is still caught by the sign change.
+  float rayLen = t1 - t0;
+  float dtMax = rayLen / float(${MIN_SAMPLES});
+  float dtMin = rayLen / float(${STEPS * FINEST});
+  float dt = rayLen / float(${STEPS});
   float tPrev = t0;
   float vPrev = F(ro + rd * t0);
   bool hit = false;
   float tHit = 0.0;
 
-  for (int i = 1; i <= ${STEPS}; i++) {
-    float t = t0 + dt * float(i);
+  for (int i = 0; i < ${STEPS}; i++) {
+    float t = min(tPrev + dt, t1);
     float v = F(ro + rd * t);
-    if (!isnan(v) && !isinf(v) && !isnan(vPrev) && !isinf(vPrev) && sign(v) != sign(vPrev)) {
+    bool finite = !isnan(v) && !isinf(v) && !isnan(vPrev) && !isinf(vPrev);
+    if (finite && sign(v) != sign(vPrev)) {
       // Bisect to the crossing.
       float a = tPrev, b = t, va = vPrev;
       for (int j = 0; j < ${BISECT}; j++) {
@@ -139,13 +160,17 @@ void main() {
       hit = true;
       break;
     }
+    // |dF/dt| from the secant; a flat or non-finite stretch steps at dtMax.
+    float slope = finite ? abs(v - vPrev) / max(t - tPrev, 1e-20) : 0.0;
+    dt = clamp(slope > 0.0 ? ${SAFETY} * abs(v) / slope : dtMax, dtMin, dtMax);
     tPrev = t;
     vPrev = v;
+    if (t >= t1) break;
   }
   if (!hit) discard;
 
   vec3 p = ro + rd * tHit;
-  float h = max(dt * 0.25, uBoxR * 1e-4);
+  float h = max(rayLen * 2e-3, uBoxR * 1e-4);
   vec3 n = normalize(gradF(p, h));
   if (any(isnan(n))) n = -rd;
   if (dot(n, rd) > 0.0) n = -n; // face the viewer
@@ -512,7 +537,7 @@ export class Renderer3D {
     gl.clear(gl.DEPTH_BUFFER_BIT);
 
     const { vp, invVp, eye } = cameraMatrices(cam, w / h);
-    const boxR = cam.radius * 0.85;
+    const boxR = cameraBoxR(cam);
 
     const setCommon = (prog: WebGLProgram) => {
       gl.useProgram(prog);
@@ -630,7 +655,7 @@ export function drawLabels3D(ctx: CanvasRenderingContext2D, cam: Camera3D, dpr: 
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, w, h);
   const { vp } = cameraMatrices(cam, w / h);
-  const boxR = cam.radius * 0.85;
+  const boxR = cameraBoxR(cam);
   ctx.font = 'italic 13px ui-sans-serif, system-ui';
   const labels: Array<[string, number[], string]> = [
     ['x', [boxR * 1.04, 0, 0], '#a44'],

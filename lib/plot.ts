@@ -48,6 +48,13 @@ export type Plot =
   /** CPU-evaluated straight-edged figure from segment()/polygon()/square():
    *  flat vertex expressions [x1, y1, x2, y2, …]. closed also fills. */
   | { type: 'polygon'; pts: Expr[]; closed: boolean }
+  /**
+   * A vector equation L = R, one residual per component. With as many
+   * equations as unknowns the solution set is isolated points, found
+   * numerically: intersections of curves in 2D, the fiber of a map in 3D.
+   * Residuals keep constants under their original names (CPU-evaluated).
+   */
+  | { type: 'system'; dim: 2 | 3; residuals: Expr[] }
   /** (Vx, Vy) as GLSL in x, y — rendered as animated line-integral convolution.
    *  comps keep the symbolic components for CPU integration (integral curves). */
   | { type: 'vfield2d'; fx: string; fy: string; comps: [Expr, Expr] }
@@ -270,7 +277,7 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
     // Vector-field streamlines drift continuously, so they always animate.
     animated: animated || plot.type === 'vfield2d',
     needs3D: plot.type === 'implicit3d' || plot.type === 'psurface'
-      || ((plot.type === 'point' || plot.type === 'pcurve' || plot.type === 'plist') && plot.dim === 3),
+      || ((plot.type === 'point' || plot.type === 'pcurve' || plot.type === 'plist' || plot.type === 'system') && plot.dim === 3),
     params,
   });
 
@@ -383,6 +390,28 @@ export function classify(expr: Expr, defined: ReadonlySet<string> = new Set()): 
   }
 
   if (hasParam) throw new Error('u/v need a vector expression like (cos(u), sin(u), v).');
+
+  // A vector equation is a system, one residual per component: F(x,y,z) =
+  // (a, b, c) is the fiber of a map, (f, g) = (0, 0) an intersection of
+  // curves. Square systems (as many equations as unknowns) cut out isolated
+  // points; the solver finds them numerically.
+  if (expr.kind === 'eq' && (expr.l.kind === 'vec' || expr.r.kind === 'vec')) {
+    const { l, r } = expr;
+    if (l.kind !== 'vec' || r.kind !== 'vec') {
+      throw new Error('A vector equation needs components on both sides, like (f, g) = (0, 0).');
+    }
+    if (l.items.length !== r.items.length) {
+      throw new Error(`Mismatched components: ${l.items.length} on the left, ${r.items.length} on the right.`);
+    }
+    if (usesComplex(expr)) throw new Error('Complex values are not supported in systems.');
+    const dim = vars.has('z') ? 3 : 2;
+    if (l.items.length !== dim) {
+      const eqs = `${l.items.length} equation${l.items.length === 1 ? '' : 's'}`;
+      throw new Error(`${eqs} in ${dim} unknowns — a system needs one equation per unknown.`);
+    }
+    const residuals = l.items.map((a, k): Expr => ({ kind: 'bin', op: '-', a, b: r.items[k] }));
+    return done({ type: 'system', dim, residuals });
+  }
 
   if (g.kind === 'ineq') {
     if (vars.has('z')) throw new Error('Inequalities are 2D only.');

@@ -1,14 +1,16 @@
 import {
-  type Definition,
-  type Defs,
-  RESERVED,
   animatedConstNames,
   buildDefs,
+  compsOf,
   constsAnimated,
+  defKey,
   emptyDefs,
   evalConstEnv,
+  RESERVED,
   resolveExpr,
   scanDefinition,
+  type Definition,
+  type Defs,
 } from '../lib/defs.ts';
 import { buildComb, buildTube, combScale, curveExtent, curveFrames } from '../lib/curve3d.ts';
 import {
@@ -27,8 +29,10 @@ import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
 import { type Classified, classify } from '../lib/plot.ts';
+import { solveSystem } from '../lib/solve.ts';
 import { type SpecialPoint, specialPoints } from '../lib/special.ts';
 import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
+import { type StateSystem, advanceState, buildStateSystem, initialState } from '../lib/state.ts';
 import { splitStatements } from '../lib/statements.ts';
 import {
   type ViewSpec,
@@ -50,7 +54,7 @@ import {
   drawLabels2D,
   niceSpacing,
 } from './render2d.ts';
-import { type Camera3D, Renderer3D, type Scene3D, drawLabels3D } from './render3d.ts';
+import { type Camera3D, Renderer3D, type Scene3D, cameraBoxR, drawLabels3D } from './render3d.ts';
 import { initTheme, onThemeChange, theme, toggleTheme } from './theme.ts';
 
 interface Equation {
@@ -92,6 +96,8 @@ interface Equation {
   /** Cached hover points (axis intercepts/roots) for the cached view range. */
   spCache?: { text: string; env: string; xlo: number; xhi: number; ylo: number; yhi: number; pts: SpecialPoint[] };
   toggleUI?: { box: HTMLElement; btn: HTMLButtonElement };
+  /** Cached system solutions for the box and constants they were solved at. */
+  sysCache?: { text: string; env: string; lo: number[]; hi: number[]; pts: number[][] };
 }
 
 /**
@@ -149,6 +155,11 @@ let defsAnimated = false;
 let constEnv: Record<string, number> = {};
 /** Constants used as Σ/Π bounds; their sliders snap to integer steps. */
 let sumBoundNames = new Set<string>();
+/** The `a' = …` system being integrated, its current values, and the graph
+ *  time they have been carried to. Null when no row defines a state. */
+let stateSys: StateSystem | null = null;
+let stateVals: Record<string, number> = {};
+let stateTime = 0;
 /** Compiled coordinate fields; non-empty replaces the Cartesian grid. */
 let gridFields: GridField[] = [];
 /** Click-dropped seeds for integral curves through vector fields / ODEs. */
@@ -232,6 +243,15 @@ function requestRender() {
 }
 
 const startTime = performance.now();
+
+/** Seconds since load: the value of `t` everywhere in a graph. */
+const graphTime = () => (performance.now() - startTime) / 1000;
+
+/** Send the state system back to its `a(0)` values, starting from now. */
+function resetState() {
+  stateVals = stateSys ? initialState(defs, stateSys) : {};
+  stateTime = graphTime();
+}
 
 // --- viewport rows: the two-way binding ---
 //
@@ -319,14 +339,17 @@ function render() {
   if (!syncCanvasSize()) return;
   applyViewportRows();
   const dpr = window.devicePixelRatio || 1;
-  const time = (performance.now() - startTime) / 1000;
+  const time = graphTime();
   const active = equations.filter(e => e.cls && !e.error);
   mode = active.some(e => e.cls!.needs3D) ? '3d' : '2d';
 
+  // States carry between frames, so they are integrated up to now before
+  // anything reads them; the constants may then be formulas in those states.
+  if (stateSys) stateTime = advanceState(defs, stateSys, stateVals, stateTime, time);
   try {
-    constEnv = evalConstEnv(defs, time);
+    constEnv = evalConstEnv(defs, time, stateVals);
   } catch {
-    constEnv = {};
+    constEnv = { ...stateVals };
   }
 
   gl.clearColor(theme.bg[0], theme.bg[1], theme.bg[2], 1);
@@ -428,6 +451,45 @@ function render() {
 
   const grabs: Grabbable[] = [];
 
+  /**
+   * Solutions of a square system over the box in view, cached until the text,
+   * constants, or box change materially — the same bargain pointsFor() makes
+   * for intercepts. A solve costs tens of milliseconds, far too much to repeat
+   * on every rotate, so it runs over a padded box that small pans and zooms
+   * stay inside.
+   */
+  const solveFor = (eq: Equation, dim: 2 | 3, residuals: Expr[]): number[][] => {
+    const cls = eq.cls!;
+    let vlo: number[];
+    let vhi: number[];
+    if (dim === 3) {
+      const r = cameraBoxR(camera);
+      vlo = [-r, -r, -r];
+      vhi = [r, r, r];
+    } else {
+      const dpr = window.devicePixelRatio || 1;
+      const halfW = ((canvas.clientWidth * dpr) / 2) * view.upp;
+      const halfH = ((canvas.clientHeight * dpr) / 2) * view.upp;
+      vlo = [view.cx - halfW, view.cy - halfH];
+      vhi = [view.cx + halfW, view.cy + halfH];
+    }
+    const envKey = cls.params.map(p => `${p}=${constEnv[p] ?? 0}`).join(',')
+      + (cls.animated ? `,t=${time}` : '');
+    const c = eq.sysCache;
+    if (c && c.text === eq.text && c.env === envKey && c.lo.length === dim
+      && vlo.every((v, k) => c.lo[k] <= v && c.hi[k] >= vhi[k] && c.hi[k] - c.lo[k] <= 6 * (vhi[k] - v))) {
+      return c.pts;
+    }
+    const pad = vhi.map((v, k) => 0.25 * (v - vlo[k]));
+    const lo = vlo.map((v, k) => v - pad[k]);
+    const hi = vhi.map((v, k) => v + pad[k]);
+    const pts = solveSystem(residuals, dim === 3 ? ['x', 'y', 'z'] : ['x', 'y'], lo, hi, {
+      env: { ...constEnv, t: time },
+    });
+    eq.sysCache = { text: eq.text, env: envKey, lo, hi, pts };
+    return pts;
+  };
+
   if (mode === '3d') {
     const scene: Scene3D = { implicits: [], psurfaces: [], curves: [], segments: [], tubes: [], points: [] };
     for (const eq of active) {
@@ -522,6 +584,11 @@ function render() {
           if (p) scene.points.push({ pos: [p[0], p[1], p[2] ?? 0], color });
           break;
         }
+        case 'system':
+          for (const p of solveFor(eq, plot.dim, plot.residuals)) {
+            scene.points.push({ pos: [p[0], p[1], p[2] ?? 0], color });
+          }
+          break;
       }
     }
     r3d.render(camera, scene, time, constEnv);
@@ -682,6 +749,14 @@ function render() {
         case 'bifurcation':
           layers.bifs.push({ field: plot.field, color, params, uniforms: { uSeed: seedOf(plot.a0Name) } });
           break;
+        case 'system':
+          // A 3-unknown system forces the 3D view, so only 2D lands here.
+          if (plot.dim === 2) {
+            for (const p of solveFor(eq, 2, plot.residuals)) {
+              extras.points.push({ x: p[0], y: p[1], color: cssColor(color) });
+            }
+          }
+          break;
       }
     }
     // Named points (`A = (0, 0)` rows) draw labeled with their name; rows
@@ -728,7 +803,11 @@ function render() {
 
   const gridAnimated = mode === '2d'
     && gridFields.some(f => freeVars(f.expr).has('t') || (defsAnimated && f.params.length > 0));
-  if (gridAnimated || active.some(e => e.cls!.animated || (defsAnimated && e.cls!.params.length > 0))) requestRender();
+  // A state system is never at rest: keep frames coming so it keeps stepping.
+  if (stateSys || gridAnimated
+    || active.some(e => e.cls!.animated || (defsAnimated && e.cls!.params.length > 0))) {
+    requestRender();
+  }
 }
 
 // --- equation list UI ---
@@ -740,6 +819,8 @@ function render() {
 // them) and are reconciled from state after every edit.
 
 const listEl = document.getElementById('equations')!;
+/** Shown only while a state system exists; sends it back to its `a(0)`s. */
+const stateResetBtn = document.getElementById('state-reset') as HTMLButtonElement | null;
 
 /**
  * Recompile every row: scan definitions first (they affect how every other
@@ -767,31 +848,48 @@ function recompileAll() {
     const d = scanDefinition(text);
     if (!d) continue;
     eq.def = d;
-    if (defRows.has(d.name)) {
+    if (defRows.has(defKey(d))) {
       dupRows.push(eq);
       continue;
     }
-    defRows.set(d.name, eq);
+    defRows.set(defKey(d), eq);
     raw.push(d);
   }
 
   const built = buildDefs(raw);
   defs = built.defs;
-  defsAnimated = constsAnimated(defs);
+  // A state moves every frame, so anything reading one is animated too.
+  defsAnimated = constsAnimated(defs) || defs.states.size > 0;
   sumBoundNames = built.sumBoundConsts;
   for (const [name, message] of built.errors) {
     const row = defRows.get(name);
     if (row) row.error = message;
   }
 
-  // A second `r = …` row where r is a coordinate field is a plot in that
-  // coordinate system (r = 1 + cos(theta)), not a redefinition.
+  // A second row naming something already defined is a plot, not a
+  // redefinition: `r = 1 + cos(theta)` is a curve in the coordinate system r,
+  // and `P(x,y,z) = -1/4` is a level set of the function P defined above
+  // (with a vector right-hand side, the fiber of a map).
   for (const eq of dupRows) {
-    if (defs.fields.has(eq.def!.name)) eq.def = undefined;
-    else eq.error = `${eq.def!.name} is already defined.`;
+    const { name, kind } = eq.def!;
+    // A row identical to the one that defined the name is a duplicate, not a
+    // level set: `f(x) = x^2` twice means f = f, which is true everywhere and
+    // would flood the view rather than say so.
+    const levelSet = kind === 'fn' && defs.fns.has(name)
+      && eq.text.trim() !== defRows.get(name)?.text.trim();
+    if (defs.fields.has(name) || levelSet) eq.def = undefined;
+    else eq.error = `${defKey(eq.def!)} is already defined.`;
   }
 
-  const constNames = new Set(defs.consts.keys());
+  // States are constants as far as every consumer is concerned — uniforms in
+  // GLSL, entries in constEnv on the CPU — so they join the same name set.
+  const constNames = new Set([...defs.consts.keys(), ...defs.states.keys()]);
+  const wasKey = stateSys?.key;
+  stateSys = buildStateSystem(defs);
+  // Editing an unrelated row must not restart a run in progress; editing the
+  // system or its starting values must.
+  if (stateSys?.key !== wasKey) resetState();
+
   gridFields = [];
   for (const [name, e] of defs.fields) {
     try {
@@ -812,9 +910,10 @@ function recompileAll() {
   // (animated ones excluded: expansion is static, so t may not reach bounds).
   let constVals: Record<string, number> = {};
   try {
-    constVals = evalConstEnv(defs, 0);
+    constVals = evalConstEnv(defs, 0, stateVals);
   } catch { /* a broken definition; bounds using it will report the error */ }
   for (const name of animatedConstNames(defs)) delete constVals[name];
+  for (const name of defs.states.keys()) delete constVals[name];
   const ropts = { consts: constVals, boundConsts: sumBoundNames };
 
   // Random-variable rows (`X ~ Normal(0, a)`) resolve first so P(…) rows can
@@ -879,7 +978,7 @@ function recompileAll() {
       let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
       // Expand point arithmetic and geometry statements (segment, polygon, …)
       // into scalar expressions; a point name A becomes (A_x, A_y).
-      parsed = lowerGeom(parsed, n => defs.points.has(n));
+      parsed = lowerGeom(parsed, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
       // Coordinate fields substitute in as functions of the plane, so
       // `r = 1 + cos(theta)` classifies as an implicit curve in x, y.
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
@@ -1096,9 +1195,11 @@ function makeSlider(eq: Equation): SliderUI {
   box.append(min, range, max);
 
   range.addEventListener('input', () => {
-    if (eq.def?.kind !== 'const') return;
+    const kind = eq.def?.kind;
+    if (kind !== 'const' && kind !== 'init') return;
     pushUndo(`slider:${eq.id}`);
-    eq.text = `${eq.def.name} = ${fmtNum(Number(range.value))}`;
+    const lhs = kind === 'init' ? `${eq.def!.name}(0)` : eq.def!.name;
+    eq.text = `${lhs} = ${fmtNum(Number(range.value))}`;
     const line = lineEls()[equations.indexOf(eq)];
     if (line) line.textContent = eq.text;
     recompileAll();
@@ -1230,6 +1331,7 @@ function makeToggle(eq: Equation): { box: HTMLElement; btn: HTMLButtonElement } 
  * it is safe to run while the user is typing (the caret stays put).
  */
 function reconcile() {
+  if (stateResetBtn) stateResetBtn.hidden = !stateSys;
   const lines = lineEls();
   lines.forEach((line, i) => {
     const eq = equations[i];
@@ -1245,7 +1347,10 @@ function reconcile() {
     else delete line.dataset.ph;
 
     const wanted: HTMLElement[] = [];
-    const sliderable = eq.def?.kind === 'const' && !eq.error && NUM_RE.test(eq.def.rhs);
+    // Initial values get a slider too: dragging one relaunches the system
+    // from there, which is the whole point of `a(0)` in a chaotic system.
+    const sliderable = (eq.def?.kind === 'const' || eq.def?.kind === 'init')
+      && !eq.error && NUM_RE.test(eq.def.rhs);
     if (sliderable) {
       eq.sliderUI ??= makeSlider(eq);
       const { min, range, max } = eq.sliderUI;
@@ -1708,6 +1813,36 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['logistic growth', "dy/dx = y(1 - y/4)"],
     ['pendulum phase portrait', "(x', y') = (y, -sin(x))"],
     ['van der pol', "(x', y') = (y, (1 - x^2)y - x)"],
+    // A linear system as its literal matrix; drag the entries' sliders.
+    ['matrix phase portrait', "a = -1; b = -1/4; A = [(0, 1), (a, b)]; (x', y') = A (x, y)"],
+  ]],
+  ['simulations (↻ to restart)', [
+    // th = angle (theta), om = angular velocity (omega): the textbook names.
+    // Name each bob as a point, draw the rod with segment(), draw the mass by
+    // naming the point on its own row.
+    ['swinging pendulum',
+      "th' = om; om' = -sin(th) - om/8; th(0) = 3; bob = (sin(th), -cos(th)); segment((0, 0), bob); bob"],
+    // The Lagrangian form M(th) om' = f(th, om): th and om are 2-vector
+    // states (components th_1, th_2), M the mass matrix, solve() Cramer.
+    ['double pendulum',
+      'g = 9.8; L1 = 1; L2 = 1; m1 = 1; m2 = 1; '
+      + 'M = [((m1+m2) L1, m2 L2 cos(th_1 - th_2)), (L1 cos(th_1 - th_2), L2)]; '
+      + 'f = (-m2 L2 om_2^2 sin(th_1 - th_2) - (m1+m2) g sin(th_1), L1 om_1^2 sin(th_1 - th_2) - g sin(th_2)); '
+      + "th' = om; om' = solve(M, f); "
+      + 'th(0) = (2.5, 2.4); '
+      + 'b1 = (L1 sin(th_1), -L1 cos(th_1)); '
+      + 'b2 = b1 + (L2 sin(th_2), -L2 cos(th_2)); '
+      + 'segment((0, 0), b1); segment(b1, b2); b1; b2'],
+    // r'' = -mu r/|r|^3, written as the vectors it is. The state r draws as
+    // a point; below escape velocity the orbit is an ellipse.
+    ['orbit (vector gravity)',
+      "r' = vel; vel' = -9 r/|r|^3; r(0) = (2, 0); vel(0) = (0, 1.5); segment((0, 0), r); r; (0, 0)"],
+    // pos = displacement, vel = velocity: a phase portrait in (pos, vel).
+    ['driven oscillator', "pos' = vel; vel' = sin(2t) - pos - vel/5; (pos, vel)"],
+    // One 3-component state; the plot row projects onto the x–z plane.
+    ['lorenz attractor',
+      "r' = (10(r_2 - r_1), r_1(28 - r_3) - r_2, r_1 r_2 - 8 r_3/3); "
+      + 'r(0) = (1, 1, 20); (r_1/4, r_3/4 - 6)'],
   ]],
   ['complex', [
     ['point charge', 'ln(w)'],
@@ -1788,6 +1923,15 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
       + 'P = midpoint(A, B) - perp(B - A)/2; Q = midpoint(B, C) - perp(C - B)/2; '
       + 'R = midpoint(C, D) - perp(D - C)/2; S = midpoint(D, A) - perp(A - D)/2; '
       + 'polygon(P, Q, R, S)'],
+  ]],
+  ['systems', [
+    ['curve intersection', 'x^2 + y^2 = 4; x y = 1; (x^2 + y^2 - 4, x y - 1) = (0, 0)'],
+    ['three planes', '(x + y, x - y, z) = (1, 2, 3)'],
+    // Alpöge's counterexample to the Jacobian conjecture (July 2026), found by
+    // Fable: det JF = -2 everywhere, yet the fiber over (-1/4, 0, 0) holds the
+    // three points the solver marks. Drag c above 0 and two of them leave —
+    // they escape to infinity, which is how an étale map gets to be 3-to-1.
+    ['jacobian counterexample', 'c = -0.25; F(x,y,z) = ((1+x y)^3 z + y^2 (1+x y)(4+3 x y), y + 3 x (1+x y)^2 z + 3 x y^2 (4+3 x y), 2 x - 3 x^2 y - x^3 z); F(x,y,z) = (c, 0, 0)'],
   ]],
   ['3d surfaces', [
     ['waves', 'z = sin(x)cos(y)'],
@@ -2335,6 +2479,13 @@ for (const type of ['gesturestart', 'gesturechange', 'gestureend']) {
 // changes, which move no box at all.
 window.addEventListener('resize', resize);
 new ResizeObserver(resize).observe(canvas);
+
+// --- simulation reset ---
+
+stateResetBtn?.addEventListener('click', () => {
+  resetState();
+  requestRender();
+});
 
 // --- theme ---
 

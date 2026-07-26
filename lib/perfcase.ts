@@ -7,13 +7,16 @@
  * hand; if recompileAll gains steps that affect compile output, add them here.
  */
 import {
-  type Definition,
   animatedConstNames,
   buildDefs,
+  compsOf,
+  defKey,
   evalConstEnv,
   resolveExpr,
   scanDefinition,
+  type Definition,
 } from './defs.ts';
+import { buildStateSystem, initialState } from './state.ts';
 import { parseExpr, substVars } from './expr.ts';
 import { lowerGeom } from './geom.ts';
 import { type Classified, classify } from './plot.ts';
@@ -40,8 +43,8 @@ export function compileRows(rows: string[]): CompiledRows {
       continue;
     }
     const d = scanDefinition(text);
-    if (d && !seen.has(d.name)) {
-      seen.add(d.name);
+    if (d && !seen.has(defKey(d))) {
+      seen.add(defKey(d));
       raw.push(d);
       continue;
     }
@@ -49,7 +52,9 @@ export function compileRows(rows: string[]): CompiledRows {
   }
   const built = buildDefs(raw);
   const errors = [...built.errors.values()];
-  const constNames = new Set(built.defs.consts.keys());
+  // States are constants to every consumer (uniforms in GLSL), exactly as
+  // recompileAll folds them into the same name set.
+  const constNames = new Set([...built.defs.consts.keys(), ...built.defs.states.keys()]);
   const gridFields: GridField[] = [];
   for (const [name, e] of built.defs.fields) {
     gridFields.push(buildGridField(name, e, constNames));
@@ -61,9 +66,11 @@ export function compileRows(rows: string[]): CompiledRows {
   // recompileAll builds (animated constants excluded).
   let constVals: Record<string, number> = {};
   try {
-    constVals = evalConstEnv(built.defs, 0);
+    const sys = buildStateSystem(built.defs);
+    constVals = evalConstEnv(built.defs, 0, sys ? initialState(built.defs, sys) : {});
   } catch {}
   for (const name of animatedConstNames(built.defs)) delete constVals[name];
+  for (const name of built.defs.states.keys()) delete constVals[name];
   const ropts = { consts: constVals, boundConsts: built.sumBoundConsts };
   const classified: Classified[] = [];
   for (const text of plotTexts) {
@@ -76,7 +83,7 @@ export function compileRows(rows: string[]): CompiledRows {
     }
     let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
     // Expand point arithmetic and geometry statements like the app does.
-    parsed = lowerGeom(parsed, n => built.defs.points.has(n));
+    parsed = lowerGeom(parsed, n => compsOf(built.defs, n), n => built.defs.mats.get(n) ?? null);
     if (built.defs.fields.size) parsed = substVars(parsed, fieldEnv);
     classified.push(classify(parsed, constNames));
   }
@@ -118,6 +125,12 @@ export const CORPUS: { name: string; rows: (c: number) => string[] }[] = [
   { name: 'piecewise', rows: c => [`a = ${c}`, 'y = {x < 0: -a x, x >= 0: a x^2}'] },
   { name: 'piecewise-default', rows: c => [`a = ${c}`, 'y = {x < a: sin(x), cos(x)}'] },
   { name: 'gcd2d', rows: c => [`a = ${c}`, 'y = gcd(floor(x), floor(a x))'] },
+  // Square systems carry residual Exprs (CPU-solved), no GLSL.
+  { name: 'system2d', rows: c => [`a = ${c}`, '(x^2 + y^2 - a, x y - 1) = (0, 0)'] },
+  { name: 'system3d', rows: c => [`a = ${c}`, '(x + y, x - y, z - a) = (1, 2, 3)'] },
+  // Time-integrated state (a' = …): the state a is a u_a uniform downstream,
+  // so neither the deriv constant k nor the a(0) slider may leak into GLSL.
+  { name: 'state', rows: c => [`k = ${c}`, "a' = -k a + sin(t)", `a(0) = ${c}`, 'y = a sin(x)'] },
 ];
 
 /**
