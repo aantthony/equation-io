@@ -117,6 +117,28 @@ describe('mcp endpoint', () => {
     expect(out.preview_omits).toBeUndefined();
   });
 
+  it('expands slider-bounded sums like the app does (Fourier series)', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['N = 8', 'y = 2 sum[n=1..N] (-1)^(n+1) sin(n x)/n'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual(['definition (const)', 'implicit2d']);
+    expect(out.preview_omits).toBeUndefined();
+  });
+
+  it('still rejects Σ bounds with no static value (animated constant)', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['a = 2 + sin(t)', 'y = sum[n=1..a] x^n'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(false);
+    expect(out.rows[1].status).toBe('error');
+    expect(out.rows[1].error).toContain('must be constant');
+  });
+
   it('rejects a P(…) row with no random variable declared', async () => {
     const { body } = await rpc('tools/call', {
       name: 'create_graph',

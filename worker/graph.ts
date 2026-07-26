@@ -6,6 +6,7 @@
  * by using the exact same lib functions.
  */
 import {
+  animatedConstNames,
   buildDefs,
   compsOf,
   defKey,
@@ -127,6 +128,13 @@ export function analyze(texts: string[]): Analysis {
     if (!fn && fnNames.has(name)) throw new Error(`${name} has an error in its definition.`);
     return fn;
   };
+  // Σ/Π bounds in plot rows expand against the constants' values at t = 0, as
+  // in web/main.ts (animated constants and states excluded: expansion is
+  // static, so their bounds have no fixed value).
+  const boundVals = { ...constEnv };
+  for (const name of animatedConstNames(defs)) delete boundVals[name];
+  for (const name of defs.states.keys()) delete boundVals[name];
+  const ropts = { consts: boundVals, boundConsts: built.sumBoundConsts };
 
   // Random variables next, so P(…) and bare-expression rows can reference
   // them regardless of row order.
@@ -134,6 +142,7 @@ export function analyze(texts: string[]): Analysis {
   const builtRVs = buildRVSystem(rvs, rvScan, {
     fnNames,
     getFn,
+    ropts,
     constNames,
     taken: n => defs.consts.has(n) || defs.fns.has(n) || defs.fields.has(n)
       || defs.states.has(n) || defs.points.has(n) || defs.mats.has(n),
@@ -185,7 +194,7 @@ export function analyze(texts: string[]): Analysis {
       const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(row.text);
       if (probBody !== null) {
         if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
-        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn), rvNames);
+        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn, ropts), rvNames);
         for (const name of p.rvs) {
           if (!rvs.has(name)) throw new Error(`${name} has an error in its definition.`);
         }
@@ -241,7 +250,7 @@ export function analyze(texts: string[]): Analysis {
       const expectBody = defs.consts.has('E') || defs.fns.has('E') ? null : matchExpectation(row.text);
       if (expectBody !== null) {
         if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
-        const ex = toExpectation(resolveExpr(parseExpr(expectBody, fnNames), getFn), rvNames);
+        const ex = toExpectation(resolveExpr(parseExpr(expectBody, fnNames), getFn, ropts), rvNames);
         for (const name of ex.rvs) {
           if (!rvs.has(name)) throw new Error(`${name} has an error in its definition.`);
         }
@@ -274,11 +283,11 @@ export function analyze(texts: string[]): Analysis {
       }
       const seq = scanSeqRec(row.text);
       if (seq) {
-        row.cls = classifySeqRec(seq, fnNames, getFn, constNames);
+        row.cls = classifySeqRec(seq, fnNames, getFn, constNames, ropts);
         continue;
       }
       const rawParsed = parseExpr(row.text, fnNames);
-      let parsed = resolveExpr(rawParsed, getFn);
+      let parsed = resolveExpr(rawParsed, getFn, ropts);
       // A bare expression in random variables plots that derived density.
       const rvRefs = [...freeVars(parsed)].filter(n => rvNames.has(n));
       if (rvRefs.length) {
