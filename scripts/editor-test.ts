@@ -203,8 +203,75 @@ await scenario('typing syncs', async () => {
     document.querySelector<HTMLElement>('#equations')!
       .dispatchEvent(new InputEvent('input', { inputType: 'insertText', bubbles: true }));
   });
-  const hash = await page.evaluate(() => location.hash);
-  check('typing syncs state to the URL hash', decodeURIComponent(hash).includes('y = x^2'), `hash=${hash}`);
+  // Edits normalize the address to the /g/ path form (writeUrl), so the
+  // payload lives in the pathname, not the hash.
+  const url = await page.evaluate(() => decodeURIComponent(location.pathname + location.hash));
+  check('typing syncs state to the URL', url.includes('y = x^2'), `url=${url}`);
+});
+
+// --- comment rows and collapsible groups ---
+
+const visibleRows = (page: Page) =>
+  page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('.eq-line')]
+      .filter(l => !l.classList.contains('eq-hidden'))
+      .map(l => l.textContent),
+  );
+
+/** Click a line's left gutter (chevron/color dot) via the app's pointerdown path. */
+const gutterClick = (page: Page, line: number) =>
+  page.evaluate(l => {
+    const el = [...document.querySelectorAll<HTMLElement>('.eq-line')][l];
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new PointerEvent('pointerdown', { clientX: r.left + 10, clientY: r.top + 10, bubbles: true, cancelable: true }));
+  }, line);
+
+await scenario('comment rows collapse their group', async () => {
+  await load(page, ['# Lines', 'y=x', 'y=x^2', '# Another group', 'y=3']);
+  const classed = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLElement>('.eq-line')].map(l => l.classList.contains('is-comment')),
+  );
+  check(
+    '# rows render as comments, not errors',
+    JSON.stringify(classed) === JSON.stringify([true, false, false, true, false])
+      && (await page.evaluate(() => document.querySelectorAll('.eq-error').length)) === 0,
+    `is-comment=${JSON.stringify(classed)}`,
+  );
+  await gutterClick(page, 0);
+  const collapsed = await visibleRows(page);
+  const badge = await page.evaluate(() => document.querySelector<HTMLElement>('.eq-line')!.dataset.hidden);
+  check(
+    'gutter click collapses the group up to the next comment',
+    JSON.stringify(collapsed) === JSON.stringify(['# Lines', '# Another group', 'y=3']) && badge === '2 hidden',
+    `visible=${JSON.stringify(collapsed)} badge=${badge}`,
+  );
+  await gutterClick(page, 0);
+  const expanded = await visibleRows(page);
+  check('second gutter click expands it again', expanded.length === 5, `visible=${JSON.stringify(expanded)}`);
+});
+
+await scenario('collapsed rows still copy and share', async () => {
+  await load(page, ['# Lines', 'y=x', 'y=x^2']);
+  await gutterClick(page, 0);
+  const url = await page.evaluate(() => decodeURIComponent(location.pathname + location.hash));
+  check(
+    'collapsed rows stay in the share URL',
+    url.includes('y=x^2') && url.includes('# Lines'),
+    `url=${url}`,
+  );
+});
+
+await scenario('Enter after a collapsed heading expands it', async () => {
+  await load(page, ['# Lines', 'y=x']);
+  await gutterClick(page, 0);
+  await caretTo(page, 0, 7); // caret at end of "# Lines"
+  await page.keyboard.press('Enter');
+  const visible = await visibleRows(page);
+  check(
+    'the new row is visible (group auto-expanded)',
+    visible.length === 3,
+    `visible=${JSON.stringify(visible)}`,
+  );
 });
 
 await browser.close();

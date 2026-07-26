@@ -97,6 +97,9 @@ demand instead of living in a tool description. No authentication required.
   outside). Bounds must be numbers or constants defined in another row (not
   `t`), because the sum is expanded symbolically before compiling — which makes
   `N` a slider that adds terms as you drag it.
+- Comments: a row starting with `#` (e.g. `# tangent lines`) plots nothing; in
+  the app it renders as a heading whose group (the rows until the next `#` row)
+  can be collapsed. Use them to label sections of longer documents.
 
 ## Variables (what a row means)
 

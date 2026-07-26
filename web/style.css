@@ -181,6 +181,36 @@ html, body {
   cursor: pointer;
 }
 .eq-line.is-def::before { visibility: hidden; }
+/* `# label` comment rows head a collapsible group; the gutter chevron
+   (replacing the color dot) toggles it. */
+.eq-line.is-comment {
+  color: var(--muted);
+  font-weight: 600;
+}
+.eq-line.is-comment::before {
+  content: '▸';
+  background: none;
+  border: none;
+  border-radius: 0;
+  top: 4px;
+  width: 14px;
+  height: auto;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 22px;
+  text-align: center;
+  transform: rotate(90deg);
+  transition: transform 0.12s;
+}
+.eq-line.is-comment.collapsed::before { transform: none; }
+.eq-line.is-comment.collapsed::after {
+  content: attr(data-hidden);
+  margin-left: 10px;
+  color: var(--placeholder);
+  font: 11px ui-sans-serif, system-ui, sans-serif;
+}
+/* Rows inside a collapsed group; they stay in the DOM (copy/undo/share). */
+#equations .eq-hidden { display: none; }
 .eq-line.focused { background: var(--eq-focus); }
 .eq-line.invalid { box-shadow: inset 0 -1px var(--error-line); }
 .eq-line[data-ph]::after {

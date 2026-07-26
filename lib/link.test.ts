@@ -34,6 +34,11 @@ describe('graph-link payload codec', () => {
     expect(decodePayload('y%20=%20sin(x)%3by=x')).toEqual(expected); // lowercase %3b
   });
 
+  it('round-trips comment rows (# group headings)', () => {
+    const rows = ['# Lines', 'y=x', 'y=x^2', '# Another group'];
+    expect(decodePayload(encodePayload(rows))).toEqual(rows);
+  });
+
   it('keeps a single row whole', () => {
     expect(decodePayload('y%20%3D%20sin%28x%29')).toEqual(['y = sin(x)']);
     expect(decodePayload('(cos(2pi u), sin(2pi u), u)')).toEqual(['(cos(2pi u), sin(2pi u), u)']);

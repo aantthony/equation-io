@@ -29,6 +29,8 @@ export interface RowInfo {
   cls?: Classified;
   /** The fully resolved expression a plot row renders (fields substituted). */
   expr?: Expr;
+  /** Set for `# label` comment rows (group headings in the app; not plotted). */
+  comment?: boolean;
   error?: string;
 }
 
@@ -49,6 +51,8 @@ export function analyze(texts: string[]): Analysis {
   const dupRows: RowInfo[] = [];
   for (const row of rows) {
     if (!row.text) continue;
+    // `# label` rows are comments (collapsible group headings in the app).
+    if (row.text.startsWith('#')) { row.comment = true; continue; }
     // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not definitions.
     if (scanSeqRec(row.text)) continue;
     const d = scanDefinition(row.text);
@@ -89,7 +93,7 @@ export function analyze(texts: string[]): Analysis {
   };
   const seenViewKinds = new Set<string>();
   for (const row of rows) {
-    if (row.def || row.error || !row.text) continue;
+    if (row.def || row.comment || row.error || !row.text) continue;
     try {
       const view = parseViewRow(row.text, constEnv);
       if (view) {

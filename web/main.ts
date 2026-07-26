@@ -67,6 +67,10 @@ interface Equation {
   def?: Definition;
   /** Set when the row is a viewport row (`view(…)` / `camera(…)`). */
   viewSpec?: ViewSpec;
+  /** Set when the row is a `# label` comment heading a collapsible group. */
+  comment?: boolean;
+  /** Comment rows: hide the group (rows until the next comment) in the list. */
+  collapsed?: boolean;
   sliderMin?: number;
   sliderMax?: number;
   /** Draw the whole family of level sets (for `f(x,y) = c` plots). */
@@ -755,7 +759,9 @@ function recompileAll() {
     eq.viewSpec = undefined;
     eq.spCache = undefined;
     const text = eq.text.trim();
-    if (!text) continue;
+    eq.comment = text.startsWith('#');
+    if (!eq.comment) eq.collapsed = undefined;
+    if (!text || eq.comment) continue;
     // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not definitions.
     if (scanSeqRec(text)) continue;
     const d = scanDefinition(text);
@@ -816,7 +822,7 @@ function recompileAll() {
   const dists = new Map<string, DistDef>();
   const distRows = new Set<Equation>();
   for (const eq of equations) {
-    if (eq.def) continue;
+    if (eq.def || eq.comment) continue;
     const text = eq.text.trim();
     if (!text) continue;
     const scan = scanDistribution(text);
@@ -841,7 +847,7 @@ function recompileAll() {
 
   const seenViewport = new Set<string>();
   for (const eq of equations) {
-    if (eq.def || distRows.has(eq)) continue;
+    if (eq.def || eq.comment || distRows.has(eq)) continue;
     const text = eq.text.trim();
     if (!text) continue;
     try {
@@ -1232,7 +1238,9 @@ function reconcile() {
     line.style.setProperty('--eq-color', cssColor(theme.palette[eq.colorIndex]));
     line.classList.toggle('invalid', !!eq.error);
     line.classList.toggle('is-def', !!eq.def);
-    line.title = eq.error ?? '';
+    line.classList.toggle('is-comment', !!eq.comment);
+    line.classList.toggle('collapsed', !!(eq.comment && eq.collapsed));
+    line.title = eq.error ?? (eq.comment ? 'Click the arrow to collapse or expand this group' : '');
     if (equations.length === 1 && !eq.text.trim()) line.dataset.ph = 'add an equation…';
     else delete line.dataset.ph;
 
@@ -1311,6 +1319,37 @@ function reconcile() {
       ref.nextSibling.remove();
     }
   });
+
+  // Collapsed groups: a collapsed `# comment` hides every row (and its
+  // widgets) until the next comment row. Hidden rows stay in the DOM so
+  // select-all, copy, undo, and share links still carry the full document.
+  let hide = false;
+  let head: HTMLElement | null = null;
+  let hiddenCount = 0;
+  const badge = () => {
+    if (!head) return;
+    if (hiddenCount) head.dataset.hidden = `${hiddenCount} hidden`;
+    else delete head.dataset.hidden;
+  };
+  let i = -1;
+  for (const el of [...listEl.children] as HTMLElement[]) {
+    if (el.classList.contains('eq-line')) {
+      i++;
+      const eq = equations[i];
+      if (eq?.comment) {
+        badge();
+        hide = !!eq.collapsed;
+        head = hide ? el : null;
+        hiddenCount = 0;
+        el.classList.remove('eq-hidden');
+        if (!hide) delete el.dataset.hidden;
+        continue;
+      }
+      if (hide) hiddenCount++;
+    }
+    el.classList.toggle('eq-hidden', hide);
+  }
+  badge();
 }
 
 /** Full rebuild of the editable DOM from state (loses caret; callers restore). */
@@ -1430,9 +1469,27 @@ function insertStatements(text: string) {
 
   recompileAll();
   renderAll();
+  expandAt(start.line + inserted.length - 1);
   setCaret(start.line + inserted.length - 1, caretOffset);
   saveUrl();
   requestRender();
+}
+
+/**
+ * Expand the collapsed group holding `lineIdx`, so an edit that lands inside
+ * it (Enter at the end of a collapsed heading, a merge into its last row)
+ * never leaves the caret or new rows invisible.
+ */
+function expandAt(lineIdx: number) {
+  for (let i = Math.min(lineIdx, equations.length - 1); i >= 0; i--) {
+    const eq = equations[i];
+    if (!eq?.comment) continue;
+    if (i !== lineIdx && eq.collapsed) {
+      eq.collapsed = undefined;
+      reconcile();
+    }
+    return;
+  }
 }
 
 /** Selected lines as clean newline-joined text — widget content never leaks in. */
@@ -1571,6 +1628,7 @@ listEl.addEventListener('beforeinput', e => {
   equations.splice(from, 1);
   recompileAll();
   renderAll();
+  expandAt(from - 1);
   setCaret(from - 1, offset);
   saveUrl();
   requestRender();
@@ -1599,13 +1657,20 @@ listEl.addEventListener('cut', e => {
   insertStatements('');
 });
 
-// Click on a line's color dot (the ::before in the left gutter) cycles color.
+// Click on a line's left gutter: comment rows toggle their group collapsed
+// (the ::before chevron), other rows cycle their color dot.
 listEl.addEventListener('pointerdown', e => {
   const line = e.target instanceof HTMLElement ? e.target.closest('.eq-line') : null;
   if (!line) return;
   if (e.clientX - line.getBoundingClientRect().left > 22) return;
   const eq = equations[lineEls().indexOf(line as HTMLElement)];
   if (!eq || eq.def) return;
+  if (eq.comment) {
+    e.preventDefault();
+    eq.collapsed = !eq.collapsed || undefined;
+    reconcile();
+    return;
+  }
   e.preventDefault();
   pushUndo(`color:${eq.id}`);
   eq.colorIndex = (eq.colorIndex + 1) % theme.palette.length;

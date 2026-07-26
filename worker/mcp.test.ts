@@ -112,6 +112,17 @@ describe('mcp endpoint', () => {
     expect(out.rows[1].status).toBe('error');
   });
 
+  it('treats # rows as comments, not errors', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['# Lines', 'y = x'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows[0]).toMatchObject({ status: 'ok', kind: 'comment (group heading)' });
+    expect(out.rows[1].status).toBe('ok');
+  });
+
   it('round-trips a link through read_graph (both URL forms)', async () => {
     const { body: created } = await rpc('tools/call', {
       name: 'create_graph',

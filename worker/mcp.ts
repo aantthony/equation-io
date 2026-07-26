@@ -126,11 +126,13 @@ async function createGraph(origin: string, args: Record<string, unknown>) {
         ? { status: 'error' as const, error: row.error }
         : {
             status: 'ok' as const,
-            kind: row.def
-              ? `definition (${row.def.kind})`
-              : row.view
-                ? `viewport (${row.view.kind})`
-                : row.cls!.plot.type,
+            kind: row.comment
+              ? 'comment (group heading)'
+              : row.def
+                ? `definition (${row.def.kind})`
+                : row.view
+                  ? `viewport (${row.view.kind})`
+                  : row.cls!.plot.type,
             ...(row.cls?.animated ? { animated: true } : {}),
             ...(drag === undefined ? {} : { draggable: drag }),
           }),
