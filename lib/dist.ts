@@ -157,9 +157,15 @@ export interface ProbSpec {
   rvs: string[];
   /**
    * Present when the body is constant bounds around one bare variable
-   * (`P(a < X < b)`): the shadeable — and for base variables, exact — case.
+   * (`P(a < X < b)`): the shadeable — and for closed-form laws, exact — case.
    */
   single?: { rv: string; lo?: Expr; hi?: Expr };
+  /**
+   * Bounds around one variable-bearing *expression* (`P(0.5 < X + Y < 1.5)`):
+   * the same case once the caller registers the expression as an anonymous
+   * derived variable.
+   */
+  inline?: { e: Expr; lo?: Expr; hi?: Expr };
 }
 
 /** Interpret a parsed P(…) body against the declared random variables. */
@@ -183,18 +189,19 @@ export function toProbability(e: Expr, rvNames: ReadonlySet<string>): ProbSpec {
   const terms = [asc[0].l, ...asc.map(c => c.r)];
   const spec: ProbSpec = { body: e, rvs };
 
-  // `lo < X < hi` with one bare variable and variable-free bounds shades (and,
-  // for a base distribution, computes exactly). Anything else — P(Y > X),
-  // derived expressions in place, longer chains — estimates from samples.
-  const idx = terms.findIndex(t => t.kind === 'var' && rvNames.has(t.name));
+  // `lo < … < hi` with exactly one variable-bearing term and variable-free
+  // bounds on its immediate sides shades (and computes exactly when a law is
+  // derivable): a bare name yields `single`, an expression `inline`. Anything
+  // else — P(Y > X), extra constraints beyond the bounds — samples.
+  const idx = terms.findIndex(t => [...freeVars(t)].some(n => rvNames.has(n)));
   const others = terms.filter((_, k) => k !== idx);
-  if (idx >= 0 && terms.length <= 3 && Math.abs(terms.length - 1 - idx) <= 1
+  if (idx >= 0 && terms.length <= 3 && idx <= 1 && idx >= terms.length - 2
     && others.every(t => [...freeVars(t)].every(n => !rvNames.has(n)))) {
-    spec.single = {
-      rv: (terms[idx] as Expr & { kind: 'var' }).name,
-      lo: idx > 0 ? terms[idx - 1] : undefined,
-      hi: idx < terms.length - 1 ? terms[idx + 1] : undefined,
-    };
+    const t = terms[idx];
+    const lo = idx > 0 ? terms[idx - 1] : undefined;
+    const hi = idx < terms.length - 1 ? terms[idx + 1] : undefined;
+    if (t.kind === 'var' && rvNames.has(t.name)) spec.single = { rv: t.name, lo, hi };
+    else spec.inline = { e: t, lo, hi };
   }
   return spec;
 }
@@ -246,8 +253,11 @@ export function probabilityValue(
  * `base` rows are `name ~ …`; `derived` rows are `name = rhs` where the rhs
  * mentions a random variable (transitively — `Z = Y + 1` follows `Y = X^2`
  * into the set). Rows the caller has already claimed (comments, sequences)
- * arrive as null. Word-boundary matching is textual by design: it must run
- * before parsing, because these rows must *not* become constant definitions.
+ * arrive as null. Matching is textual by design — it must run before parsing,
+ * because these rows must *not* become constant definitions — but it follows
+ * the tokenizer's identifier rule (a maximal run starting with a letter), so
+ * `2X` mentions X while `aX`, `X_1`, and `X2` are their own names. A \b-style
+ * word boundary would get `2X` wrong: 2 and X are both word characters.
  */
 export function scanRandomRows(texts: readonly (string | null)[]): {
   base: Map<number, { name: string; rhs: string }>;
@@ -274,9 +284,8 @@ export function scanRandomRows(texts: readonly (string | null)[]): {
   let changed = names.size > 0;
   while (changed) {
     changed = false;
-    const re = new RegExp(`\\b(?:${[...names].join('|')})\\b`);
     for (const [i, c] of candidates) {
-      if (!re.test(c.rhs)) continue;
+      if (!(c.rhs.match(/[A-Za-z_]\w*/g) ?? []).some(t => names.has(t))) continue;
       candidates.delete(i);
       derived.set(i, c);
       names.add(c.name);
@@ -582,17 +591,206 @@ export function shadePolygon(curve: DensityCurve, lo?: number, hi?: number): num
 }
 
 interface CacheEntry {
-  /** Serialized definition + parameter values the column was computed under. */
+  /** Serialized definition + parameter values the fields were computed under. */
   sig: string;
-  col: Float64Array;
+  /** Joint sample column (present once columns() ran for this sig). */
+  col?: Float64Array;
   curve?: DensityCurve | null;
 }
 
 /** An expression decomposed as Σ terms[name]·name + c, coefficients free of
- *  random variables. The affine-in-normals form has an exact distribution. */
+ *  random variables. Affine forms over closed families have exact laws. */
 interface Affine {
   terms: Map<string, Expr>;
   c: Expr;
+}
+
+/** An exact law: a closed-form pdf the shader draws, or a uniform-sum
+ *  convolution evaluated as an exact piecewise polynomial per parameters. */
+export type Law =
+  | { kind: 'dist'; dist: BaseDist }
+  | { kind: 'usum'; terms: Array<{ c: Expr; lo: Expr; hi: Expr }>; d: Expr };
+
+/** The numeric value of a constant-folded expression, or null (frees, NaN). */
+function numOf(e: Expr): number | null {
+  try {
+    const v = evaluate(e, {});
+    return isFinite(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+// --- exact piecewise-polynomial densities (uniform convolutions) ---
+//
+// Sums of independent uniforms stay piecewise polynomial forever: uniform is
+// degree 0 and each convolution raises the degree by one and merges
+// breakpoints (X + Y is the triangle, four terms the Irwin–Hall cubic). The
+// integrands are polynomials, so "symbolic integration" here is the power
+// rule; all the real work is the support bookkeeping below. Coefficients are
+// plain numbers evaluated per parameter values — breakpoint *ordering*
+// depends on slider values, so a symbolic form would need case analysis the
+// numeric one sidesteps.
+
+/** Density polynomial (ascending coefficients) per interval between breaks. */
+interface PPoly {
+  breaks: number[];
+  pieces: number[][];
+}
+
+const padd = (a: number[], b: number[]): number[] => {
+  const out = new Array(Math.max(a.length, b.length)).fill(0);
+  a.forEach((v, i) => { out[i] += v; });
+  b.forEach((v, i) => { out[i] += v; });
+  return out;
+};
+
+const pscale = (a: number[], k: number): number[] => a.map(v => v * k);
+
+const pmul = (a: number[], b: number[]): number[] => {
+  const out = new Array(Math.max(1, a.length + b.length - 1)).fill(0);
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) out[i + j] += a[i] * b[j];
+  }
+  return out;
+};
+
+const peval = (a: number[], x: number): number => {
+  let v = 0;
+  for (let i = a.length - 1; i >= 0; i--) v = v * x + a[i];
+  return v;
+};
+
+/** Antiderivative with constant 0. */
+const pint = (a: number[]): number[] => [0, ...a.map((v, i) => v / (i + 1))];
+
+/** Compose: p(k·y + t) as a polynomial in y. */
+const plin = (p: number[], k: number, t: number): number[] => {
+  let out: number[] = [0];
+  for (let j = p.length - 1; j >= 0; j--) out = padd(pmul(out, [t, k]), [p[j]]);
+  return out;
+};
+
+const uniformPP = (lo: number, hi: number): PPoly =>
+  ({ breaks: [lo, hi], pieces: [[1 / (hi - lo)]] });
+
+/** The density of c·X + t for X with density p (c ≠ 0). */
+function scalePP(p: PPoly, c: number, t: number): PPoly {
+  const breaks = p.breaks.map(b => c * b + t);
+  // g(y) = f((y − t)/c)/|c|; composing with the inverse map keeps polynomials.
+  const pieces = p.pieces.map(q => pscale(plin(q, 1 / c, -t / c), 1 / Math.abs(c)));
+  if (c < 0) {
+    breaks.reverse();
+    pieces.reverse();
+  }
+  return { breaks, pieces };
+}
+
+const binom = (n: number, k: number): number => {
+  let v = 1;
+  for (let i = 0; i < k; i++) v = (v * (n - i)) / (i + 1);
+  return v;
+};
+
+/**
+ * Exact convolution of two piecewise-polynomial densities. For a piece pair
+ * u on [a, b] and v on [c, e], h(z) = ∫ u(x)v(z−x) dx over
+ * x ∈ [max(a, z−e), min(b, z−c)]: the antiderivative W(x; z) is computed
+ * once per pair (a polynomial in x whose coefficients are polynomials in z),
+ * and on each output interval — the breakpoints are the pairwise support
+ * sums — each limit is either a constant or z + shift, so h is a polynomial.
+ */
+function convPP(p: PPoly, q: PPoly): PPoly {
+  interface Pair { a: number; b: number; c: number; e: number; Wx: number[][] }
+  const pairs: Pair[] = [];
+  const zb: number[] = [];
+  for (let i = 0; i + 1 < p.breaks.length; i++) {
+    for (let k = 0; k + 1 < q.breaks.length; k++) {
+      const a = p.breaks[i], b = p.breaks[i + 1];
+      const c = q.breaks[k], e = q.breaks[k + 1];
+      const u = p.pieces[i], v = q.pieces[k];
+      // v(z−x) gathered by powers of x: Vx[r] is a polynomial in z.
+      const Vx: number[][] = [];
+      for (let kk = 0; kk < v.length; kk++) {
+        for (let r = 0; r <= kk; r++) {
+          Vx[r] ??= [];
+          Vx[r][kk - r] = (Vx[r][kk - r] ?? 0) + v[kk] * binom(kk, r) * (r % 2 ? -1 : 1);
+        }
+      }
+      // u(x)·v(z−x) by powers of x, then the antiderivative in x.
+      const Px: number[][] = [];
+      for (let i2 = 0; i2 < u.length; i2++) {
+        for (let r = 0; r < Vx.length; r++) {
+          if (!Vx[r]) continue;
+          Px[i2 + r] = padd(Px[i2 + r] ?? [], pscale(Vx[r], u[i2]));
+        }
+      }
+      const Wx: number[][] = [[]];
+      for (let j = 0; j < Px.length; j++) Wx[j + 1] = Px[j] ? pscale(Px[j], 1 / (j + 1)) : [];
+      pairs.push({ a, b, c, e, Wx });
+      zb.push(a + c, a + e, b + c, b + e);
+    }
+  }
+  zb.sort((x, y) => x - y);
+  const eps = Math.max(1e-300, (zb[zb.length - 1] - zb[0]) * 1e-12);
+  const zs = zb.filter((z, i) => i === 0 || z - zb[i - 1] > eps);
+  const breaks: number[] = [zs[0]];
+  const pieces: number[][] = [];
+  for (let s = 0; s + 1 < zs.length; s++) {
+    const mid = (zs[s] + zs[s + 1]) / 2;
+    let acc: number[] = [0];
+    for (const pr of pairs) {
+      if (mid <= pr.a + pr.c || mid >= pr.b + pr.e) continue;
+      // W at a limit that is either constant or z + shift, as a poly in z.
+      const wAt = (constX: number | null, shift: number): number[] => {
+        let out: number[] = [];
+        let xp = 1;
+        let pw: number[] = [1];
+        for (let j = 0; j < pr.Wx.length; j++) {
+          if (pr.Wx[j].length) {
+            out = padd(out, constX !== null ? pscale(pr.Wx[j], xp) : pmul(pr.Wx[j], pw));
+          }
+          if (constX !== null) xp *= constX;
+          else pw = pmul(pw, [shift, 1]);
+        }
+        return out;
+      };
+      const upper = pr.b <= mid - pr.c ? wAt(pr.b, 0) : wAt(null, -pr.c);
+      const lower = pr.a >= mid - pr.e ? wAt(pr.a, 0) : wAt(null, -pr.e);
+      acc = padd(acc, padd(upper, pscale(lower, -1)));
+    }
+    breaks.push(zs[s + 1]);
+    pieces.push(acc);
+  }
+  return { breaks, pieces };
+}
+
+/** Exact CDF at x. */
+function cdfPP(p: PPoly, x: number): number {
+  let acc = 0;
+  for (let i = 0; i + 1 < p.breaks.length; i++) {
+    if (x <= p.breaks[i]) break;
+    const hi = Math.min(x, p.breaks[i + 1]);
+    const F = pint(p.pieces[i]);
+    acc += peval(F, hi) - peval(F, p.breaks[i]);
+  }
+  return acc;
+}
+
+/** The exact curve as a polyline: pieces sampled densely, with every true
+ *  breakpoint emitted so kinks stay corners instead of KDE shoulders. */
+function curvePP(p: PPoly): number[] {
+  const span = p.breaks[p.breaks.length - 1] - p.breaks[0];
+  const pts: number[] = [];
+  for (let i = 0; i + 1 < p.breaks.length; i++) {
+    const x0 = p.breaks[i], x1 = p.breaks[i + 1];
+    const n = Math.max(2, Math.ceil(((x1 - x0) / span) * 256));
+    for (let k = 0; k <= n; k++) {
+      const x = x0 + ((x1 - x0) * k) / n;
+      pts.push(x, peval(p.pieces[i], x));
+    }
+  }
+  return pts;
 }
 
 /**
@@ -609,6 +807,7 @@ export class RVSystem {
   private paramsMemo = new Map<string, ReadonlySet<string>>();
   private defSigMemo = new Map<string, string>();
   private affineMemo = new Map<string, Affine | null>();
+  private lawMemo = new Map<string, Law | null>();
 
   /** Start a recompile: drop declarations, keep sample caches. */
   reset(): void {
@@ -616,6 +815,7 @@ export class RVSystem {
     this.paramsMemo.clear();
     this.defSigMemo.clear();
     this.affineMemo.clear();
+    this.lawMemo.clear();
   }
 
   add(rv: RV): void {
@@ -705,9 +905,7 @@ export class RVSystem {
     switch (e.kind) {
       case 'var': {
         const rv = this.rvs.get(e.name)!;
-        if (rv.kind === 'base') {
-          return rv.dist.kind === 'normal' ? { terms: new Map([[e.name, num(1)]]), c: num(0) } : null;
-        }
+        if (rv.kind === 'base') return { terms: new Map([[e.name, num(1)]]), c: num(0) };
         return this.affineOf(e.name);
       }
       case 'neg':
@@ -748,29 +946,87 @@ export class RVSystem {
   }
 
   /**
-   * The exact distribution of a variable, when one is derivable: base
-   * declarations pass through, and a derived variable affine in independent
-   * normal bases is itself normal — mean Σcᵢμᵢ + d, sd √(Σ(cᵢσᵢ)²). Shared
-   * names accumulate into one coefficient first, which is exactly the
-   * covariance accounting: var(aX + bX) = (a+b)²σ². Null means "estimate
-   * from samples" (nonlinear transforms, non-normal bases, products).
+   * The exact law of a variable, when one is derivable. Base declarations
+   * pass through. A derived variable affine in independent bases (shared
+   * names accumulate into one coefficient first — the covariance accounting:
+   * var(aX + bX) = (a+b)²σ²) reduces by family:
+   *
+   * - all normal → normal, mean Σcᵢμᵢ + d, sd √(Σ(cᵢσᵢ)²);
+   * - one term → the base transformed: c·U(lo,hi)+d is Uniform again (min/max
+   *   endpoints keep a negative or slider-driven c honest), c·Exp(λ) with a
+   *   positive literal c is Exponential(λ/c);
+   * - several uniform terms → 'usum', an exact piecewise-polynomial
+   *   convolution (the triangle, Irwin–Hall, trapezoids) evaluated per
+   *   parameter values.
+   *
+   * Null means "estimate from samples" (nonlinear transforms, products,
+   * mixed families).
    */
-  exactDist(name: string): BaseDist | null {
+  exactLaw(name: string): Law | null {
+    const memo = this.lawMemo.get(name);
+    if (memo !== undefined) return memo;
+    const law = this.deriveLaw(name);
+    this.lawMemo.set(name, law);
+    return law;
+  }
+
+  private deriveLaw(name: string): Law | null {
     const rv = this.rvs.get(name);
     if (!rv) return null;
-    if (rv.kind === 'base') return rv.dist;
+    if (rv.kind === 'base') return { kind: 'dist', dist: rv.dist };
     const af = this.affineOf(name);
     if (!af || !af.terms.size) return null;
-    let mean = af.c;
-    let variance: Expr | null = null;
-    for (const [n, coef] of af.terms) {
-      const d = (this.rvs.get(n) as RV & { kind: 'base' }).dist;
-      mean = bin('+', mean, bin('*', coef, d.args[0]));
-      const term = bin('^', bin('*', coef, d.args[1]), num(2));
-      variance = variance ? bin('+', variance, term) : term;
+    const bases = [...af.terms].map(([n, coef]) => ({
+      coef,
+      dist: (this.rvs.get(n) as RV & { kind: 'base' }).dist,
+    }));
+    if (bases.every(b => b.dist.kind === 'normal')) {
+      let mean = af.c;
+      let variance: Expr | null = null;
+      for (const { coef, dist } of bases) {
+        mean = bin('+', mean, bin('*', coef, dist.args[0]));
+        const term = bin('^', bin('*', coef, dist.args[1]), num(2));
+        variance = variance ? bin('+', variance, term) : term;
+      }
+      const sd: Expr = { kind: 'call', name: 'sqrt', args: [variance!] };
+      return { kind: 'dist', dist: { kind: 'normal', args: [mean, sd] } };
     }
-    const sd: Expr = { kind: 'call', name: 'sqrt', args: [variance!] };
-    return { kind: 'normal', args: [mean, sd] };
+    if (bases.length === 1) {
+      const { coef, dist } = bases[0];
+      if (dist.kind === 'uniform') {
+        const e1 = bin('+', bin('*', coef, dist.args[0]), af.c);
+        const e2 = bin('+', bin('*', coef, dist.args[1]), af.c);
+        const args: Expr[] = [
+          { kind: 'call', name: 'min', args: [e1, e2] },
+          { kind: 'call', name: 'max', args: [e1, e2] },
+        ];
+        return { kind: 'dist', dist: { kind: 'uniform', args } };
+      }
+      if (dist.kind === 'exponential') {
+        // Only c·X with a positive literal c stays exponential (rate λ/c);
+        // a shift or flip leaves the family, and a slider c could flip live.
+        const c = numOf(coef);
+        if (c !== null && c > 0 && numOf(af.c) === 0) {
+          const rate = c === 1 ? dist.args[0] : bin('/', dist.args[0], num(c));
+          return { kind: 'dist', dist: { kind: 'exponential', args: [rate] } };
+        }
+        return null;
+      }
+    }
+    if (bases.every(b => b.dist.kind === 'uniform')) {
+      return {
+        kind: 'usum',
+        terms: bases.map(b => ({ c: b.coef, lo: b.dist.args[0], hi: b.dist.args[1] })),
+        d: af.c,
+      };
+    }
+    return null;
+  }
+
+  /** The exact law when it is a closed-form pdf the shader can draw. */
+  exactDist(name: string): BaseDist | null {
+    const law = this.exactLaw(name);
+    return law?.kind === 'dist' ? law.dist : null;
   }
 
   /** Non-random free names of a P(…) body, through the variables it references. */
@@ -813,13 +1069,22 @@ export class RVSystem {
     return s;
   }
 
+  /** The cache slot for this variable at these parameter values; a stale
+   *  signature drops every derived field at once. */
+  private entry(name: string, sig: string): CacheEntry {
+    const hit = this.cache.get(name);
+    if (hit && hit.sig === sig) return hit;
+    const fresh: CacheEntry = { sig };
+    this.cache.set(name, fresh);
+    return fresh;
+  }
+
   /** The sample column for a variable under the given constants. */
   columns(name: string, env: Record<string, number>): Float64Array {
     const rv = this.rvs.get(name);
     if (!rv) throw new Error(`${name} has an error in its definition.`);
-    const sig = this.sig(rv, env);
-    const hit = this.cache.get(name);
-    if (hit && hit.sig === sig) return hit.col;
+    const slot = this.entry(name, this.sig(rv, env));
+    if (slot.col) return slot.col;
     let col: Float64Array;
     if (rv.kind === 'base') {
       const u = uniformStream(name);
@@ -846,16 +1111,94 @@ export class RVSystem {
       }
       col = evalCols(rv.expr, cols, env, SAMPLE_COUNT);
     }
-    this.cache.set(name, { sig, col });
+    slot.col = col;
     return col;
   }
 
-  /** The estimated density curve (with mean/sd/mass) for a variable. */
+  /** Numeric piecewise polynomial of a usum law at these parameter values. */
+  private usumPP(law: Law & { kind: 'usum' }, env: Record<string, number>): PPoly | null {
+    let acc: PPoly | null = null;
+    const shift = evaluate(law.d, env);
+    if (!isFinite(shift)) return null;
+    for (const t of law.terms) {
+      const c = evaluate(t.c, env);
+      const lo = evaluate(t.lo, env);
+      const hi = evaluate(t.hi, env);
+      if (!isFinite(c) || !(hi > lo)) return null;
+      if (c === 0) continue; // a slider zeroed this term: it contributes nothing
+      const box = scalePP(uniformPP(lo, hi), c, 0);
+      acc = acc ? convPP(acc, box) : box;
+    }
+    if (!acc) return null; // every coefficient zero: a constant, nothing to draw
+    return shift !== 0 ? scalePP(acc, 1, shift) : acc;
+  }
+
+  /**
+   * The density curve for a variable: the *exact* piecewise polynomial when
+   * its law is a uniform convolution, the sample estimate otherwise. (Rows
+   * whose law is a closed-form pdf never come here — they draw through the
+   * shader.)
+   */
   curve(name: string, env: Record<string, number>): DensityCurve | null {
+    const law = this.exactLaw(name);
+    if (law?.kind === 'usum') {
+      const rv = this.rvs.get(name)!;
+      const slot = this.entry(name, this.sig(rv, env));
+      if (slot.curve === undefined) {
+        const pp = this.usumPP(law, env);
+        const m = this.exactMoments(name, env);
+        slot.curve = pp && m ? { pts: curvePP(pp), mean: m.mean, sd: m.sd, mass: 1 } : null;
+      }
+      return slot.curve;
+    }
     const col = this.columns(name, env);
     const entry = this.cache.get(name)!;
     if (entry.curve === undefined) entry.curve = estimateCurve(col);
     return entry.curve;
+  }
+
+  /** Exact mean and sd under the variable's law, or null when sampled. */
+  exactMoments(name: string, env: Record<string, number>): { mean: number; sd: number } | null {
+    const law = this.exactLaw(name);
+    if (!law) return null;
+    if (law.kind === 'dist') {
+      const a = law.dist.args.map(e => evaluate(e, env));
+      switch (law.dist.kind) {
+        case 'normal':
+          return a[1] > 0 ? { mean: a[0], sd: a[1] } : null;
+        case 'uniform':
+          return a[1] > a[0] ? { mean: (a[0] + a[1]) / 2, sd: (a[1] - a[0]) / Math.sqrt(12) } : null;
+        case 'exponential':
+          return a[0] > 0 ? { mean: 1 / a[0], sd: 1 / a[0] } : null;
+      }
+    }
+    let mean = evaluate(law.d, env);
+    let variance = 0;
+    for (const t of law.terms) {
+      const c = evaluate(t.c, env);
+      const lo = evaluate(t.lo, env);
+      const hi = evaluate(t.hi, env);
+      if (!isFinite(c) || !(hi > lo)) return null;
+      mean += (c * (lo + hi)) / 2;
+      variance += (c * (hi - lo)) ** 2 / 12;
+    }
+    return isFinite(mean) ? { mean, sd: Math.sqrt(variance) } : null;
+  }
+
+  /** Exact P(lo < name < hi) under the variable's law, or null when sampled. */
+  exactProbability(
+    name: string,
+    lo: Expr | undefined,
+    hi: Expr | undefined,
+    env: Record<string, number>,
+  ): number | null {
+    const law = this.exactLaw(name);
+    if (!law) return null;
+    if (law.kind === 'dist') return probabilityValue(law.dist, lo, hi, env);
+    const pp = this.usumPP(law, env);
+    if (!pp) return NaN;
+    const total = cdfPP(pp, pp.breaks[pp.breaks.length - 1]);
+    return (hi ? cdfPP(pp, evaluate(hi, env)) : total) - (lo ? cdfPP(pp, evaluate(lo, env)) : 0);
   }
 
   /**

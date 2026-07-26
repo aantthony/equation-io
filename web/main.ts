@@ -983,31 +983,31 @@ function recompileAll() {
   const rvInfo = (eq: Equation, name: string) => {
     if (!envT0) return;
     try {
+      // Exact moments where the law has a closed form; the sample estimate
+      // (with its ≈) everywhere else.
+      const m = rvSys.exactMoments(name, envT0);
+      if (m && isFinite(m.mean) && isFinite(m.sd)) {
+        eq.info = `μ = ${fmtNum(m.mean)}, σ = ${fmtNum(m.sd)}`;
+        return;
+      }
       const c = rvSys.curve(name, envT0);
       if (!c) return;
       eq.info = `μ ≈ ${c.mean.toFixed(3)}, σ ≈ ${c.sd.toFixed(3)}`
         + (c.mass < 0.9995 ? `, P(defined) ≈ ${c.mass.toFixed(3)}` : '');
     } catch { /* not numerically computable right now (e.g. animated) */ }
   };
-  // A derived variable with a closed form (affine in normal bases) plots the
-  // exact pdf through the shader and reports exact moments — no sampling.
-  const exactInfo = (eq: Equation, d: BaseDist) => {
-    if (!envT0) return;
-    try {
-      const mu = evaluate(d.args[0], envT0);
-      const sd = evaluate(d.args[1], envT0);
-      if (isFinite(mu) && isFinite(sd)) eq.info = `μ = ${fmtNum(mu)}, σ = ${fmtNum(sd)}`;
-    } catch { /* animated parameters: no static readout */ }
-  };
+  // A derived variable whose law is a closed-form pdf (affine in normals, or
+  // a single scaled uniform/exponential) plots exactly through the shader; a
+  // uniform-sum law plots its exact piecewise polynomial via curve(); only
+  // the rest estimate from samples.
   const classifyDerived = (eq: Equation, name: string) => {
     const exact = rvSys.exactDist(name);
     if (exact && rvSys.get(name)!.kind === 'derived') {
       eq.cls = classify(densityExpr(exact), constNames);
-      exactInfo(eq, exact);
     } else {
       eq.cls = densityCls(name);
-      rvInfo(eq, name);
     }
+    rvInfo(eq, name);
   };
   const densityCls = (name: string): Classified => {
     const ps = rvSys.paramsOf(name);
@@ -1054,32 +1054,49 @@ function recompileAll() {
         for (const name of p.rvs) {
           if (!rvSys.has(name)) throw new Error(`${name} has an error in its definition.`);
         }
-        // Constant bounds on one variable with a closed form — a base
-        // declaration, or a derived one that is affine in normal bases —
-        // get the exact CDF and the shader-drawn region.
-        const exact = p.single ? rvSys.exactDist(p.single.rv) : null;
-        if (p.single && exact) {
-          eq.cls = classify(regionExpr(exact, p.single.lo, p.single.hi), constNames);
+        // Bounds around an inline expression (`P(0.5 < X + Y < 1.5)`) become
+        // bounds on an anonymous derived variable, so exactness and shading
+        // work exactly as for a named one.
+        let single = p.single;
+        if (!single && p.inline) {
+          checkDerived(p.inline.e, rvNames, constNames);
+          const anon = `@P${eq.id}`;
+          rvSys.add({ name: anon, kind: 'derived', expr: p.inline.e });
+          single = { rv: anon, lo: p.inline.lo, hi: p.inline.hi };
+        }
+        // Constant bounds on one variable whose law is a closed-form pdf get
+        // the exact CDF and the shader-drawn region.
+        const exact = single ? rvSys.exactDist(single.rv) : null;
+        if (single && exact) {
+          eq.cls = classify(regionExpr(exact, single.lo, single.hi), constNames);
           try {
-            const value = probabilityValue(exact, p.single.lo, p.single.hi, evalConstEnv(defs, 0));
+            const value = probabilityValue(exact, single.lo, single.hi, evalConstEnv(defs, 0));
             if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
           } catch {
             // Not numerically computable right now (e.g. animated); no readout.
           }
         } else {
-          // Anything else — derived variables, P(Y > X), longer chains —
-          // estimates over the joint samples.
+          // Everything else draws/estimates through the sampled channel —
+          // but a uniform-sum law still gets its exact value (and its shade
+          // fills under the exact piecewise-polynomial curve).
           const ps = rvSys.bodyParams(p.body);
           eq.cls = {
-            plot: { type: 'prob', body: p.body, shade: p.single },
+            plot: { type: 'prob', body: p.body, shade: single },
             animated: ps.has('t'),
             needs3D: false,
             params: [...ps].filter(v => v !== 't'),
           };
           if (envT0) {
             try {
-              const value = rvSys.probability(p.body, envT0);
-              if (isFinite(value)) eq.info = `≈ ${value.toFixed(3)}`;
+              const value = single
+                ? rvSys.exactProbability(single.rv, single.lo, single.hi, envT0)
+                : null;
+              if (value !== null) {
+                if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
+              } else {
+                const mc = rvSys.probability(p.body, envT0);
+                if (isFinite(mc)) eq.info = `≈ ${mc.toFixed(3)}`;
+              }
             } catch { /* animated or broken: no readout */ }
           }
         }

@@ -178,13 +178,18 @@ demand instead of living in a tool description. No authentication required.
   conditionals: `Y = {X > 0: X^2, 1}`. Distinct names are independent, so
   `S = X1 + X2` is the convolution; the same name stays dependent, so
   `X + X` is exactly 2X. A bare expression in random variables (`X + Y` as
-  its own row) plots that density without naming it. Affine combinations of
-  normal variables (`Z = (X + Y)/2`, `a X + 1`) stay closed-form: the row
-  plots the exact normal pdf and reports exact μ and σ. Everything else is
-  estimated from 131072 joint samples and reports μ, σ as `≈`.
-- Probability: `P(X < 2)`, `P(-1 < X < 2)` — exact (closed-form CDF) with the
-  area under the density shaded when the bounds sit on one base variable. Any
-  other inequality — `P(Y > 0.5)`, `P(Y > X)` — is estimated from the joint
+  its own row) plots that density without naming it. Affine forms stay
+  exact: combinations of normals (`Z = (X + Y)/2`) are the exact normal, a
+  scaled/shifted uniform is a uniform, and sums of uniforms (`S = X1 + X2`,
+  the central-limit demo) draw their exact piecewise-polynomial convolution —
+  the triangle's apex is a true corner. These rows report exact μ and σ.
+  Everything else (products, nonlinear or piecewise transforms, mixed
+  families) is estimated from 131072 joint samples and reports μ, σ as `≈`.
+- Probability: `P(X < 2)`, `P(-1 < X < 2)`, and bounds around one expression
+  like `P(0.5 < X + Y < 1.5)` — exact (closed-form CDF or polynomial
+  integration) with the area under the density shaded, whenever the bounded
+  variable or expression has an exact law. Any other inequality —
+  `P(Y > 0.5)` for a nonlinear Y, `P(Y > X)` — is estimated from the joint
   samples; the row shows the value as `≈`.
 
 ## Definitions (extra rows that set up the others)

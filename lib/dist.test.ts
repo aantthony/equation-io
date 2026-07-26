@@ -126,9 +126,10 @@ describe('scanRandomRows', () => {
     expect(scan.derived.size).toBe(0);
   });
 
-  it('matches whole identifiers only', () => {
-    const scan = scanRandomRows(['X ~ N', 'Y = X_1 + 2']);
-    expect(scan.derived.size).toBe(0); // X_1 is not X
+  it('matches identifier tokens, not word boundaries', () => {
+    expect(scanRandomRows(['X ~ N', 'Y = X_1 + 2']).derived.size).toBe(0); // X_1 is not X
+    expect(scanRandomRows(['X ~ N', 'Y = aX + 2']).derived.size).toBe(0); // aX is one name
+    expect(scanRandomRows(['X ~ N', 'Y = 2X']).derived.size).toBe(1); // 2X is 2·X
   });
 
   it('never claims reserved names', () => {
@@ -154,10 +155,19 @@ describe('toProbability', () => {
     expect(new Set(prob('X < Y', names('X', 'Y')).rvs)).toEqual(new Set(['X', 'Y']));
   });
 
+  it('captures bounds around one inline expression', () => {
+    const sum = prob('0.5 < X + Y < 1.5', names('X', 'Y'));
+    expect(sum.single).toBeUndefined();
+    expect(sum.inline!.e).toEqual(parseExpr('X + Y'));
+    expect(sum.inline!.lo).toEqual({ kind: 'num', value: 0.5 });
+    expect(prob('X^2 < 1').inline!.e).toEqual(parseExpr('X^2'));
+  });
+
   it('handles bodies with no single-variable shape', () => {
     expect(prob('X < Y', names('X', 'Y')).single).toBeUndefined();
-    expect(prob('X^2 < 1').single).toBeUndefined(); // an expression, not a bare name
+    expect(prob('X < Y', names('X', 'Y')).inline).toBeUndefined(); // two terms carry variables
     expect(prob('X < a < b').single).toBeUndefined(); // extra constraint beyond the bounds
+    expect(prob('a < b < X').single).toBeUndefined(); // ditto, from the left
     expect(prob('X > X').single).toBeUndefined();
   });
 
@@ -415,6 +425,90 @@ describe('exact normal propagation (affine in normal bases)', () => {
     const c = sys.curve('Z', {})!;
     expect(c.mean).toBeCloseTo(evaluate(d.args[0], {}), 2);
     expect(c.sd).toBeCloseTo(evaluate(d.args[1], {}), 2);
+  });
+});
+
+describe('exact laws (law propagation + uniform convolution)', () => {
+  it('passes a bare or affine variable of a uniform through exactly', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y = X', 'W = 2X + 1', 'V = 1 - X']);
+    const y = sys.exactDist('Y')!;
+    expect(y.kind).toBe('uniform');
+    expect(y.args.map(e => evaluate(e, {}))).toEqual([0, 1]);
+    expect(sys.exactDist('W')!.args.map(e => evaluate(e, {}))).toEqual([1, 3]);
+    expect(sys.exactDist('V')!.args.map(e => evaluate(e, {}))).toEqual([0, 1]); // flipped
+    expect(sys.exactMoments('W', {})).toEqual({ mean: 2, sd: 2 / Math.sqrt(12) });
+  });
+
+  it('keeps scaled exponentials exponential, and only those', () => {
+    const { sys } = build(['X ~ Exponential(2)', 'Y = X', 'H = 2X', 'S = X + 1']);
+    expect(evaluate(sys.exactDist('Y')!.args[0], {})).toBe(2);
+    expect(evaluate(sys.exactDist('H')!.args[0], {})).toBe(1); // rate λ/c
+    expect(sys.exactDist('S')).toBeNull(); // a shift leaves the family
+  });
+
+  it('collapses a repeated name before choosing a law: X + X is a box', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'D = X + X']);
+    const d = sys.exactDist('D')!;
+    expect(d.kind).toBe('uniform');
+    expect(d.args.map(e => evaluate(e, {}))).toEqual([0, 2]);
+  });
+
+  it('convolves two uniforms into the exact triangle', () => {
+    const { sys } = build(['X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 1)', 'S = X1 + X2']);
+    const c = sys.curve('S', {})!;
+    const at = (x: number) => {
+      for (let i = 0; i + 1 < c.pts.length; i += 2) if (c.pts[i] === x) return c.pts[i + 1];
+      return NaN;
+    };
+    expect(at(1)).toBeCloseTo(1, 12); // the apex is a corner, not a KDE shoulder
+    expect(at(0)).toBeCloseTo(0, 12);
+    expect(at(2)).toBeCloseTo(0, 12);
+    expect(at(0.5)).toBeCloseTo(0.5, 12);
+    expect(sys.exactProbability('S', undefined, parseExpr('1'), {})).toBeCloseTo(0.5, 12);
+    expect(sys.exactMoments('S', {})!.sd).toBeCloseTo(Math.sqrt(1 / 6), 12);
+    expect(c.mass).toBe(1);
+  });
+
+  it('matches Irwin–Hall for the four-fold sum', () => {
+    const rows = ['X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 1)', 'X3 ~ Uniform(0, 1)', 'X4 ~ Uniform(0, 1)',
+      'S = X1 + X2 + X3 + X4'];
+    const { sys } = build(rows);
+    const c = sys.curve('S', {})!;
+    const mid = c.pts.findIndex((v, i) => i % 2 === 0 && v === 2);
+    expect(c.pts[mid + 1]).toBeCloseTo(2 / 3, 12); // Irwin–Hall density at n/2
+    expect(sys.exactProbability('S', parseExpr('3'), undefined, {})).toBeCloseTo(1 / 24, 12);
+    expect(sys.exactMoments('S', {})).toEqual({ mean: 2, sd: Math.sqrt(4 / 12) });
+  });
+
+  it('handles slider coefficients and differences', () => {
+    const { sys } = build(['X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 1)', 'S = a X1 + X2', 'D = X1 - X2']);
+    // a = 2: U(0,2) ∗ U(0,1) is a trapezoid on [0, 3]; its CDF at 1.5 is 1/2.
+    expect(sys.exactProbability('S', undefined, parseExpr('1.5'), { a: 2 })).toBeCloseTo(0.5, 12);
+    expect(sys.exactMoments('S', { a: 2 })!.mean).toBeCloseTo(1.5, 12);
+    const d = sys.curve('D', {})!;
+    expect(d.pts[0]).toBeCloseTo(-1, 12); // support [-1, 1], apex at 0
+    expect(Math.max(...d.pts.filter((_, i) => i % 2 === 1))).toBeCloseTo(1, 12);
+    expect(sys.exactProbability('D', undefined, parseExpr('0'), {})).toBeCloseTo(0.5, 12);
+  });
+
+  it('agrees with the sampled estimate', () => {
+    const { sys } = build(['X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 1)', 'S = X1 + X2']);
+    const exact = sys.exactProbability('S', undefined, parseExpr('0.75'), {})!;
+    expect(Math.abs(exact - P(sys, 'S < 0.75'))).toBeLessThan(0.01);
+  });
+
+  it('leaves mixed and nonlinear forms to the sampler', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Normal(0, 1)', 'M = X + Y', 'Q = X^2']);
+    expect(sys.exactLaw('M')).toBeNull();
+    expect(sys.exactLaw('Q')).toBeNull();
+    expect(sys.curve('M', {})!.mass).toBe(1); // KDE path still serves these
+  });
+
+  it('degrades broken parameters to no curve, not a wrong one', () => {
+    const { sys } = build(['X1 ~ Uniform(0, s)', 'X2 ~ Uniform(0, 1)', 'S = X1 + X2']);
+    expect(sys.curve('S', { s: -1 })).toBeNull();
+    expect(sys.exactProbability('S', undefined, parseExpr('1'), { s: -1 })).toBeNaN();
+    expect(sys.curve('S', { s: 1 })).not.toBeNull();
   });
 });
 

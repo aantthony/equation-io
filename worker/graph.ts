@@ -186,15 +186,24 @@ export function analyze(texts: string[]): Analysis {
           if (!rvs.has(name)) throw new Error(`${name} has an error in its definition.`);
         }
         row.dist = 'probability';
+        // Inline bounded expressions become anonymous derived variables, so
+        // shading and exact laws apply — mirror of web/main.ts.
+        let single = p.single;
+        if (!single && p.inline) {
+          checkDerived(p.inline.e, rvNames, constNames);
+          const anon = `@P${ri}`;
+          rvs.add({ name: anon, kind: 'derived', expr: p.inline.e });
+          single = { rv: anon, lo: p.inline.lo, hi: p.inline.hi };
+        }
         // Constant bounds on one variable with a closed form get the exact
         // CDF and the shader-drawn region; the rest estimate over samples.
-        const exact = p.single ? rvs.exactDist(p.single.rv) : null;
-        if (p.single && exact) {
-          const region = regionExpr(exact, p.single.lo, p.single.hi);
+        const exact = single ? rvs.exactDist(single.rv) : null;
+        if (single && exact) {
+          const region = regionExpr(exact, single.lo, single.hi);
           row.cls = classify(region, constNames);
           row.expr = region;
           try {
-            const value = probabilityValue(exact, p.single.lo, p.single.hi, constEnv);
+            const value = probabilityValue(exact, single.lo, single.hi, constEnv);
             if (isFinite(value)) row.info = `≈ ${value.toFixed(4)}`;
           } catch {
             // Not numerically computable at t = 0 (e.g. animated); no readout.
@@ -202,7 +211,7 @@ export function analyze(texts: string[]): Analysis {
         } else {
           const ps = rvs.bodyParams(p.body);
           row.cls = {
-            plot: { type: 'prob', body: p.body, shade: p.single },
+            plot: { type: 'prob', body: p.body, shade: single },
             animated: ps.has('t'),
             needs3D: false,
             params: [...ps].filter(v => v !== 't'),
