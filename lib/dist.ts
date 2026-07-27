@@ -563,12 +563,27 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
   // the curve's residual wobble (second-difference energy ÷2.4) — smoothness
   // is what the plotted line is judged by.
   const h = 1.26 * spread * Math.pow(cn, -0.2);
-  const lo = q(0.005) - 3 * h;
-  const hi = q(0.995) + 3 * h;
+  // Drawn range: trim the extreme tails, but never past the observed support.
+  // An end the trim does not reach is the support edge itself — beyond it the
+  // density is truly zero, so a truncated variable like {X > 1: X, 0} has to
+  // cut off straight at 1 rather than ramp up to a rounded peak past it.
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  for (const x of finite) {
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+  }
+  let lo = q(0.005) - 3 * h;
+  let hi = q(0.995) + 3 * h;
+  const hardLo = lo <= x0;
+  const hardHi = hi >= x1;
+  if (hardLo) lo = x0;
+  if (hardHi) hi = x1;
   const B = 512;
   const dx = (hi - lo) / B;
   const hist = new Float64Array(B + 1);
   const w = 1 / (col.length * dx);
+  let inWindow = 0;
   for (const x of finite) {
     // Linear binning: split each sample between its two neighboring grid
     // points, so the histogram carries no half-bin jitter into the curve.
@@ -578,20 +593,79 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
     const f = k - k0;
     hist[k0] += w * (1 - f);
     hist[k0 + 1] += w * f;
+    inWindow++;
   }
+  inWindow /= col.length;
+  // A grid point holds the density there, but the ones on a support edge
+  // collect from one side only — half a cell — so they read half the density.
+  if (hardLo) hist[0] *= 2;
+  if (hardHi) hist[B] *= 2;
   // Gaussian smoothing of the histogram — the binned KDE.
   const r = Math.min(256, Math.ceil((3 * h) / dx));
   const kernel = new Float64Array(2 * r + 1);
   let ksum = 0;
   for (let k = -r; k <= r; k++) ksum += kernel[k + r] = Math.exp(-0.5 * ((k * dx) / h) ** 2);
   for (let k = 0; k <= 2 * r; k++) kernel[k] /= ksum;
+  // Boundary correction, needed only where the support ends. Straight
+  // truncation would halve the estimate at the edge (half the kernel hangs
+  // outside) and renormalizing alone still sags wherever the density is
+  // sloped, so fit a local *line* instead of a local mean: with kernel
+  // moments a₀,a₁,a₂ over the part of the window inside the support,
+  // f̂ = (a₂S₀ − a₁S₁)/(a₀a₂ − a₁²), which reproduces any linear density
+  // exactly. In the interior a₁ = 0 and a₀ = 1, so this is the plain KDE.
+  const hard = hardLo || hardHi;
+  const P0 = new Float64Array(2 * r + 2);
+  const P1 = new Float64Array(2 * r + 2);
+  const P2 = new Float64Array(2 * r + 2);
+  if (hard) {
+    for (let m = 0; m <= 2 * r; m++) {
+      const d = (m - r) * dx;
+      P0[m + 1] = P0[m] + kernel[m];
+      P1[m + 1] = P1[m] + kernel[m] * d;
+      P2[m + 1] = P2[m] + kernel[m] * d * d;
+    }
+  }
   const pts: number[] = [];
+  if (hardLo) pts.push(lo, 0); // the jump itself: a vertical at the edge
   for (let j = 0; j <= B; j++) {
-    let y = 0;
+    let s0 = 0;
+    let s1 = 0;
     const k0 = Math.max(0, j - r);
     const k1 = Math.min(B, j + r);
-    for (let k = k0; k <= k1; k++) y += hist[k] * kernel[j - k + r];
+    for (let k = k0; k <= k1; k++) {
+      const wk = hist[k] * kernel[j - k + r];
+      s0 += wk;
+      if (hard) s1 += wk * (j - k) * dx;
+    }
+    let y = s0;
+    if (hard) {
+      // Clip the moment window only at the ends that are real support edges;
+      // a merely trimmed tail keeps the full window (its data continues).
+      const mlo = hardHi ? Math.max(0, j + r - B) : 0;
+      const mhi = hardLo ? Math.min(2 * r, j + r) : 2 * r;
+      const a0 = P0[mhi + 1] - P0[mlo];
+      const a1 = P1[mhi + 1] - P1[mlo];
+      const a2 = P2[mhi + 1] - P2[mlo];
+      const den = a0 * a2 - a1 * a1;
+      // Local linear can undershoot below zero where samples are sparse;
+      // there, fall back to the renormalized mean, which cannot.
+      const ll = den > 0 ? (a2 * s0 - a1 * s1) / den : -1;
+      y = ll > 0 ? ll : (a0 > 0.05 ? s0 / a0 : s0);
+    }
     pts.push(lo + j * dx, y);
+  }
+  if (hardHi) pts.push(hi, 0);
+  // The curve's area is the probability of the drawn range — the promise a
+  // density plot makes. Smoothing and the edge corrections each perturb it a
+  // little (and at an integrable singularity, where no local polynomial fit
+  // is meaningful, by more), so restore it exactly.
+  let area = 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    area += ((pts[i + 1] + pts[i + 3]) / 2) * (pts[i + 2] - pts[i]);
+  }
+  if (area > 0) {
+    const k = inWindow / area;
+    for (let i = 1; i < pts.length; i += 2) pts[i] *= k;
   }
   return { pts, atoms, mean, sd, mass };
 }

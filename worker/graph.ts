@@ -217,8 +217,17 @@ export function analyze(texts: string[]): Analysis {
             params: [...ps].filter(v => v !== 't'),
           };
           try {
-            const value = rvs.probability(p.body, constEnv);
-            if (isFinite(value)) row.info = `≈ ${value.toFixed(3)}`;
+            // A uniform-sum law still gets its exact value (mirror of the
+            // app's readout); everything else estimates over joint samples.
+            const value = single
+              ? rvs.exactProbability(single.rv, single.lo, single.hi, constEnv)
+              : null;
+            if (value !== null) {
+              if (isFinite(value)) row.info = `≈ ${value.toFixed(4)}`;
+            } else {
+              const mc = rvs.probability(p.body, constEnv);
+              if (isFinite(mc)) row.info = `≈ ${mc.toFixed(3)}`;
+            }
           } catch { /* animated or broken: no readout */ }
         }
         continue;

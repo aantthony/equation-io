@@ -546,6 +546,65 @@ describe('point masses (atoms)', () => {
   });
 });
 
+describe('support edges', () => {
+  const curveArea = (pts: number[]) => {
+    let a = 0;
+    for (let i = 0; i + 3 < pts.length; i += 2) a += ((pts[i + 1] + pts[i + 3]) / 2) * (pts[i + 2] - pts[i]);
+    return a;
+  };
+
+  it('cuts a truncated variable off straight at its edge', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Y = {X > 1: X, 0}']);
+    const c = sys.curve('Y', {})!;
+    // Nothing below the edge, and the curve steps up from the axis at it.
+    expect(c.pts[0]).toBeGreaterThanOrEqual(1);
+    expect(c.pts[1]).toBe(0);
+    for (let i = 0; i < c.pts.length; i += 2) expect(c.pts[i]).toBeGreaterThanOrEqual(1);
+    // On (1, ∞) the density is φ itself: full height at the jump, no ramp.
+    expect(c.pts[3]).toBeCloseTo(normalpdf(1, 0, 1), 2);
+    let worst = 0;
+    for (let i = 0; i < c.pts.length; i += 2) {
+      if (c.pts[i] > 1.001 && c.pts[i] < 3) {
+        worst = Math.max(worst, Math.abs(c.pts[i + 1] - normalpdf(c.pts[i], 0, 1)));
+      }
+    }
+    expect(worst).toBeLessThan(0.005);
+    // The atom carries the other branch: P(X ≤ 1) = Φ(1).
+    expect(c.atoms).toHaveLength(1);
+    expect(c.atoms![0].x).toBe(0);
+    expect(c.atoms![0].p).toBeCloseTo(normalcdf(1, 0, 1), 4);
+  });
+
+  it('keeps full height at a half-normal edge', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'H = abs(X)']);
+    const c = sys.curve('H', {})!;
+    expect(c.pts[0]).toBeGreaterThanOrEqual(0);
+    expect(c.pts[3]).toBeCloseTo(2 * normalpdf(0, 0, 1), 2);
+  });
+
+  it('leaves a trimmed tail alone (no false edge)', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Z = X + 0']);
+    const c = sys.curve('Z', {})!;
+    // The drawn range stops in the tails, where the density is ~0 and must
+    // not be lifted by an edge correction.
+    expect(Math.abs(c.pts[1])).toBeLessThan(0.02);
+    let worst = 0;
+    for (let i = 0; i < c.pts.length; i += 2) {
+      if (Math.abs(c.pts[i]) <= 2.5) worst = Math.max(worst, Math.abs(c.pts[i + 1] - normalpdf(c.pts[i], 0, 1)));
+    }
+    expect(worst).toBeLessThan(0.01);
+  });
+
+  it('draws the probability of the range it covers, even at a singularity', () => {
+    // X² near 0 has an integrable singularity (density → ∞), where no local
+    // fit is meaningful; the area must still come out right.
+    const { sys } = build(['X ~ Normal(0, 1)', 'Y = {X > 0: X^2, 1}']);
+    expect(curveArea(sys.curve('Y', {})!.pts)).toBeCloseTo(0.5, 2);
+    const { sys: sys2 } = build(['X ~ Normal(0, 1)', 'Y = {X > 1: X, 0}']);
+    expect(curveArea(sys2.curve('Y', {})!.pts)).toBeCloseTo(1 - normalcdf(1, 0, 1), 2);
+  });
+});
+
 describe('density estimation', () => {
   it('recovers the standard normal density closely', () => {
     const { sys } = build(['X ~ Normal(0, 1)']);
