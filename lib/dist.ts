@@ -326,9 +326,12 @@ export type RV =
   | { name: string; kind: 'derived'; expr: Expr };
 
 export interface DensityCurve {
-  /** Flat [x0, y0, x1, y1, …] polyline of the density estimate (may be empty
-   *  when the distribution is a pure point mass). */
+  /** Flat [x0, y0, x1, y1, …] polyline of the continuous part's density
+   *  (empty when the distribution is purely discrete). */
   pts: number[];
+  /** Point masses (a piecewise branch, floor, a constant): drawn as stems of
+   *  height = probability, never smeared into the density. */
+  atoms?: Array<{ x: number; p: number }>;
   mean: number;
   sd: number;
   /** Fraction of samples that are finite (< 1 for partial support like sqrt(X)). */
@@ -502,11 +505,12 @@ function evalCols(
   }
 }
 
-/** Estimate a density curve from samples: a binned kernel density estimate
- *  (Silverman bandwidth over a robust spread), normalized so the area equals
- *  the finite-sample mass. Null when nothing is finite. */
+/** Estimate a density curve from samples: point masses split off as atoms,
+ *  the continuous remainder as a binned kernel density estimate (Silverman
+ *  bandwidth over a robust spread) whose area equals its share of the
+ *  finite-sample mass. Null when nothing is finite. */
 function estimateCurve(col: Float64Array): DensityCurve | null {
-  const finite: number[] = [];
+  let finite: number[] = [];
   let sum = 0;
   for (let i = 0; i < col.length; i++) {
     const x = col[i];
@@ -522,16 +526,43 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
   for (const x of finite) ss += (x - mean) * (x - mean);
   const sd = Math.sqrt(ss / n);
   const mass = n / col.length;
+
+  // Atoms: exactly repeated values are point masses — a piecewise branch, a
+  // floor, a constant — and smearing them into KDE bumps would read as
+  // continuous spread. Stratified streams make continuous values distinct, so
+  // a duplicate probe over a prefix keeps that common case on the fast path.
+  let atoms: Array<{ x: number; p: number }> | undefined;
+  const probe = new Set<number>();
+  for (let i = 0; i < Math.min(n, 4096); i++) probe.add(finite[i]);
+  if (probe.size < Math.min(n, 4096)) {
+    const counts = new Map<number, number>();
+    for (const x of finite) counts.set(x, (counts.get(x) ?? 0) + 1);
+    const minAtom = Math.max(8, col.length * 0.002);
+    const atomValues = new Set<number>();
+    for (const [x, count] of counts) {
+      if (count >= minAtom) {
+        atomValues.add(x);
+        (atoms ??= []).push({ x, p: count / col.length });
+      }
+    }
+    if (atoms) {
+      atoms.sort((a, b) => a.x - b.x);
+      finite = finite.filter(x => !atomValues.has(x));
+    }
+  }
+  if (finite.length < 16) return { pts: [], atoms, mean, sd, mass }; // purely discrete
+  // The continuous part's own count and spread size the estimate below.
+  const cn = finite.length;
   // Quantiles from a decimated sort: plenty for a range and bandwidth.
-  const sub = Float64Array.from(finite.filter((_, i) => i % Math.ceil(n / 4096) === 0)).sort();
+  const sub = Float64Array.from(finite.filter((_, i) => i % Math.ceil(cn / 4096) === 0)).sort();
   const q = (p: number) => sub[Math.min(sub.length - 1, Math.floor(p * sub.length))];
   const spread = Math.min(sd, (q(0.75) - q(0.25)) / 1.349);
-  if (!(spread > 0)) return { pts: [], mean, sd, mass }; // a point mass: no curve to draw
+  if (!(spread > 0)) return { pts: [], atoms, mean, sd, mass }; // no continuous spread to draw
   // 1.4× Silverman's rule. His 0.9 factor is MISE-optimal for i.i.d. draws;
   // measured on these stratified columns, ~1.4× lowers BOTH the sup-error and
   // the curve's residual wobble (second-difference energy ÷2.4) — smoothness
   // is what the plotted line is judged by.
-  const h = 1.26 * spread * Math.pow(n, -0.2);
+  const h = 1.26 * spread * Math.pow(cn, -0.2);
   const lo = q(0.005) - 3 * h;
   const hi = q(0.995) + 3 * h;
   const B = 512;
@@ -562,7 +593,7 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
     for (let k = k0; k <= k1; k++) y += hist[k] * kernel[j - k + r];
     pts.push(lo + j * dx, y);
   }
-  return { pts, mean, sd, mass };
+  return { pts, atoms, mean, sd, mass };
 }
 
 /** Clip a density curve to [lo, hi] and close it down to the x-axis: the

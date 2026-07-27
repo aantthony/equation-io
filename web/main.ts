@@ -765,7 +765,13 @@ function render() {
           try {
             c = rvSys.curve(plot.rv, env);
           } catch { break; /* a parameter is missing this frame */ }
-          if (c && c.pts.length >= 4) extras.polylines.push({ pts: c.pts, color: css, width: 2 });
+          if (!c) break;
+          if (c.pts.length >= 4) extras.polylines.push({ pts: c.pts, color: css, width: 2 });
+          // Point masses draw as probability stems (height = mass, not density).
+          for (const a of c.atoms ?? []) {
+            extras.polylines.push({ pts: [a.x, 0, a.x, a.p], color: css, width: 2 });
+            extras.points.push({ x: a.x, y: a.p, color: css, r: 4 });
+          }
           break;
         }
         case 'prob': {

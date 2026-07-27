@@ -185,6 +185,9 @@ demand instead of living in a tool description. No authentication required.
   the triangle's apex is a true corner. These rows report exact μ and σ.
   Everything else (products, nonlinear or piecewise transforms, mixed
   families) is estimated from 131072 joint samples and reports μ, σ as `≈`.
+  Point masses are detected and drawn as probability stems (height = mass):
+  `Y = {X > 0: 1, 2}` is two stems, `floor(4X)` four, and a mixed result
+  like `{X > 0: X^2, 1}` draws its stem plus the continuous density.
 - Probability: `P(X < 2)`, `P(-1 < X < 2)`, and bounds around one expression
   like `P(0.5 < X + Y < 1.5)` — exact (closed-form CDF or polynomial
   integration) with the area under the density shaded, whenever the bounded

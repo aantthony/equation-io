@@ -512,6 +512,40 @@ describe('exact laws (law propagation + uniform convolution)', () => {
   });
 });
 
+describe('point masses (atoms)', () => {
+  it('renders a purely discrete variable as stems, not KDE bumps', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Y = {X > 0: 1, 2}']);
+    const c = sys.curve('Y', {})!;
+    expect(c.pts).toEqual([]);
+    expect(c.atoms).toEqual([{ x: 1, p: 0.5 }, { x: 2, p: 0.5 }]);
+    expect(c.mean).toBeCloseTo(1.5, 12);
+    expect(c.sd).toBeCloseTo(0.5, 12);
+  });
+
+  it('finds the masses of a discretized uniform exactly', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'F = floor(4X)']);
+    expect(sys.curve('F', {})!.atoms).toEqual([
+      { x: 0, p: 0.25 }, { x: 1, p: 0.25 }, { x: 2, p: 0.25 }, { x: 3, p: 0.25 },
+    ]);
+  });
+
+  it('splits a mixed distribution into its atom and continuous part', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Y = {X > 0: X^2, 1}']);
+    const c = sys.curve('Y', {})!;
+    expect(c.atoms).toEqual([{ x: 1, p: 0.5 }]);
+    let area = 0;
+    for (let i = 0; i + 3 < c.pts.length; i += 2) {
+      area += ((c.pts[i + 1] + c.pts[i + 3]) / 2) * (c.pts[i + 2] - c.pts[i]);
+    }
+    expect(area).toBeCloseTo(0.5, 1); // the continuous part carries the other half
+  });
+
+  it('leaves continuous estimates atom-free', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Normal(0, 1)', 'S = X + Y']);
+    expect(sys.curve('S', {})!.atoms).toBeUndefined();
+  });
+});
+
 describe('density estimation', () => {
   it('recovers the standard normal density closely', () => {
     const { sys } = build(['X ~ Normal(0, 1)']);

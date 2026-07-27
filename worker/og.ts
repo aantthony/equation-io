@@ -313,7 +313,16 @@ function renderRow2D(
     if (cls.plot.type === 'prob' && !shade) return; // readout-only row
     const name = cls.plot.type === 'density' ? cls.plot.rv : shade!.rv;
     const curve = analysis.rvs.curve(name, analysis.constEnv);
-    if (!curve || curve.pts.length < 4) return;
+    if (!curve) return;
+    if (cls.plot.type === 'density') {
+      // Point masses draw as probability stems (height = mass, not density).
+      for (const a of curve.atoms ?? []) {
+        const ax = toScreenX(r, v, a.x);
+        drawLine(r, ax, toScreenY(r, v, 0), ax, toScreenY(r, v, a.p), color);
+        drawDisc(r, ax, toScreenY(r, v, a.p), 3.5, color);
+      }
+    }
+    if (curve.pts.length < 4) return;
     const pts = shade
       ? shadePolygon(
           curve,

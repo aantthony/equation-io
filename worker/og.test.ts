@@ -127,6 +127,15 @@ describe('og raster renderer', () => {
     expect(Math.min(...pixel(r, 90, 20))).toBeGreaterThan(240);
   });
 
+  it('draws point masses as probability stems', () => {
+    const rows = ['view(x = 0..3, y = -0.2..1.2)', 'X ~ Normal(0, 1)', 'Y = {X > 0: 1.3, 2.6}'];
+    const r = renderRaster(rows, 100, 100);
+    // The stem at x = 1.3 (screen ~43) runs from the axis up to p = 0.5.
+    expect(Math.min(...pixel(r, 43, 58))).toBeLessThan(200);
+    // Above the stem top there is nothing — no KDE bump smearing the atom.
+    expect(Math.min(...pixel(r, 43, 40))).toBeGreaterThan(230);
+  });
+
   it('renders definitions + slider constants (tangent-line graph)', () => {
     const rows = ['f(x) = x^2 - 2x', 'g(x) = d/dx f(x)', 'a = 3', 'y = f(x)', 'y = f(a) + g(a)(x - a)'];
     expect(inkFraction(renderRaster(rows, 120, 120))).toBeGreaterThan(0.02);
