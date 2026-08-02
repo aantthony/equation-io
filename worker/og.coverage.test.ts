@@ -40,6 +40,8 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['(cos(2pi u), sin(2pi u), u)'])).toBe(true);
     expect(canRenderOg(['a = 2', 'y = sin(a x)'])).toBe(true); // definition + plot
     expect(canRenderOg(['A = (0, 0)', 'B = (4, 0)', 'C = (0, 4)', 'polygon(A, B, C)'])).toBe(true);
+    // Random-variable rows classify to implicit2d/ineq2d, which both draw.
+    expect(canRenderOg(['X ~ Normal(0, 1)', 'P(X < 1)'])).toBe(true);
   });
 
   it('rejects graphs whose preview would be misleading', () => {

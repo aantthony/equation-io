@@ -27,9 +27,9 @@ const TOOLS = [
   {
     name: 'create_graph',
     title: 'Create a graph link',
-    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row through the app's own parser. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order — when editing an existing graph (see read_graph), include the unchanged rows too. The result reports per-row "rows".
+    description: `Build a link that opens the equation.io grapher with the given equations already rendered, validating every row through the app's own parser. Pass the COMPLETE graph in "equations": a flat array of strings, one equation or definition per string, in display order — when editing an existing graph (see read_graph), include the unchanged rows too.
 
-Rows can be: equations and inequalities in x,y (curves, regions; z makes it 3D), bare expressions (scalar fields; complex plots via w), points (rows report "draggable"), parametric tuples in u,v — and definitions: "a = 2" (a draggable slider), "f(x) = x^3 - a x", coordinate fields like "r = sqrt(x^2+y^2)" for polar. t animates. Also derivatives d/dx, sums sum[n=1..N], domain()/conformal()/iter() for complex analysis and fractals, y' = ... for ODE slope fields, and "view(x = -5..5, y = -2..2)" / "camera(theta, phi)" rows to frame the viewport. That is a menu, not the syntax: before your first non-trivial graph, read the "syntax" MCP resource (also at https://equation.io/llms.txt).
+Rows can be: equations and inequalities in x,y (curves, regions; z makes it 3D), bare expressions (scalar fields; complex plots via w), points (rows report "draggable"), parametric tuples in u,v — and definitions: "a = 2" (a draggable slider), "f(x) = x^3 - a x", coordinate fields like "r = sqrt(x^2+y^2)" for polar. t animates. Also derivatives d/dx, sums sum[n=1..N], domain()/conformal()/iter() for complex analysis and fractals, y' = ... for ODE slope fields, random variables "X ~ Normal(m, s)"/"P(0 < X < 2)", and "view(x = -5..5, y = -2..2)" / "camera(theta, phi)" framing rows. That is a menu, not the syntax: before your first non-trivial graph, read the "syntax" MCP resource (also at https://equation.io/llms.txt).
 
 The result attaches a PNG preview — a simplified CPU sketch (t = 0, 3D as wireframes) for checking shape and framing. It draws LESS than the app: rows it cannot draw are listed in "preview_omits" with the reason, so a sparse or missing preview never means the equations failed — "rows" is the validation verdict. Look at it: are the interesting features visible? If a row fails validation, fix it and call again. Give users the share_url (it unfurls to a preview card in chat apps); url is the equivalent #-fragment form.`,
     inputSchema: {
@@ -132,8 +132,13 @@ async function createGraph(origin: string, args: Record<string, unknown>) {
                 ? `definition (${row.def.kind})`
                 : row.view
                   ? `viewport (${row.view.kind})`
-                  : row.cls!.plot.type,
+                  : row.dist === 'density'
+                    ? 'random variable (density curve)'
+                    : row.dist === 'probability'
+                      ? 'probability (shaded area)'
+                      : row.cls!.plot.type,
             ...(row.cls?.animated ? { animated: true } : {}),
+            ...(row.info ? { value: row.info } : {}),
             ...(drag === undefined ? {} : { draggable: drag }),
           }),
     };

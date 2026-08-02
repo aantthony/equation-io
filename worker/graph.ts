@@ -6,6 +6,7 @@
  * by using the exact same lib functions.
  */
 import {
+  RESERVED,
   buildDefs,
   compsOf,
   defKey,
@@ -15,7 +16,17 @@ import {
   type Definition,
   type Defs,
 } from '../lib/defs.ts';
-import { type Expr, parseExpr, substVars } from '../lib/expr.ts';
+import {
+  type DistDef,
+  densityExpr,
+  matchProbability,
+  parseDistribution,
+  probabilityValue,
+  regionExpr,
+  scanDistribution,
+  toProbability,
+} from '../lib/dist.ts';
+import { type Expr, builtinFn, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom } from '../lib/geom.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
@@ -34,6 +45,10 @@ export interface RowInfo {
   expr?: Expr;
   /** Set for `# label` comment rows (group headings in the app; not plotted). */
   comment?: boolean;
+  /** Set for probability rows: `X ~ …` plots a density, `P(…)` a shaded area. */
+  dist?: 'density' | 'probability';
+  /** Readout shown under the row in the app (the numeric value of a P(…) row). */
+  info?: string;
   error?: string;
 }
 
@@ -99,15 +114,60 @@ export function analyze(texts: string[]): Analysis {
     if (!fn && fnNames.has(name)) throw new Error(`${name} has an error in its definition.`);
     return fn;
   };
-  const seenViewKinds = new Set<string>();
+  // Random-variable rows (`X ~ Normal(0, a)`) resolve before the plot pass so
+  // P(…) rows can reference them regardless of row order (as in web/main.ts).
+  const dists = new Map<string, DistDef>();
+  const distRows = new Set<RowInfo>();
   for (const row of rows) {
     if (row.def || row.comment || row.error || !row.text) continue;
+    const scan = scanDistribution(row.text);
+    if (!scan) continue;
+    distRows.add(row);
+    try {
+      if (RESERVED.has(scan.name) || builtinFn(scan.name)) {
+        throw new Error(`Cannot use ${scan.name} as a random variable name.`);
+      }
+      if (dists.has(scan.name) || defs.consts.has(scan.name) || defs.fns.has(scan.name) || defs.fields.has(scan.name)) {
+        throw new Error(`${scan.name} is already defined.`);
+      }
+      const d = parseDistribution(scan.name, scan.rhs, fnNames);
+      d.mean = resolveExpr(d.mean, getFn);
+      d.sd = resolveExpr(d.sd, getFn);
+      dists.set(scan.name, d);
+      row.dist = 'density';
+      row.expr = densityExpr(d);
+      row.cls = classify(row.expr, constNames);
+    } catch (e) {
+      row.error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  const seenViewKinds = new Set<string>();
+  for (const row of rows) {
+    if (row.def || row.comment || row.error || !row.text || distRows.has(row)) continue;
     try {
       const view = parseViewRow(row.text, constEnv);
       if (view) {
         if (seenViewKinds.has(view.kind)) throw new Error(`${view.kind} is already set by another row.`);
         seenViewKinds.add(view.kind);
         row.view = view;
+        continue;
+      }
+      // `P(…)` shades an area under a declared density — unless the user has
+      // defined P themselves, in which case the row is theirs.
+      const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(row.text);
+      if (probBody !== null) {
+        if (!dists.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn), dists);
+        row.dist = 'probability';
+        row.expr = regionExpr(p);
+        row.cls = classify(row.expr, constNames);
+        try {
+          const value = probabilityValue(p, constEnv);
+          if (isFinite(value)) row.info = `≈ ${value.toFixed(4)}`;
+        } catch {
+          // Not numerically computable at t = 0 (e.g. animated); no readout.
+        }
         continue;
       }
       const seq = scanSeqRec(row.text);

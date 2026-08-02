@@ -5,9 +5,9 @@
  * sample is too slow and Workers forbid dynamic codegen (`new Function`), so
  * expressions compile once to opcode arrays run by a small stack machine.
  */
-import type { Expr } from '../lib/expr.ts';
+import { type Expr, erf, normalcdf, normalpdf } from '../lib/expr.ts';
 
-const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2 }
+const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2, Fn3 }
 
 const FN1: Record<string, (x: number) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -19,6 +19,7 @@ const FN1: Record<string, (x: number) => number> = {
   floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign,
   fract: x => x - Math.floor(x),
   re: x => x, im: () => 0, arg: x => (x < 0 ? Math.PI : 0), conj: x => x,
+  erf,
 };
 
 const FN2: Record<string, (a: number, b: number) => number> = {
@@ -26,8 +27,14 @@ const FN2: Record<string, (a: number, b: number) => number> = {
   mod: (a, b) => a - Math.floor(a / b) * b,
 };
 
+// The probability builtins (lib/dist.ts rows compile to these).
+const FN3: Record<string, (a: number, b: number, c: number) => number> = {
+  normalpdf, normalcdf,
+};
+
 const FN1_NAMES = Object.keys(FN1);
 const FN2_NAMES = Object.keys(FN2);
+const FN3_NAMES = Object.keys(FN3);
 
 export interface Prog {
   code: number[];
@@ -80,6 +87,9 @@ export function compileProg(e: Expr, slots: ReadonlyMap<string, number>): Prog {
         } else if (node.args.length === 2 && node.name in FN2) {
           code.push(Op.Fn2, FN2_NAMES.indexOf(node.name));
           push(-1);
+        } else if (node.args.length === 3 && node.name in FN3) {
+          code.push(Op.Fn3, FN3_NAMES.indexOf(node.name));
+          push(-2);
         } else {
           throw new Error(`Cannot evaluate ${node.name}() here.`);
         }
@@ -95,6 +105,7 @@ export function compileProg(e: Expr, slots: ReadonlyMap<string, number>): Prog {
 
 const FN1_TABLE = FN1_NAMES.map(n => FN1[n]);
 const FN2_TABLE = FN2_NAMES.map(n => FN2[n]);
+const FN3_TABLE = FN3_NAMES.map(n => FN3[n]);
 
 export function run(p: Prog, vars: ArrayLike<number>, stack: Float64Array): number {
   const { code, consts } = p;
@@ -112,6 +123,7 @@ export function run(p: Prog, vars: ArrayLike<number>, stack: Float64Array): numb
       case Op.Neg: stack[sp - 1] = -stack[sp - 1]; break;
       case Op.Fn1: stack[sp - 1] = FN1_TABLE[arg](stack[sp - 1]); break;
       case Op.Fn2: sp--; stack[sp - 1] = FN2_TABLE[arg](stack[sp - 1], stack[sp]); break;
+      case Op.Fn3: sp -= 2; stack[sp - 1] = FN3_TABLE[arg](stack[sp - 1], stack[sp], stack[sp + 1]); break;
     }
   }
   return stack[sp - 1];

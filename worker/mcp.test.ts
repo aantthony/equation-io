@@ -101,6 +101,33 @@ describe('mcp endpoint', () => {
     expect(out.preview).toBe('attached');
   });
 
+  it('validates random-variable rows like the app does (normal probability)', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['m = 1', 's = 0.5', 'X ~ Normal(m, s)', 'P(0 < X < 2)'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
+      'definition (const)', 'definition (const)', 'random variable (density curve)', 'probability (shaded area)',
+    ]);
+    // The P row carries its numeric value, matching the app's row readout.
+    expect(out.rows[3].value).toBe('≈ 0.9545');
+    // Density and shaded area both draw in the static preview.
+    expect(out.preview_omits).toBeUndefined();
+  });
+
+  it('rejects a P(…) row with no random variable declared', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['P(X < 2)'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(false);
+    expect(out.rows[0].status).toBe('error');
+    expect(out.rows[0].error).toContain('X ~ Normal(0, 1)');
+  });
+
   it('reports per-row errors without failing the call', async () => {
     const { body } = await rpc('tools/call', {
       name: 'create_graph',

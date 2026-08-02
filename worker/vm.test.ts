@@ -12,6 +12,16 @@ describe('expression stack machine', () => {
     }
   });
 
+  it('matches the AST evaluator on the probability builtins', () => {
+    // erf is 1-arg, normalpdf/normalcdf are the only 3-arg builtins (Fn3).
+    const e = parseExpr('normalcdf(x, 1, 0.5) - normalcdf(y, 1, 0.5) + normalpdf(x y, 0, 2) + erf(x - y)');
+    const prog = compileProg(e, new Map([['x', 0], ['y', 1]]));
+    const stack = new Float64Array(prog.depth);
+    for (const [x, y] of [[2, 0], [0.3, -1.2], [-0.5, 0.5]]) {
+      expect(run(prog, [x, y], stack)).toBeCloseTo(evaluate(e, { x, y }), 12);
+    }
+  });
+
   it('reports the true stack depth for deeply right-nested expressions', () => {
     // 1+(1+(1+(... x ...))) nests 80 deep — more than any fixed small stack.
     const deep = '1+('.repeat(80) + 'x' + ')'.repeat(80);

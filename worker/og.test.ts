@@ -38,6 +38,20 @@ describe('og raster renderer', () => {
     expect(Math.min(cr, cg, cb)).toBeGreaterThan(230);
   });
 
+  it('draws a density curve and shades its probability area', () => {
+    // view(x = -3..3) on a square canvas: 6 world units across, y=0 at py 50.
+    const r = renderRaster(['X ~ Normal(0, 1)', 'P(-3 < X < 3)', 'view(x = -3..3)'], 100, 100);
+    // Inside the shaded area, under the peak but off the y-axis gridline:
+    // world (0.3, 0.18) ≈ px (55, 47).
+    expect(Math.min(...pixel(r, 55, 47))).toBeLessThan(245);
+    // Above the curve at the same x, off the y=1 gridline: world (0.3, 1.5).
+    expect(Math.min(...pixel(r, 55, 25))).toBeGreaterThan(230);
+    // The density row alone strokes its curve: more ink than the bare grid.
+    const grid = inkFraction(renderRaster(['view(x = -3..3)'], 100, 100));
+    const curve = inkFraction(renderRaster(['X ~ Normal(0, 1)', 'view(x = -3..3)'], 100, 100));
+    expect(curve).toBeGreaterThan(grid + 0.005);
+  });
+
   it('strokes and fills polygon figures, leaving open segments unfilled', () => {
     const tri = renderRaster(['A = (-4, -4)', 'B = (4, -4)', 'C = (0, 4)', 'polygon(A, B, C)'], 100, 100);
     // Interior (world ~(1.4, -1.4), off the unit gridlines): tinted by the
