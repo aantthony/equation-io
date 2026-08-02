@@ -3,8 +3,9 @@
 > Free in-browser graphing calculator (WebGL). Plots 2D curves, inequality
 > regions, scalar fields, vector fields and ODEs, complex functions (including
 > domain coloring, conformal maps and escape-time fractals), 3D surfaces,
-> parametric curves/surfaces, and plane geometry (named draggable points,
-> segments, polygons, squares, circles). No account, no server round-trips: the graph state
+> parametric curves/surfaces, plane geometry (named draggable points,
+> segments, polygons, squares, circles), and random variables with shaded
+> probabilities. No account, no server round-trips: the graph state
 > lives in the URL fragment, so you can construct a link that opens the app
 > with any set of equations already rendered.
 
@@ -48,6 +49,7 @@ Examples (paste-ready):
 - [Polar cardioid](https://equation.io/#r%3Dsqrt(x%5E2%2By%5E2);theta%3Datan2(y%2Cx);r%3D2(1%2Bcos(theta))): `r = sqrt(x^2+y^2); theta = atan2(y,x); r = 2(1 + cos(theta))`
 - [Circle through a draggable point](https://equation.io/#C%20%3D%20(0%2C%200);P%20%3D%20(2%2C%201);circle(C%2C%20%7CP%20-%20C%7C);segment(C%2C%20P)): `C = (0, 0); P = (2, 1); circle(C, |P - C|); segment(C, P)`
 - [Thébault's theorem (squares on a parallelogram)](https://equation.io/#A%20%3D%20(0%2C%200);B%20%3D%20(4%2C%200.5);D%20%3D%20(1%2C%202.5);C%20%3D%20B%20%2B%20D%20-%20A;polygon(A%2C%20B%2C%20C%2C%20D);square(B%2C%20A);square(C%2C%20B);square(D%2C%20C);square(A%2C%20D);P%20%3D%20midpoint(A%2C%20B)%20-%20perp(B%20-%20A)%2F2;Q%20%3D%20midpoint(B%2C%20C)%20-%20perp(C%20-%20B)%2F2;R%20%3D%20midpoint(C%2C%20D)%20-%20perp(D%20-%20C)%2F2;S%20%3D%20midpoint(D%2C%20A)%20-%20perp(A%20-%20D)%2F2;polygon(P%2C%20Q%2C%20R%2C%20S)): `A = (0, 0); B = (4, 0.5); D = (1, 2.5); C = B + D - A; polygon(A, B, C, D); square(B, A); square(C, B); square(D, C); square(A, D); P = midpoint(A, B) - perp(B - A)/2; …; polygon(P, Q, R, S)` — drag A, B or D; the square centers stay a square
+- [Normal probability](https://equation.io/#m%20%3D%201;s%20%3D%200.5;X%20~%20Normal(m%2C%20s);P(0%20%3C%20X%20%3C%202)): `m = 1; s = 0.5; X ~ Normal(m, s); P(0 < X < 2)` — the density with the area between 0 and 2 shaded; drag m or s and the probability follows
 - [Swinging pendulum (integrated state)](https://equation.io/#th'%20%3D%20om;om'%20%3D%20-sin(th)%20-%20om%2F8;th(0)%20%3D%203;bob%20%3D%20(sin(th)%2C%20-cos(th));segment((0%2C%200)%2C%20bob);bob): `th' = om; om' = -sin(th) - om/8; th(0) = 3; bob = (sin(th), -cos(th)); segment((0, 0), bob); bob` — th is the angle, om the angular velocity; segment() draws the rod, the named point draws the bob
 - [Double pendulum](https://equation.io/#g%20%3D%209.8;L1%20%3D%201;L2%20%3D%201;m1%20%3D%201;m2%20%3D%201;M%20%3D%20%5B((m1%2Bm2)%20L1%2C%20m2%20L2%20cos(th_1%20-%20th_2))%2C%20(L1%20cos(th_1%20-%20th_2)%2C%20L2)%5D;f%20%3D%20(-m2%20L2%20om_2%5E2%20sin(th_1%20-%20th_2)%20-%20(m1%2Bm2)%20g%20sin(th_1)%2C%20L1%20om_1%5E2%20sin(th_1%20-%20th_2)%20-%20g%20sin(th_2));th'%20%3D%20om;om'%20%3D%20solve(M%2C%20f);th(0)%20%3D%20(2.5%2C%202.4);b1%20%3D%20(L1%20sin(th_1)%2C%20-L1%20cos(th_1));b2%20%3D%20b1%20%2B%20(L2%20sin(th_2)%2C%20-L2%20cos(th_2));segment((0%2C%200)%2C%20b1);segment(b1%2C%20b2);b1;b2): `M = [((m1+m2) L1, m2 L2 cos(th_1 - th_2)), (L1 cos(th_1 - th_2), L2)]; f = (…); th' = om; om' = solve(M, f); th(0) = (2.5, 2.4); …` — the Lagrangian form M(θ)ω′ = f: th and om are 2-vector states with components th_1, th_2; solve() is Cramer's rule; segment()s between named bob points draw the linkage
 - [Orbit (vector gravity)](https://equation.io/#r'%20%3D%20vel;vel'%20%3D%20-9%20r%2F%7Cr%7C%5E3;r(0)%20%3D%20(2%2C%200);vel(0)%20%3D%20(0%2C%201.5);segment((0%2C%200)%2C%20r);r;(0%2C%200)): `r' = vel; vel' = -9 r/|r|^3; r(0) = (2, 0); vel(0) = (0, 1.5); segment((0, 0), r); r; (0, 0)` — vector states with point arithmetic; the bare state name draws as a moving point
@@ -154,6 +156,12 @@ demand instead of living in a tool description. No authentication required.
   field (1, f); a system `(x', y') = (y, -sin(x))` plots its phase portrait.
   (Primes on x/y/z mean this. A prime on a name of your own is a state — see
   below — so `y' = -y` is a slope field while `th' = -th` is a simulation.)
+- Random variable: `X ~ Normal(mean, sd)` declares X and plots its density
+  curve. Parameters may use sliders and t, so `X ~ Normal(0, a)` follows the
+  slider live.
+- Probability: `P(X < 2)`, `P(X > 0)` or `P(0 < X < 2)` shades that area
+  under X's density and shows the numeric probability (normal CDF) as a
+  readout under the row.
 - Parametric curve: components in u — `(2cos(2pi u), sin(4pi u))`; three
   components make a 3D curve — `(2cos(6pi u), 2sin(6pi u), 4u - 2)`.
 - Parametric surface: three components in u and v —
