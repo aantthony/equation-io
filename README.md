@@ -1,6 +1,29 @@
-# equation
+# Equation.io
 
-An equation grapher, deployed as a Cloudflare Worker.
+**[equation.io](https://equation.io)** — a graphing calculator with a built-in
+CAS. Type equations; they compile to GPU shaders and render as 2D curves, 3D
+surfaces, vector fields, ODE phase portraits, probability densities, and more.
+Every graph lives entirely in its URL, so the address bar is the share button.
+
+## The graph.tk story
+
+This is the successor to **graph.tk**, which started in this repository in
+May 2010 as an HTML5-canvas grapher and picked up 400+ stars over the years.
+The site ran on a free `.tk` domain — which turned out to be the fatal flaw:
+the registrar (Freenom) eventually seized the domain to serve ads on it, and
+after Meta sued Freenom the whole `.tk` registry collapsed and the domain
+stopped resolving entirely.
+
+The lesson was learned and the grapher was rebuilt from scratch — new parser,
+new CAS, WebGL rendering instead of canvas — on a domain that's actually owned:
+[equation.io](https://equation.io). The original code is preserved on the
+[`legacy`](../../tree/legacy) branch (tag `graph.tk-final`) under its original
+LGPL-3.0 terms; everything on `main` is a clean-room rewrite, MIT licensed.
+The old UI remains usable at [graph.equation.io](https://graph.equation.io).
+
+## Architecture
+
+Deployed as a Cloudflare Worker.
 
 - `lib/` — tokenizer, shunting-yard parser, symbolic expression core (`expr.ts`),
   and a GLSL compiler (`glsl.ts`) used for plotting.
@@ -113,3 +136,9 @@ and dropped ODE seeds highlight under the cursor and drag with it.
 
 `worker/` — the Cloudflare Worker entry: serves the built app and handles
 `/api/*` routes.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The pre-2026 graph.tk code on the
+[`legacy`](../../tree/legacy) branch remains under its original LGPL-3.0
+terms; no code from it was reused in the current codebase.
