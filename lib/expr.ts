@@ -456,6 +456,55 @@ export const normalcdf = (x: number, mean: number, sd: number): number =>
  */
 export const ISPRIME_MAX = 2048 * 2048 - 1;
 
+/** a^b tolerance for snapping the exponent to a small rational p/q (real odd roots). */
+const POW_RATIONAL_TOL = 1e-6;
+
+/** Largest denominator considered when looking for the exponent's rational form. */
+const POW_RATIONAL_MAX_Q = 12;
+
+/**
+ * Real-valued a^b, matching how graphing calculators (e.g. Desmos) treat a
+ * negative base with a fractional exponent: real odd roots come out real
+ * (e.g. (-8)^(1/3) = -2) instead of NaN, while even roots stay undefined
+ * (e.g. (-4)^(1/2)).
+ *
+ * For a >= 0 this is just Math.pow. For a < 0, Math.pow only agrees with the
+ * "real odd root" convention when b happens to be an exact integer, so
+ * instead we search for the exponent's rational form p/q in lowest terms via
+ * a tolerance search over small denominators (q = 1..POW_RATIONAL_MAX_Q — no
+ * arbitrary-precision rational type needed, just simple fractions like 1/3,
+ * 2/3, 1/5). If q is odd, the root is real: sign * |a|^b, where sign is
+ * negative iff p (the reduced numerator) is odd. If no small-denominator
+ * match is found within tolerance (an irrational-looking exponent) or q is
+ * even (an even root of a negative number), the result is NaN, same as
+ * plain Math.pow.
+ *
+ * The tolerance (1e-6) is deliberately tight: an exponent entered as a
+ * fraction (e.g. "1/3") lands within ~1e-16 of the true rational, so it
+ * always snaps, but a typed decimal approximation like 0.33333 is ~3.3e-6
+ * away from 1/3 — outside tolerance — and is left undefined rather than
+ * silently guessed at.
+ *
+ * Kept in sync with the eq_pow() GLSL twin in glsl.ts (same algorithm, same
+ * tolerance and max denominator, adapted to GLSL's lack of a gcd builtin).
+ */
+export function realPow(a: number, b: number): number {
+  if (a >= 0) return Math.pow(a, b);
+  for (let q = 1; q <= POW_RATIONAL_MAX_Q; q++) {
+    const p = Math.round(b * q);
+    let x = Math.abs(p), y = q;
+    while (y) { const t = x % y; x = y; y = t; } // gcd(|p|, q)
+    const g = x || 1;
+    const pr = p / g, qr = q / g;
+    if (Math.abs(b - pr / qr) < POW_RATIONAL_TOL) {
+      if (qr % 2 === 0) return NaN; // even root of a negative number: undefined
+      const sign = Math.abs(pr) % 2 === 1 ? -1 : 1;
+      return sign * Math.pow(-a, b);
+    }
+  }
+  return NaN; // no small-denominator rational found: irrational-looking exponent
+}
+
 const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
@@ -503,7 +552,7 @@ export function evaluate(e: Expr, env: Record<string, number>): number {
         case '-': return a - b;
         case '*': return a * b;
         case '/': return a / b;
-        case '^': return Math.pow(a, b);
+        case '^': return realPow(a, b);
       }
     }
     case 'call': {

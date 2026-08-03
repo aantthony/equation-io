@@ -162,6 +162,44 @@ describe('toGLSL', () => {
   });
 });
 
+describe('negative base with fractional exponent (real odd roots)', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('takes the real cube root of a negative base', () => {
+    expect(ev('(-8)^(1/3)')).toBeCloseTo(-2);
+    expect(ev('(-1)^(1/3)')).toBeCloseTo(-1);
+  });
+
+  it('gives a positive result for an even numerator over an odd denominator', () => {
+    expect(ev('(-8)^(2/3)')).toBeCloseTo(4);
+  });
+
+  it('handles negative fractional exponents', () => {
+    expect(ev('(-8)^(-1/3)')).toBeCloseTo(-0.5);
+  });
+
+  it('leaves even roots of a negative base undefined', () => {
+    expect(ev('(-4)^(1/2)')).toBeNaN();
+    expect(ev('(-8)^(1/4)')).toBeNaN();
+  });
+
+  it('does not snap a typed decimal approximation to a nearby rational', () => {
+    // 0.33333 is ~3.3e-6 away from 1/3, outside the 1e-6 tolerance, so this
+    // stays undefined rather than being guessed at as a cube root.
+    expect(ev('(-8)^(0.33333)')).toBeNaN();
+  });
+
+  it('leaves positive bases with fractional exponents unaffected', () => {
+    expect(ev('8^(1/3)')).toBeCloseTo(2);
+    expect(ev('8^(2/3)')).toBeCloseTo(4);
+  });
+
+  it('still handles integer exponents on negative bases', () => {
+    expect(ev('(-2)^3')).toBe(-8);
+    expect(ev('(-2)^2')).toBe(4);
+  });
+});
+
 describe('absolute value bars', () => {
   const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
 
