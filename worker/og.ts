@@ -652,7 +652,10 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
   return out;
 }
 
-async function deflate(data: Uint8Array): Promise<Uint8Array> {
+// The precise buffer type matters: the browser (which also loads this module,
+// for the no-WebGL2 fallback) types the stream writer as taking BufferSource,
+// which excludes views over SharedArrayBuffer.
+async function deflate(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
   // 'deflate' is zlib-wrapped (RFC 1950), which is what PNG IDAT requires.
   const cs = new CompressionStream('deflate');
   const writer = cs.writable.getWriter();

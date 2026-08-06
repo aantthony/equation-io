@@ -196,7 +196,8 @@ function showWebgl2Fallback(): void {
       <section id="no-gl-graph" hidden>
         <h2>Equations in this link</h2>
         <ul id="no-gl-rows"></ul>
-        <img id="no-gl-shot" alt="Static preview of this graph" width="600" height="315" hidden>
+        <canvas id="no-gl-shot" role="img" aria-label="Static preview of this graph"
+          width="600" height="315" hidden></canvas>
       </section>
       <p>Working without a GPU: <a href="/llms.txt">llms.txt</a> documents the
         equation syntax, the <code>/g/</code> deep-link format, and the static
@@ -219,18 +220,45 @@ function showWebgl2Fallback(): void {
     item.append(code);
     list.append(item);
   }
-  // For graphs the CPU renderer can't draw, /api/og redirects to the generic
-  // site card — presenting that as "this graph" would read as broken, so probe
-  // first and keep the <img> hidden unless the response is a genuine render.
-  // The src stays the real URL (not a blob) so the payload survives HTML
-  // extraction; the browser serves the second request from HTTP cache.
-  const shotUrl = `/api/og/${encodePayload(rows)}`;
-  fetch(shotUrl).then(res => {
-    if (!res.ok || res.redirected) return;
-    const shot = document.getElementById('no-gl-shot') as HTMLImageElement;
-    shot.src = shotUrl;
+  // The /api/og rasterizer is plain TypeScript, so draw the preview here
+  // instead of spending Worker CPU on it — the endpoint itself must stay for
+  // link-unfurl crawlers, which never run scripts. A dynamic import keeps the
+  // renderer out of the main bundle; GL-capable visitors never load it.
+  import('../worker/og.ts').then(({ canRenderOg, renderRaster }) => {
+    // Same discipline as the endpoint: for rows this renderer can't draw,
+    // no picture beats the generic site card posing as "this graph".
+    if (!canRenderOg(rows)) return;
+    const shot = document.getElementById('no-gl-shot') as HTMLCanvasElement;
+    const ctx = shot.getContext('2d');
+    if (!ctx) return showServerShot();
+    const { w, h, px } = renderRaster(rows);
+    const image = ctx.createImageData(w, h);
+    for (let i = 0, j = 0; j < px.length; i += 4, j += 3) {
+      image.data[i] = px[j];
+      image.data[i + 1] = px[j + 1];
+      image.data[i + 2] = px[j + 2];
+      image.data[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
     shot.hidden = false;
-  }).catch(() => {});
+  }).catch(showServerShot);
+
+  /** Worker-rendered fallback for engines whose canvas can't rasterize (or if
+   *  the renderer chunk fails to load). /api/og redirects to the generic site
+   *  card for graphs it can't draw, so probe first and only swap in a genuine
+   *  render. */
+  function showServerShot(): void {
+    const shotUrl = `/api/og/${encodePayload(rows)}`;
+    fetch(shotUrl).then(res => {
+      if (!res.ok || res.redirected) return;
+      const img = document.createElement('img');
+      img.src = shotUrl;
+      img.alt = 'Static preview of this graph';
+      img.width = 600;
+      img.height = 315;
+      document.getElementById('no-gl-shot')!.replaceWith(img);
+    }).catch(() => {});
+  }
 }
 
 // alpha: false — passes blend with low src alpha, and a non-opaque buffer

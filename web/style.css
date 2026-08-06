@@ -427,7 +427,8 @@ html, body {
 #no-gl a { color: var(--accent); }
 #no-gl code { font: 0.9em/1.4 ui-monospace, "SF Mono", Menlo, monospace; }
 #no-gl li { margin: 0.2em 0; }
-#no-gl img {
+#no-gl img,
+#no-gl canvas {
   max-width: 100%;
   height: auto;
   margin-top: 0.5em;
