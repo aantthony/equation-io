@@ -410,3 +410,27 @@ html, body {
   text-overflow: ellipsis;
 }
 .ex-item:hover code { color: var(--ex-code-hover); }
+
+/* --- WebGL2 fallback page (showWebgl2Fallback in main.ts) --- */
+
+/* The app shell pins scrolling (html/body overflow: hidden) so stray gestures
+   can't move the viewport under the canvas; the fallback scrolls itself. */
+#no-gl {
+  height: 100%;
+  overflow: auto;
+  max-width: 44em;
+  margin: 0 auto;
+  padding: 2em;
+  color: var(--text);
+  line-height: 1.5;
+}
+#no-gl a { color: var(--accent); }
+#no-gl code { font: 0.9em/1.4 ui-monospace, "SF Mono", Menlo, monospace; }
+#no-gl li { margin: 0.2em 0; }
+#no-gl img {
+  max-width: 100%;
+  height: auto;
+  margin-top: 0.5em;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+}

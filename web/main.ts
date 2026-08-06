@@ -176,11 +176,68 @@ const camera: Camera3D = { target: [0, 0, 0], radius: 14, theta: -Math.PI / 3, p
 
 const canvas = document.getElementById('gl') as HTMLCanvasElement;
 const overlay = document.getElementById('overlay') as HTMLCanvasElement;
+/**
+ * Static replacement page for browsers without WebGL2 — old engines, headless
+ * runs with GL disabled, and agent browsers (e.g. Cloudflare's Kitesurf) that
+ * execute scripts but don't render GL. A bare "WebGL2 is required" wastes the
+ * visit: the URL still names the graph, so show its rows, the static preview
+ * that chat unfurls use, and the GPU-free routes (llms.txt, /mcp) instead.
+ */
+function showWebgl2Fallback(): void {
+  // Nothing user-controlled in this literal — the graph rows are inserted
+  // below via textContent.
+  document.body.innerHTML = `
+    <main id="no-gl">
+      <h1>Equation.io</h1>
+      <p>This is an interactive graphing calculator. Drawing graphs needs
+        <a href="https://get.webgl.org/webgl2/" rel="noopener">WebGL2</a>, which
+        this browser does not provide — in a current Chrome, Edge, Firefox or
+        Safari, the same link opens live.</p>
+      <section id="no-gl-graph" hidden>
+        <h2>Equations in this link</h2>
+        <ul id="no-gl-rows"></ul>
+        <img id="no-gl-shot" alt="Static preview of this graph" width="600" height="315" hidden>
+      </section>
+      <p>Working without a GPU: <a href="/llms.txt">llms.txt</a> documents the
+        equation syntax, the <code>/g/</code> deep-link format, and the static
+        preview endpoint; the MCP server at <code>/mcp</code> validates
+        equations and builds graph links; the <a href="/about/">gallery</a>
+        shows rendered examples as static screenshots.</p>
+    </main>`;
+  // The module throws right after this returns, so the app's own hashchange
+  // handling never installs; without this, steering the URL from the address
+  // bar (or a script) would silently show the previous graph's rows.
+  addEventListener('hashchange', () => location.reload());
+  const rows = decodePayload(urlPayload());
+  if (!rows.length) return;
+  (document.getElementById('no-gl-graph') as HTMLElement).hidden = false;
+  const list = document.getElementById('no-gl-rows')!;
+  for (const text of rows) {
+    const item = document.createElement('li');
+    const code = document.createElement('code');
+    code.textContent = text;
+    item.append(code);
+    list.append(item);
+  }
+  // For graphs the CPU renderer can't draw, /api/og redirects to the generic
+  // site card — presenting that as "this graph" would read as broken, so probe
+  // first and keep the <img> hidden unless the response is a genuine render.
+  // The src stays the real URL (not a blob) so the payload survives HTML
+  // extraction; the browser serves the second request from HTTP cache.
+  const shotUrl = `/api/og/${encodePayload(rows)}`;
+  fetch(shotUrl).then(res => {
+    if (!res.ok || res.redirected) return;
+    const shot = document.getElementById('no-gl-shot') as HTMLImageElement;
+    shot.src = shotUrl;
+    shot.hidden = false;
+  }).catch(() => {});
+}
+
 // alpha: false — passes blend with low src alpha, and a non-opaque buffer
 // would be composited over the page as premultiplied, washing fills white.
 const glCtx = canvas.getContext('webgl2', { antialias: true, alpha: false });
 if (!glCtx) {
-  document.body.innerHTML = '<p style="padding:2em">WebGL2 is required.</p>';
+  showWebgl2Fallback();
   throw new Error('WebGL2 unavailable');
 }
 const gl = glCtx;
