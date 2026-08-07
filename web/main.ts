@@ -8,6 +8,7 @@ import {
   evalConstEnv,
   resolveExpr,
   scanDefinition,
+  usesIntegral,
   type Definition,
   type Defs,
 } from '../lib/defs.ts';
@@ -18,12 +19,16 @@ import {
   RVSystem,
   buildRVSystem,
   checkDerived,
+  densityAt,
   densityExpr,
+  matchExpectation,
   matchProbability,
+  pdfExpr,
   probabilityValue,
   regionExpr,
   scanRandomRows,
   shadePolygon,
+  toExpectation,
   toProbability,
 } from '../lib/dist.ts';
 import { SLIDER_NUM_RE as NUM_RE, dragAxes } from '../lib/drag.ts';
@@ -526,6 +531,7 @@ function render() {
         case 'bifurcation':
         case 'density':
         case 'prob':
+        case 'expect':
           break; // 2D-only plots (densities, flows, sequences, planar figures); skipped in 3D scenes
         case 'plist': {
           const env = { ...constEnv, t: time };
@@ -790,6 +796,22 @@ function render() {
           } catch { /* not evaluable this frame */ }
           break;
         }
+        case 'expect': {
+          // The value lives in the row's readout; the plot is a vertical
+          // marker at x = E under the variable's density.
+          try {
+            const m = rvSys.mean(plot.rv, env);
+            if (!isFinite(m)) break;
+            const exact = rvSys.exactDist(plot.rv);
+            let h = exact
+              ? evaluate(pdfExpr(exact, { kind: 'num', value: m }), env)
+              : (c => (c ? densityAt(c, m) : 0))(rvSys.curve(plot.rv, env));
+            if (!isFinite(h) || h < 0) h = 0;
+            if (h > 0) extras.polylines.push({ pts: [m, 0, m, h], color: css, width: 2 });
+            extras.points.push({ x: m, y: h, color: css, r: 4 });
+          } catch { /* not evaluable this frame */ }
+          break;
+        }
         case 'system':
           // A 3-unknown system forces the 3D view, so only 2D lands here.
           if (plot.dim === 2) {
@@ -996,10 +1018,12 @@ function recompileAll() {
         eq.info = `μ = ${fmtNum(m.mean)}, σ = ${fmtNum(m.sd)}`;
         return;
       }
-      const c = rvSys.curve(name, envT0);
-      if (!c) return;
-      eq.info = `μ ≈ ${c.mean.toFixed(3)}, σ ≈ ${c.sd.toFixed(3)}`
-        + (c.mass < 0.9995 ? `, P(defined) ≈ ${c.mass.toFixed(3)}` : '');
+      // One-variable transforms integrate against the base pdf (quadrature):
+      // still ≈, but good to display precision rather than sampling noise.
+      const s = rvSys.quadMoments(name, envT0) ?? rvSys.curve(name, envT0);
+      if (!s) return;
+      eq.info = `μ ≈ ${s.mean.toFixed(3)}, σ ≈ ${s.sd.toFixed(3)}`
+        + (s.mass < 0.9995 ? `, P(defined) ≈ ${s.mass.toFixed(3)}` : '');
     } catch { /* not numerically computable right now (e.g. animated) */ }
   };
   // A derived variable whose law is a closed-form pdf (affine in normals, or
@@ -1108,12 +1132,49 @@ function recompileAll() {
         }
         continue;
       }
+      const expectBody = defs.consts.has('E') || defs.fns.has('E') ? null : matchExpectation(text);
+      if (expectBody !== null) {
+        if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const ex = toExpectation(resolveExpr(parseExpr(expectBody, fnNames), getFn, ropts), rvNames);
+        for (const name of ex.rvs) {
+          if (!rvSys.has(name)) throw new Error(`${name} has an error in its definition.`);
+        }
+        // The body becomes the variable whose density carries the marker: a
+        // bare name is itself, anything else an anonymous derived variable —
+        // so exact laws (affine in normals, uniform sums) apply unchanged.
+        let name: string;
+        if (ex.body.kind === 'var' && rvSys.has(ex.body.name)) {
+          name = ex.body.name;
+        } else {
+          checkDerived(ex.body, rvNames, constNames);
+          name = `@E${eq.id}`;
+          rvSys.add({ name, kind: 'derived', expr: ex.body });
+        }
+        const ps = rvSys.bodyParams(ex.body);
+        eq.cls = {
+          plot: { type: 'expect', rv: name },
+          animated: ps.has('t'),
+          needs3D: false,
+          params: [...ps].filter(p => p !== 't'),
+        };
+        if (envT0) {
+          try {
+            // Closed form and quadrature both earn full display precision;
+            // only the Monte Carlo fallback rounds to its noise floor.
+            const m = rvSys.exactMoments(name, envT0) ?? rvSys.quadMoments(name, envT0);
+            const value = m ? m.mean : rvSys.mean(name, envT0);
+            if (isFinite(value)) eq.info = `≈ ${value.toFixed(m ? 4 : 3)}`;
+          } catch { /* animated or broken: no readout */ }
+        }
+        continue;
+      }
       const seq = scanSeqRec(text);
       if (seq) {
         eq.cls = classifySeqRec(seq, fnNames, getFn, constNames, ropts);
         continue;
       }
-      let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
+      const rawParsed = parseExpr(text, fnNames);
+      let parsed = resolveExpr(rawParsed, getFn, ropts);
       // A bare expression in random variables (`X + Y`, `X^2`) plots the
       // density of that derived variable — distribution arithmetic in place.
       const rvRefs = [...freeVars(parsed)].filter(n => rvNames.has(n));
@@ -1138,6 +1199,14 @@ function recompileAll() {
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       eq.cls = classify(parsed, constNames);
       eq.parsed = parsed;
+      // A row that wrote an ∫ and resolved to a constant gets its value as a
+      // readout (the plot is the horizontal line y = that value).
+      if (envT0 && usesIntegral(rawParsed)) {
+        try {
+          const value = evaluate(parsed, envT0);
+          if (isFinite(value)) eq.info = `≈ ${Number(value.toPrecision(6))}`;
+        } catch { /* depends on plot coordinates: the curve is the answer */ }
+      }
     } catch (e) {
       eq.error = e instanceof Error ? e.message : String(e);
     }
@@ -2054,6 +2123,7 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
       + 'X1 ~ Uniform(0, 1); X2 ~ Uniform(0, 1); X3 ~ Uniform(0, 1); X4 ~ Uniform(0, 1); '
       + 'S = X1 + X2 + X3 + X4; Z ~ Normal(2, sqrt(1/3)); P(S > 3)'],
     ['conditional variable', 'X ~ Normal(0, 1); Y = {X > 0: X^2, 1}; P(Y > 0.5); P(Y > X)'],
+    ['expectation', 'X ~ Uniform(0, 1); Y = X^2; E(Y); E(X + Y)'],
   ]],
   ['regions', [
     ['open half-plane', 'y < x/2 + 1'],
@@ -2080,6 +2150,11 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['function', 'f(x) = x^3 - 3x; y = f(x)'],
     ['derivative', 'y = d/dx (x^3 - 3x)'],
     ['tangent line', 'f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x - a)'],
+    ['running integral', 'view(x = -7..7, y = -1.5..4); f(x) = sin(x)^2; y = f(x); y = int[0..x] f(t) dt'],
+    ['antiderivative', 'f(x) = x^2 - 1; y = f(x); y = int(f(x) dx)'],
+    ['gaussian error fn', 'view(x = -4..4, y = -1.2..1.2); y = int[0..x] exp(-t^2) dt'],
+    ['normal cdf', 'view(x = -4..4, y = -0.6..1.2); y = normalpdf(x, 0, 1); y = int[-inf..x] normalpdf(t, 0, 1) dt'],
+    ['sine integral Si(x)', 'view(x = -20..20, y = -2.2..2.2); y = int[0..x] sin(t)/t dt'],
     ['orbiting charge', 'r = 2 + sin(t); ln(w - r) - ln(w + r)'],
   ]],
   ['series', [

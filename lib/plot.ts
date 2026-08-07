@@ -84,7 +84,11 @@ export type Plot =
   | { type: 'density'; rv: string }
   /** A `P(…)` row estimated from samples. With `shade`, the area under rv's
    *  density between the bounds fills in (single-variable bodies only). */
-  | { type: 'prob'; body: Expr; shade?: { rv: string; lo?: Expr; hi?: Expr } };
+  | { type: 'prob'; body: Expr; shade?: { rv: string; lo?: Expr; hi?: Expr } }
+  /** An `E(…)` row: the mean lives in the row's readout; the plot is a
+   *  vertical marker at x = E under the density of rv (the body itself,
+   *  registered as an anonymous derived variable when not a bare name). */
+  | { type: 'expect'; rv: string };
 
 /** Symbolically differentiate each component; undefined if any is non-smooth. */
 function tryGrad(exprs: Expr[], v: string): [string, string, string] | undefined {

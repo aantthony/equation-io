@@ -8,7 +8,7 @@
  * (parametric surfaces/curves, z = f(x,y) heightmaps). Output is a PNG built
  * with CompressionStream — no image library.
  */
-import { shadePolygon } from '../lib/dist.ts';
+import { densityAt, pdfExpr, shadePolygon } from '../lib/dist.ts';
 import { type Expr, evaluate, substVars } from '../lib/expr.ts';
 import type { Plot } from '../lib/plot.ts';
 import { clampPhi, fitView2D } from '../lib/view.ts';
@@ -341,6 +341,27 @@ function renderRow2D(
     if (shade) drawLine(r, sx[sx.length - 1], sy[sy.length - 1], sx[0], sy[0], color);
     return;
   }
+  if (cls.plot.type === 'expect') {
+    // The mean marker the app draws: a stem from the axis to the density at
+    // x = E, capped with a dot (web/main.ts case 'expect').
+    const name = cls.plot.rv;
+    const m = analysis.rvs.mean(name, analysis.constEnv);
+    if (!Number.isFinite(m)) return;
+    const exact = analysis.rvs.exactDist(name);
+    let h: number;
+    try {
+      h = exact
+        ? evaluate(pdfExpr(exact, { kind: 'num', value: m }), analysis.constEnv)
+        : (c => (c ? densityAt(c, m) : 0))(analysis.rvs.curve(name, analysis.constEnv));
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(h) || h < 0) h = 0;
+    const mx = toScreenX(r, v, m);
+    if (h > 0) drawLine(r, mx, toScreenY(r, v, 0), mx, toScreenY(r, v, h), color);
+    drawDisc(r, mx, toScreenY(r, v, h), 3.5, color);
+    return;
+  }
   if (cls.plot.type === 'cobweb') {
     // A recurrence a_{n+1} = f(a_n) draws the same three pieces as the app
     // (web/main.ts): the map's curve y = f(x), the y = x diagonal the orbit
@@ -549,10 +570,12 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   // into this backend yet.
   system: 'fallback',
   // Sampled densities run the same lib/dist.ts estimator on the CPU: the
-  // curve is a polyline, a shaded P(…) a filled polygon. A readout-only
-  // P(…) row (no shade) draws nothing, matching the app's canvas.
+  // curve is a polyline, a shaded P(…) a filled polygon, an E(…) row a
+  // vertical mean marker. A readout-only P(…) row (no shade) draws nothing,
+  // matching the app's canvas.
   density: 'draws',
   prob: 'draws',
+  expect: 'draws',
 };
 
 /**

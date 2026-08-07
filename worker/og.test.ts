@@ -127,6 +127,17 @@ describe('og raster renderer', () => {
     expect(Math.min(...pixel(r, 90, 20))).toBeGreaterThan(240);
   });
 
+  it('draws E(…) rows as a mean marker under the density', () => {
+    const rows = ['view(x = -1..3, y = -0.1..1.2)', 'X ~ Uniform(0, 1.4)', 'E(X)'];
+    const r = renderRaster(rows, 100, 100);
+    // E[X] = 0.7 → screen x ≈ 42.5; the stem runs from the axis (py ≈ 64)
+    // up to pdf = 1/1.4 ≈ 0.714 (py ≈ 46).
+    const stem = [42, 43].map(x => Math.min(...pixel(r, x, 55)));
+    expect(Math.min(...stem)).toBeLessThan(210);
+    // The same height away from the mean is inside the box but unmarked.
+    expect(Math.min(...pixel(r, 30, 55))).toBeGreaterThan(230);
+  });
+
   it('draws point masses as probability stems', () => {
     const rows = ['view(x = 0..3, y = -0.2..1.2)', 'X ~ Normal(0, 1)', 'Y = {X > 0: 1.3, 2.6}'];
     const r = renderRaster(rows, 100, 100);
@@ -134,6 +145,20 @@ describe('og raster renderer', () => {
     expect(Math.min(...pixel(r, 43, 58))).toBeLessThan(200);
     // Above the stem top there is nothing — no KDE bump smearing the atom.
     expect(Math.min(...pixel(r, 43, 40))).toBeGreaterThan(230);
+  });
+
+  it('renders a non-elementary integral curve (Si) through the VM', () => {
+    // The quadrature-sum expansion is an ordinary expression, so the stack VM
+    // samples it per pixel like any other implicit curve.
+    const rows = ['view(x = 0..10, y = 0..2)', 'y = int[0..x] sin(t)/t dt'];
+    const r = renderRaster(rows, 100, 100);
+    // Uniform scale: the x span wins, 0.1 units/px with cy = 1. Si peaks at
+    // x = π with Si(π) ≈ 1.852 → screen (~31, ~41.5).
+    const near: number[] = [];
+    for (const x of [30, 31, 32]) for (const y of [40, 41, 42, 43]) near.push(Math.min(...pixel(r, x, y)));
+    expect(Math.min(...near)).toBeLessThan(200);
+    // Far from the curve stays background.
+    expect(Math.min(...pixel(r, 80, 80))).toBeGreaterThan(230);
   });
 
   it('renders definitions + slider constants (tangent-line graph)', () => {

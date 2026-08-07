@@ -12,6 +12,7 @@ import {
   evalConstEnv,
   resolveExpr,
   scanDefinition,
+  usesIntegral,
   type Definition,
   type Defs,
 } from '../lib/defs.ts';
@@ -20,13 +21,15 @@ import {
   buildRVSystem,
   checkDerived,
   densityExpr,
+  matchExpectation,
   matchProbability,
   probabilityValue,
   regionExpr,
   scanRandomRows,
+  toExpectation,
   toProbability,
 } from '../lib/dist.ts';
-import { type Expr, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { type Expr, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom } from '../lib/geom.ts';
 import { type Classified, classify } from '../lib/plot.ts';
 import { classifySeqRec, scanSeqRec } from '../lib/seq.ts';
@@ -45,9 +48,10 @@ export interface RowInfo {
   expr?: Expr;
   /** Set for `# label` comment rows (group headings in the app; not plotted). */
   comment?: boolean;
-  /** Set for probability rows: `X ~ …` plots a density, `P(…)` a shaded area. */
-  dist?: 'density' | 'probability';
-  /** Readout shown under the row in the app (the numeric value of a P(…) row). */
+  /** Set for probability rows: `X ~ …` plots a density, `P(…)` a shaded
+   *  area, `E(…)` a mean marker. */
+  dist?: 'density' | 'probability' | 'expectation';
+  /** Readout shown under the row in the app (the numeric value of a P(…) or E(…) row). */
   info?: string;
   error?: string;
 }
@@ -232,12 +236,49 @@ export function analyze(texts: string[]): Analysis {
         }
         continue;
       }
+      // `E(…)` is the mean of an expression in random variables — unless the
+      // user has defined E themselves. Mirror of web/main.ts.
+      const expectBody = defs.consts.has('E') || defs.fns.has('E') ? null : matchExpectation(row.text);
+      if (expectBody !== null) {
+        if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const ex = toExpectation(resolveExpr(parseExpr(expectBody, fnNames), getFn), rvNames);
+        for (const name of ex.rvs) {
+          if (!rvs.has(name)) throw new Error(`${name} has an error in its definition.`);
+        }
+        row.dist = 'expectation';
+        // A bare name is the variable itself; anything else registers as an
+        // anonymous derived variable, so exact laws apply unchanged.
+        let name: string;
+        if (ex.body.kind === 'var' && rvs.has(ex.body.name)) {
+          name = ex.body.name;
+        } else {
+          checkDerived(ex.body, rvNames, constNames);
+          name = `@E${ri}`;
+          rvs.add({ name, kind: 'derived', expr: ex.body });
+        }
+        const ps = rvs.bodyParams(ex.body);
+        row.cls = {
+          plot: { type: 'expect', rv: name },
+          animated: ps.has('t'),
+          needs3D: false,
+          params: [...ps].filter(p => p !== 't'),
+        };
+        try {
+          // Closed form and quadrature both earn full display precision;
+          // only the Monte Carlo fallback rounds to its noise floor.
+          const m = rvs.exactMoments(name, constEnv) ?? rvs.quadMoments(name, constEnv);
+          const value = m ? m.mean : rvs.mean(name, constEnv);
+          if (isFinite(value)) row.info = `≈ ${value.toFixed(m ? 4 : 3)}`;
+        } catch { /* animated or broken: no readout */ }
+        continue;
+      }
       const seq = scanSeqRec(row.text);
       if (seq) {
         row.cls = classifySeqRec(seq, fnNames, getFn, constNames);
         continue;
       }
-      let parsed = resolveExpr(parseExpr(row.text, fnNames), getFn);
+      const rawParsed = parseExpr(row.text, fnNames);
+      let parsed = resolveExpr(rawParsed, getFn);
       // A bare expression in random variables plots that derived density.
       const rvRefs = [...freeVars(parsed)].filter(n => rvNames.has(n));
       if (rvRefs.length) {
@@ -267,6 +308,14 @@ export function analyze(texts: string[]): Analysis {
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       row.cls = classify(parsed, constNames);
       row.expr = parsed;
+      // A row that wrote an ∫ and resolved to a constant gets its value as a
+      // readout (mirror of web/main.ts).
+      if (usesIntegral(rawParsed)) {
+        try {
+          const value = evaluate(parsed, constEnv);
+          if (isFinite(value)) row.info = `≈ ${Number(value.toPrecision(6))}`;
+        } catch { /* depends on plot coordinates: the curve is the answer */ }
+      }
     } catch (e) {
       row.error = e instanceof Error ? e.message : String(e);
     }

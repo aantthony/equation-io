@@ -42,6 +42,11 @@ describe('canRenderOg', () => {
     expect(canRenderOg(['A = (0, 0)', 'B = (4, 0)', 'C = (0, 4)', 'polygon(A, B, C)'])).toBe(true);
     // Random-variable rows classify to implicit2d/ineq2d, which both draw.
     expect(canRenderOg(['X ~ Normal(0, 1)', 'P(X < 1)'])).toBe(true);
+    // E(…) rows draw as a mean marker.
+    expect(canRenderOg(['X ~ Normal(0, 1)', 'E(X)'])).toBe(true);
+    // ∫ rows resolve to ordinary expressions (closed form or quadrature sum).
+    expect(canRenderOg(['y = int[0..x] exp(-t^2) dt'])).toBe(true);
+    expect(canRenderOg(['y = int[0..x] sin(t)/t dt'])).toBe(true);
   });
 
   it('rejects graphs whose preview would be misleading', () => {

@@ -157,6 +157,66 @@ describe('mcp endpoint', () => {
     expect(out.preview).toBe('attached');
   });
 
+  it('validates E(…) rows: exact and sampled means', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['X ~ Normal(2, 1)', 'Y = X^2', 'E(X)', 'E(2X + 1)', 'E(Y)'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    expect(out.rows.map((r: { kind?: string }) => r.kind)).toEqual([
+      'random variable (density curve)',
+      'random variable (density curve)',
+      'expectation (mean readout)',
+      'expectation (mean readout)',
+      'expectation (mean readout)',
+    ]);
+    // Exact under the law: E[X] = 2 and E[2X + 1] = 5 (affine in a normal base).
+    expect(out.rows[2].value).toBe('≈ 2.0000');
+    expect(out.rows[3].value).toBe('≈ 5.0000');
+    // E[X²] = μ² + σ² = 5, by quadrature against the base pdf.
+    expect(out.rows[4].value).toBe('≈ 5.0000');
+    expect(out.preview).toBe('attached');
+  });
+
+  it('validates ∫ rows: exact readouts and non-elementary curves', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: {
+        equations: ['int[0..1] exp(-x^2) dx', 'y = int[0..x] sin(t)/t dt', 'a = 2', 'y = int[0..a] t^2 dt + x'],
+      },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(true);
+    // ∫₀¹e^(−x²) = (√π/2)erf(1), symbolically; the row reads its value.
+    expect(out.rows[0].value).toBe('≈ 0.746824');
+    // Si(x) has no elementary form — the quadrature expansion still plots.
+    expect(out.rows[1].kind).toBe('implicit2d');
+    expect(out.rows[3].kind).toBe('implicit2d'); // slider bound stays symbolic
+    expect(out.preview).toBe('attached');
+  });
+
+  it('rejects malformed ∫ rows with a usable message', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['int(x^2)'] },
+    });
+    const out = body.result.structuredContent;
+    expect(out.valid).toBe(false);
+    expect(out.rows[0].error).toContain('dx');
+  });
+
+  it('leaves E(…) rows alone when the user defines E', async () => {
+    const { body } = await rpc('tools/call', {
+      name: 'create_graph',
+      arguments: { equations: ['E = 3', 'X ~ Normal(0, 1)', 'E(X)'] },
+    });
+    const out = body.result.structuredContent;
+    // E is the user's constant, so E(X) is the product E·X — a derived
+    // density row, not an expectation readout.
+    expect(out.rows[2].kind).toBe('random variable (density curve)');
+  });
+
   it('reports per-row errors without failing the call', async () => {
     const { body } = await rpc('tools/call', {
       name: 'create_graph',

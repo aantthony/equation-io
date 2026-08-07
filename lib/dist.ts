@@ -13,6 +13,10 @@
  *   `P(a < X < b)`, `P(Y > 0.5)`, even `P(Y > X)`. Single-variable bounds on a
  *   base distribution stay exact (closed-form CDF + shaded region); everything
  *   else is estimated from the same joint samples.
+ * - `E(…)` takes any expression over the declared variables: `E(X)`,
+ *   `E(X^2 + Y)`. The mean is exact when the law is (closed-form pdfs and
+ *   uniform sums), the finite-sample mean otherwise, and the row draws a
+ *   vertical marker at x = E under the expression's density.
  *
  * Sampling model: every base variable owns a deterministic stratified stream
  * of standard uniforms (equal-mass quantile midpoints, shuffled by a hash of
@@ -32,10 +36,13 @@ import {
   freeVars,
   ineqComparisons,
   normalcdf,
+  normalpdf,
   parseExpr,
+  substVars,
 } from './expr.ts';
 import { usesComplex } from './complex.ts';
 import { type GetFn, RESERVED, type ResolveOpts, resolveExpr } from './defs.ts';
+import { quadrature } from './integrate.ts';
 
 // --- base distributions ---
 
@@ -50,6 +57,7 @@ export interface BaseDist {
 const TILDE_RE = /^\s*([A-Za-z_]\w*)\s*~\s*([\s\S]+)$/;
 const DIST_RE = /^\s*([A-Za-z_]\w*)\s*(?:\(([\s\S]*)\))?\s*$/;
 const PROB_RE = /^\s*P\s*\(([\s\S]+)\)\s*$/;
+const EXPECT_RE = /^\s*E\s*\(([\s\S]+)\)\s*$/;
 const CONST_ROW_RE = /^\s*([A-Za-z_]\w*)\s*=(?!=)([\s\S]+)$/;
 
 /** Detect a `name ~ rhs` row before parsing ('~' is not an expression token). */
@@ -148,6 +156,12 @@ export function matchProbability(text: string): string | null {
   return m ? m[1] : null;
 }
 
+/** The inner text of an `E(…)` row, or null if the row has another shape. */
+export function matchExpectation(text: string): string | null {
+  const m = EXPECT_RE.exec(text);
+  return m ? m[1] : null;
+}
+
 // --- probability specs ---
 
 export interface ProbSpec {
@@ -204,6 +218,32 @@ export function toProbability(e: Expr, rvNames: ReadonlySet<string>): ProbSpec {
     else spec.inline = { e: t, lo, hi };
   }
   return spec;
+}
+
+export interface ExpectSpec {
+  /** The scalar expression to average, resolved. */
+  body: Expr;
+  /** Random variables the body references. */
+  rvs: string[];
+}
+
+/** Interpret a parsed E(…) body against the declared random variables. */
+export function toExpectation(e: Expr, rvNames: ReadonlySet<string>): ExpectSpec {
+  if (e.kind === 'ineq') {
+    throw new Error('E(…) expects a value like E(X + Y); the chance of an event is P(…).');
+  }
+  if (e.kind === 'eq' || e.kind === 'vec' || e.kind === 'list') {
+    throw new Error('E(…) expects a single value, like E(X + Y).');
+  }
+  const frees = freeVars(e);
+  const rvs = [...frees].filter(n => rvNames.has(n));
+  if (!rvs.length) {
+    throw new Error('E(…) must reference a random variable, e.g. X ~ Normal(0, 1) then E(X).');
+  }
+  for (const n of frees) {
+    if (/^[xyzuvw]$/.test(n)) throw new Error(`E(…) cannot use the plot coordinate ${n}.`);
+  }
+  return { body: e, rvs };
 }
 
 /**
@@ -670,6 +710,18 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
   return { pts, atoms, mean, sd, mass };
 }
 
+/** Linear interpolation of a density polyline at x (0 outside its range). */
+export function densityAt(curve: DensityCurve, x: number): number {
+  const p = curve.pts;
+  for (let i = 0; i + 3 < p.length; i += 2) {
+    if (x >= p[i] && x <= p[i + 2]) {
+      const f = (x - p[i]) / (p[i + 2] - p[i] || 1);
+      return p[i + 1] + f * (p[i + 3] - p[i + 1]);
+    }
+  }
+  return 0;
+}
+
 /** Clip a density curve to [lo, hi] and close it down to the x-axis: the
  *  polygon a Monte Carlo `P(…)` row fills. Null when the clip is empty. */
 export function shadePolygon(curve: DensityCurve, lo?: number, hi?: number): number[] | null {
@@ -678,15 +730,7 @@ export function shadePolygon(curve: DensityCurve, lo?: number, hi?: number): num
   const xlo = lo ?? p[0];
   const xhi = hi ?? p[p.length - 2];
   if (!(xhi > xlo)) return null;
-  const yAt = (x: number): number => {
-    for (let i = 0; i + 3 < p.length; i += 2) {
-      if (x >= p[i] && x <= p[i + 2]) {
-        const f = (x - p[i]) / (p[i + 2] - p[i] || 1);
-        return p[i + 1] + f * (p[i + 3] - p[i + 1]);
-      }
-    }
-    return 0;
-  };
+  const yAt = (x: number): number => densityAt(curve, x);
   const out: number[] = [xlo, 0, xlo, yAt(xlo)];
   for (let i = 0; i < p.length; i += 2) {
     if (p[i] > xlo && p[i] < xhi) out.push(p[i], p[i + 1]);
@@ -701,6 +745,26 @@ interface CacheEntry {
   /** Joint sample column (present once columns() ran for this sig). */
   col?: Float64Array;
   curve?: DensityCurve | null;
+  /** Quadrature moments (present once quadMoments ran for this sig). */
+  qm?: { mean: number; sd: number; mass: number } | null;
+}
+
+/** The pdf and support of a base distribution at these parameter values, or
+ *  null while the parameters are invalid. */
+function pdfClosure(
+  d: BaseDist,
+  env: Record<string, number>,
+): { pdf: (x: number) => number; lo: number; hi: number } | null {
+  const a = d.args.map(e => evaluate(e, env));
+  if (!a.every(isFinite)) return null;
+  switch (d.kind) {
+    case 'normal':
+      return a[1] > 0 ? { pdf: x => normalpdf(x, a[0], a[1]), lo: -Infinity, hi: Infinity } : null;
+    case 'uniform':
+      return a[1] > a[0] ? { pdf: () => 1 / (a[1] - a[0]), lo: a[0], hi: a[1] } : null;
+    case 'exponential':
+      return a[0] > 0 ? { pdf: x => a[0] * Math.exp(-a[0] * x), lo: 0, hi: Infinity } : null;
+  }
 }
 
 /** An expression decomposed as Σ terms[name]·name + c, coefficients free of
@@ -913,6 +977,7 @@ export class RVSystem {
   private defSigMemo = new Map<string, string>();
   private affineMemo = new Map<string, Affine | null>();
   private lawMemo = new Map<string, Law | null>();
+  private groundedMemo = new Map<string, Expr | null>();
 
   /** Start a recompile: drop declarations, keep sample caches. */
   reset(): void {
@@ -921,6 +986,7 @@ export class RVSystem {
     this.defSigMemo.clear();
     this.affineMemo.clear();
     this.lawMemo.clear();
+    this.groundedMemo.clear();
   }
 
   add(rv: RV): void {
@@ -1288,6 +1354,99 @@ export class RVSystem {
       variance += (c * (hi - lo)) ** 2 / 12;
     }
     return isFinite(mean) ? { mean, sd: Math.sqrt(variance) } : null;
+  }
+
+  /** The variable's expression with every derived dependency inlined, so
+   *  only base variables and parameters remain — or null when the expansion
+   *  blows up (shared subtrees duplicate under substitution). */
+  private grounded(name: string): Expr | null {
+    const memo = this.groundedMemo.get(name);
+    if (memo !== undefined) return memo;
+    const rv = this.rvs.get(name);
+    let e: Expr | null = rv?.kind === 'derived' ? rv.expr : null;
+    // Dependencies are acyclic (validate() dropped cycles); the guard bounds
+    // pathological chains and substitution blowup all the same.
+    for (let guard = 0; e && guard < 32; guard++) {
+      const sub: Record<string, Expr> = {};
+      for (const n of freeVars(e)) {
+        const dep = this.rvs.get(n);
+        if (dep?.kind === 'derived') sub[n] = dep.expr;
+      }
+      if (!Object.keys(sub).length) break;
+      e = substVars(e, sub);
+      if (JSON.stringify(e).length > 200_000) e = null;
+    }
+    this.groundedMemo.set(name, e);
+    return e;
+  }
+
+  /**
+   * Moments by numeric integration against the base law: for Y = g(X) with a
+   * single base dependency, E[g(X)] = ∫ g(x)·pdf(x) dx by adaptive
+   * quadrature (integrate.ts) — ~9 significant digits where the sample mean
+   * gives ~3. Undefined regions of g drop out of both the numerator and the
+   * mass, matching the sampler's "average where defined" convention. Null
+   * for joint dependence (E[X·Y] still samples), broken parameters, or
+   * integrals that fail to settle (heavy tails).
+   */
+  quadMoments(name: string, env: Record<string, number>): { mean: number; sd: number; mass: number } | null {
+    const rv = this.rvs.get(name);
+    if (rv?.kind !== 'derived') return null; // base laws: exactMoments has them
+    const slot = this.entry(name, this.sig(rv, env));
+    if (slot.qm !== undefined) return slot.qm;
+    const compute = (): { mean: number; sd: number; mass: number } | null => {
+      const g = this.grounded(name);
+      if (!g) return null;
+      const bases = [...freeVars(g)].filter(n => this.rvs.has(n));
+      const base = bases.length === 1 ? this.rvs.get(bases[0])! : null;
+      if (base?.kind !== 'base') return null;
+      let pc: ReturnType<typeof pdfClosure>;
+      try {
+        pc = pdfClosure(base.dist, env);
+      } catch {
+        return null;
+      }
+      if (!pc) return null;
+      const gAt = (x: number): number => {
+        try {
+          return evaluate(g, { ...env, [base.name]: x });
+        } catch {
+          return NaN;
+        }
+      };
+      const moment = (k: 0 | 1 | 2) => quadrature(x => {
+        const v = gAt(x);
+        if (!isFinite(v)) return 0;
+        return (k === 0 ? 1 : k === 1 ? v : v * v) * pc!.pdf(x);
+      }, pc!.lo, pc!.hi);
+      const mass = moment(0);
+      if (!(mass > 1e-9)) return null;
+      const m1 = moment(1);
+      const m2 = moment(2);
+      if (!isFinite(m1) || !isFinite(m2)) return null;
+      const mean = m1 / mass;
+      return { mean, sd: Math.sqrt(Math.max(m2 / mass - mean * mean, 0)), mass };
+    };
+    slot.qm = compute();
+    return slot.qm;
+  }
+
+  /** The mean of a variable: exact under its law when one is derivable,
+   *  quadrature against the base pdf for one-variable transforms, otherwise
+   *  the finite-sample mean (NaN when nothing is finite). */
+  mean(name: string, env: Record<string, number>): number {
+    const m = this.exactMoments(name, env) ?? this.quadMoments(name, env);
+    if (m) return m.mean;
+    const col = this.columns(name, env);
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < col.length; i++) {
+      if (isFinite(col[i])) {
+        sum += col[i];
+        n++;
+      }
+    }
+    return n ? sum / n : NaN;
   }
 
   /** Exact P(lo < name < hi) under the variable's law, or null when sampled. */

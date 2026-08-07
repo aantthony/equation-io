@@ -4,8 +4,8 @@
 > regions, scalar fields, vector fields and ODEs, complex functions (including
 > domain coloring, conformal maps and escape-time fractals), 3D surfaces,
 > parametric curves/surfaces, plane geometry (named draggable points,
-> segments, polygons, squares, circles), and random variables with shaded
-> probabilities. No account, no server round-trips: the graph state
+> segments, polygons, squares, circles), symbolic derivatives and integrals,
+> and random variables with shaded probabilities. No account, no server round-trips: the graph state
 > lives in the URL fragment, so you can construct a link that opens the app
 > with any set of equations already rendered.
 
@@ -105,6 +105,21 @@ demand instead of living in a tool description. No authentication required.
   outside). Bounds must be numbers or constants defined in another row (not
   `t`), because the sum is expanded symbolically before compiling — which makes
   `N` a slider that adds terms as you drag it.
+- Integrals: `int[a..b] f(x) dx` (definite) and `int(f(x) dx)`
+  (antiderivative), also written `∫`. The trailing `dx` names the variable;
+  any letter works, so `y = int[0..x] exp(-t^2) dt` plots a function of x,
+  and bounds may use sliders, t, or x. Integration is symbolic where a
+  verified antiderivative exists — polynomials and rational functions
+  (exactly), the elementary families, u-substitution, integration by parts,
+  Gaussians via erf — and falls back to Gauss–Legendre quadrature expanded
+  in place otherwise, so non-elementary rows like `y = int[0..x] sin(t)/t dt`
+  (Si) still plot. A row whose integral resolves to a constant shows the
+  numeric value as a readout. Classic notations work: `int[0..1] dx/(1+x^2)`,
+  and iterated integrals pair inside-out: `int[0..1] int[0..y] x dx dy`.
+  Bounds may be `±inf` (or `∞`): `int[-inf..x] exp(t) dt` is exp(x),
+  `int[-inf..inf] exp(-x^2) dx` reads √π, and `int[-inf..x] normalpdf(t, 0, 1) dt`
+  is the normal cdf. Divergent limits are refused (the closed form is checked
+  against real quadrature), not misreported.
 - Comments: a row starting with `#` (e.g. `# tangent lines`) plots nothing; in
   the app it renders as a heading whose group (the rows until the next `#` row)
   can be collapsed. Use them to label sections of longer documents.
@@ -164,6 +179,8 @@ demand instead of living in a tool description. No authentication required.
 - Probability: `P(X < 2)`, `P(X > 0)` or `P(0 < X < 2)` shades that area
   under X's density and shows the numeric probability (normal CDF) as a
   readout under the row.
+- Expectation: `E(X)`, `E(X^2 + Y)` — the mean of any expression in random
+  variables, shown as a readout under the row and marked on the density.
 - Parametric curve: components in u — `(2cos(2pi u), sin(4pi u))`; three
   components make a 3D curve — `(2cos(6pi u), 2sin(6pi u), 4u - 2)`.
 - Parametric surface: three components in u and v —
@@ -194,6 +211,11 @@ demand instead of living in a tool description. No authentication required.
   variable or expression has an exact law. Any other inequality —
   `P(Y > 0.5)` for a nonlinear Y, `P(Y > X)` — is estimated from the joint
   samples; the row shows the value as `≈`.
+- Expectation: `E(X)`, `E(2X + 3)`, `E(X^2 + Y)` — the mean of any
+  expression in the declared variables, exact whenever the expression has an
+  exact law (closed-form pdfs, affine combinations of normals, uniform sums)
+  and the finite-sample mean otherwise. The row shows the value as a readout
+  and draws a vertical marker at x = E under the expression's density.
 
 ## Definitions (extra rows that set up the others)
 

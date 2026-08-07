@@ -4,7 +4,9 @@ import {
   RVSystem,
   buildRVSystem,
   checkDerived,
+  densityAt,
   densityExpr,
+  matchExpectation,
   matchProbability,
   parseDistribution,
   probabilityValue,
@@ -12,6 +14,7 @@ import {
   scanDistribution,
   scanRandomRows,
   shadePolygon,
+  toExpectation,
   toProbability,
 } from './dist.ts';
 import { evaluate, normalcdf, normalpdf, parseExpr } from './expr.ts';
@@ -238,6 +241,80 @@ describe('P(…) row matching', () => {
     expect(matchProbability(' P ( -1 < X < 2 ) ')).toBe(' -1 < X < 2 ');
     expect(matchProbability('y = P(X < 2)')).toBeNull();
     expect(matchProbability('Q(X < 2)')).toBeNull();
+  });
+});
+
+describe('E(…) rows', () => {
+  const expectation = (inner: string, ns = names('X')) => toExpectation(parseExpr(inner), ns);
+
+  it('matches only whole E(...) rows', () => {
+    expect(matchExpectation('E(X)')).toBe('X');
+    expect(matchExpectation(' E ( X^2 + Y ) ')).toBe(' X^2 + Y ');
+    expect(matchExpectation('y = E(X)')).toBeNull();
+    expect(matchExpectation('F(X)')).toBeNull();
+  });
+
+  it('validates the body against the declared variables', () => {
+    expect(expectation('X + 1').rvs).toEqual(['X']);
+    expect(() => expectation('X < 2')).toThrow(/P\(…\)/);
+    expect(() => expectation('(X, 1)')).toThrow(/single value/);
+    expect(() => expectation('a + 1')).toThrow(/must reference a random variable/);
+    expect(() => expectation('X + x')).toThrow(/plot coordinate x/);
+  });
+
+  it('is exact under a derivable law', () => {
+    const { sys } = build(['X ~ Normal(2, 3)', 'Y = 2X + 1']);
+    expect(sys.mean('X', {})).toBe(2);
+    expect(sys.mean('Y', {})).toBe(5);
+    const { sys: u } = build(['X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 3)', 'S = X1 + X2']);
+    expect(u.mean('S', {})).toBe(2);
+    const { sys: e } = build(['X ~ Exponential(4)']);
+    expect(e.mean('X', {})).toBe(0.25);
+  });
+
+  it('integrates one-variable transforms against the base pdf (quadrature)', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Y = X^2']);
+    expect(sys.exactMoments('Y', {})).toBeNull();
+    const qm = sys.quadMoments('Y', {})!;
+    expect(qm.mean).toBeCloseTo(1, 8); // E[X²] = Var(X) = 1, to quadrature digits
+    expect(qm.sd).toBeCloseTo(Math.SQRT2, 7); // Var(X²) = 2
+    expect(sys.mean('Y', {})).toBeCloseTo(1, 8);
+    const { sys: r } = build(['X ~ Normal(0, 1)', 'R = sqrt(X)']);
+    // Partial support averages where defined: E[√X | X > 0] =
+    // 2^(-1/4)·Γ(3/4)/√(2π) / P(X > 0) ≈ 0.8222.
+    const rq = r.quadMoments('R', {})!;
+    expect(rq.mass).toBeCloseTo(0.5, 5);
+    expect(rq.mean).toBeCloseTo(0.8222, 3);
+  });
+
+  it('quadrature moments follow chains and every base family', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y = X^2', 'Z = Y + 1']);
+    expect(sys.quadMoments('Y', {})!.mean).toBeCloseTo(1 / 3, 9);
+    expect(sys.quadMoments('Y', {})!.sd).toBeCloseTo(Math.sqrt(4 / 45), 8);
+    expect(sys.mean('Z', {})).toBeCloseTo(4 / 3, 8); // grounded through Y
+    const { sys: e } = build(['X ~ Exponential(2)', 'Y = X^2']);
+    expect(e.mean('Y', {})).toBeCloseTo(0.5, 7); // E[X²] = 2/λ²
+    const { sys: s } = build(['X ~ Normal(m, s)', 'Y = X^2']);
+    expect(s.mean('Y', { m: 2, s: 1 })).toBeCloseTo(5, 7); // μ² + σ²
+  });
+
+  it('leaves joint dependence to the sampler', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'W ~ Normal(0, 1)', 'M = X W']);
+    expect(sys.quadMoments('M', {})).toBeNull();
+    expect(sys.mean('M', {})).toBeCloseTo(0, 1); // Monte Carlo still answers
+  });
+
+  it('responds to slider constants and is NaN when broken', () => {
+    const { sys } = build(['X ~ Normal(m, s)', 'Y = X^3 + a']);
+    expect(sys.mean('Y', { m: 0, s: 1, a: 10 })).toBeCloseTo(10, 1);
+    expect(sys.mean('X', { m: 1, s: -1 })).toBeNaN();
+  });
+
+  it('interpolates the density polyline for the marker height', () => {
+    const curve = { pts: [0, 0, 1, 2, 2, 0], mean: 1, sd: 0.5, mass: 1 };
+    expect(densityAt(curve, 0.5)).toBeCloseTo(1, 9);
+    expect(densityAt(curve, 1)).toBeCloseTo(2, 9);
+    expect(densityAt(curve, 5)).toBe(0);
   });
 });
 
