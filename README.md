@@ -167,7 +167,10 @@ pnpm deploy     # build and deploy to Cloudflare
 
 Equations persist in the URL hash. Drag to pan/orbit, wheel to zoom,
 right-drag (or shift) to pan in 3D, click a color dot to cycle colors. Points
-and dropped ODE seeds highlight under the cursor and drag with it.
+and dropped ODE seeds highlight under the cursor and drag with it. On a touch
+screen, flick the equations panel up or off to the side to clear the view —
+it tracks the finger and leaves along the throw — and the `y=` chip left in
+its corner brings it back (tap it, or drag it to pull the panel in).
 
 `worker/` — the Cloudflare Worker entry: serves the built app and handles
 `/api/*` routes.

@@ -114,6 +114,11 @@ html, body {
   top: calc(12px + env(safe-area-inset-top));
   left: calc(12px + env(safe-area-inset-left));
   width: 300px;
+  /* Tighter than the blanket pan-x pan-y: nothing in the panel scrolls
+     sideways, so declaring pan-y keeps horizontal touchmoves cancelable and
+     the swipe-to-dismiss drag (panel-swipe.ts) can claim them. Vertical
+     panning stays native for #equations/#examples scrolling. */
+  touch-action: pan-y;
   /* Keep the panel on screen with many equations: cap it at the viewport
      (12px margin top and bottom) and let #equations scroll inside. */
   max-height: calc(100% - 24px - env(safe-area-inset-bottom));
@@ -152,12 +157,16 @@ html, body {
 #state-reset:hover { background: var(--eq-focus); color: var(--muted-hover); }
 
 #equations {
-  /* Scrolls when the list outgrows the panel's max-height; `contain` stops a
-     scroll that hits the end from chaining into a page overscroll bounce. */
+  /* Scrolls when the list outgrows the panel's max-height. `none` (not
+     `contain`) so a scroll that hits the end neither chains into a page
+     bounce nor bounces the list itself — at the edge the browser lets go of
+     the touch, which is what hands "keep swiping past the end" to the
+     panel-dismiss gesture (panel-swipe.ts), the way iOS sheets take over
+     from their scroll views. */
   overflow-y: auto;
   min-height: 0;
   flex: 0 1 auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   outline: none;
   color: var(--text);
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
@@ -345,11 +354,13 @@ html, body {
 
 #examples {
   /* Never shrinks (the summary row stays visible), but caps itself and scrolls
-     internally so an open example tree can't push the panel past its max. */
+     internally so an open example tree can't push the panel past its max.
+     `none` for the same reason as #equations: the swipe-dismiss gesture picks
+     up where the scroll ends. */
   flex: none;
   max-height: 40%;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   border-top: 1px solid var(--divider);
   margin-top: 4px;
   padding: 4px;
@@ -410,3 +421,44 @@ html, body {
   text-overflow: ellipsis;
 }
 .ex-item:hover code { color: var(--ex-code-hover); }
+
+/* The panel's collapsed form: after a swipe dismisses the panel
+   (panel-swipe.ts), this chip pops into its corner. Tapping springs the
+   panel back; dragging pulls it back in under the finger. */
+#panel-chip {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  width: 46px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 11px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 20px var(--panel-shadow);
+  color: var(--text);
+  font: 15px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  cursor: pointer;
+  /* A drag handle as much as a button: no browser pan may start on it, so
+     its touchmoves stay cancelable for the pull-open gesture. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+  /* Hidden pose; .shown transitions from it, popping the chip in as the
+     panel clears the screen. A transition (not an animation) so JS can
+     stage the flip: unhide, reflow, then add .shown. */
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.18s ease-out;
+}
+#panel-chip.shown {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  #panel-chip { transition: opacity 0.15s ease-out; }
+}
