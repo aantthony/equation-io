@@ -15,9 +15,14 @@
  * - `sum(n=1..N, …)` / `prod(…)` (also Σ/Π, and `sum[n=1..N] …` binding the
  *   trailing product like d/dx) expand symbolically at resolve time, so the
  *   bounds must be numbers or already-known constants.
+ * - `int(f dx)` / `int[a..b] f dx` (also ∫) integrate at resolve time:
+ *   symbolically when integrate.ts finds a verified antiderivative, and
+ *   otherwise by expanding a fixed Gauss–Legendre sum the same way Σ
+ *   expands — so every downstream consumer still sees ordinary expressions.
  */
 import { add, diff, div, mul, neg, pow, sub } from './diff.ts';
 import { FUNCTIONS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
+import { QUAD_TERMS, antiderivative, improperSum, quadratureSum, verifyDefinite } from './integrate.ts';
 import { lowerGeom, pointComps, vecStateComps } from './geom.ts';
 import { type Mat, matrixFromList } from './mat.ts';
 
@@ -218,12 +223,19 @@ type SumCall = Expr & { kind: 'call'; name: 'sum' | 'prod' };
 const isSumHeader = (e: Expr): e is SumCall =>
   e.kind === 'call' && (e.name === 'sum' || e.name === 'prod') && e.args.length === 3;
 
+/** An ∫ header awaiting its body: `int[a..b]` (bounds) or a bare `int`/∫. */
+const isIntHeader = (e: Expr): boolean =>
+  (e.kind === 'call' && e.name === 'int' && e.args.length === 2)
+  || (e.kind === 'var' && e.name === 'int');
+
 /**
- * A header in a product chain sums its trailing factors: in
+ * A header in a product chain binds its trailing factors: in
  * `2 sum[n=1..N] sin(n x)/n` the body is sin(n x)/n and the 2 stays outside
- * (like d/dx, which also binds the rest of its product chain).
+ * (like d/dx, which also binds the rest of its product chain). ∫ headers
+ * (`int[a..b] f dx`, bare `∫ f dx`) bind the same way; the LEFTMOST header
+ * wins, so `int[0..1] sum[n=1..2] x^n dx` nests the Σ inside the ∫'s body.
  */
-function splitSumChain(e: Expr): { coeff: Expr | null; op: '*' | '/'; header: SumCall; body: Expr } | null {
+function splitSumChain(e: Expr): { coeff: Expr | null; op: '*' | '/'; header: Expr; body: Expr } | null {
   const factors: Array<{ e: Expr; op: '*' | '/' }> = [];
   let node: Expr = e;
   while (node.kind === 'bin' && (node.op === '*' || node.op === '/')) {
@@ -231,7 +243,7 @@ function splitSumChain(e: Expr): { coeff: Expr | null; op: '*' | '/'; header: Su
     node = node.a;
   }
   factors.unshift({ e: node, op: '*' });
-  const at = factors.findIndex(f => isSumHeader(f.e));
+  const at = factors.findIndex(f => isSumHeader(f.e) || isIntHeader(f.e));
   if (at < 0) return null;
   const rest = factors.slice(at + 1);
   if (!rest.length) return null; // bodyless header: the call case reports it
@@ -241,7 +253,80 @@ function splitSumChain(e: Expr): { coeff: Expr | null; op: '*' | '/'; header: Su
   for (let k = 0; k < at; k++) {
     coeff = coeff === null ? factors[k].e : { kind: 'bin', op: factors[k].op, a: coeff, b: factors[k].e };
   }
-  return { coeff, op: factors[at].op, header: factors[at].e as SumCall, body };
+  return { coeff, op: factors[at].op, header: factors[at].e, body };
+}
+
+/** The bounds of an ∫ header, or null for the bare indefinite form. */
+const intBounds = (header: Expr): [Expr, Expr] | null =>
+  header.kind === 'call' && header.args.length === 2 ? [header.args[0], header.args[1]] : null;
+
+/** Canonical call node for an ∫ header + its chain-bound body. */
+const intCallOf = (header: Expr, body: Expr): Expr => {
+  const b = intBounds(header);
+  return { kind: 'call', name: 'int', args: b ? [b[0], b[1], body] : [body] };
+};
+
+interface StripDx {
+  v: string;
+  integrand: Expr;
+  /** Factors after this integral's measure that carry ANOTHER d-var: they
+   *  belong to an enclosing ∫ (`int[0..1] int[0..y] x dx dy` pairs inside
+   *  out), so the expansion multiplies them back on for the outer level. */
+  residual: Expr | null;
+}
+
+/**
+ * Split the integration variable off a body: the first d<letter> factor in
+ * its multiplicative structure (`x^2 dx` → v = x, integrand x^2). Implicit
+ * multiplication binds tighter than '/', so in `sin(t)/t dt` the dt sits
+ * inside the denominator product — the measure is recognized on either side
+ * and the rest of that denominator stays a true denominator. A tail after
+ * the measure folds into the integrand (`∫ dx/(1+x^2)`) unless it carries
+ * its own d-var, in which case it is the enclosing integral's (residual).
+ * Sums integrate termwise, so every term must end in the same dx.
+ */
+function stripDx(body: Expr): StripDx | null {
+  if (body.kind === 'neg') {
+    const m = stripDx(body.a);
+    return m && { ...m, integrand: neg(m.integrand) };
+  }
+  if (body.kind === 'bin' && (body.op === '+' || body.op === '-')) {
+    const a = stripDx(body.a);
+    const b = stripDx(body.b);
+    if (!a && !b) return null;
+    if (!a || !b || a.v !== b.v || a.residual || b.residual) {
+      throw new Error(`Every term under one ∫ must end in the same d${a?.v ?? b?.v ?? 'x'}.`);
+    }
+    return { v: a.v, integrand: { kind: 'bin', op: body.op, a: a.integrand, b: b.integrand }, residual: null };
+  }
+  const factors: Array<{ e: Expr; inv: boolean }> = [];
+  const walk = (e: Expr, inv: boolean): void => {
+    if (e.kind === 'bin' && (e.op === '*' || e.op === '/')) {
+      walk(e.a, inv);
+      walk(e.b, e.op === '/' ? !inv : inv);
+      return;
+    }
+    factors.push({ e, inv });
+  };
+  walk(body, false);
+  const at = factors.findIndex(f => dVarName(f.e) !== null);
+  if (at < 0) return null;
+  const v = dVarName(factors[at].e)!;
+  const tail = factors.slice(at + 1);
+  const tailHasDx = tail.some(f => dVarName(f.e) !== null);
+  const inside = tailHasDx ? factors.slice(0, at) : factors.filter((_, i) => i !== at);
+  const product = (fs: Array<{ e: Expr; inv: boolean }>): Expr => {
+    let numr: Expr | null = null;
+    let den: Expr | null = null;
+    for (const f of fs) {
+      if (f.inv) den = den === null ? f.e : { kind: 'bin', op: '*', a: den, b: f.e };
+      else numr = numr === null ? f.e : { kind: 'bin', op: '*', a: numr, b: f.e };
+    }
+    let out: Expr = numr ?? num(1);
+    if (den) out = { kind: 'bin', op: '/', a: out, b: den };
+    return out;
+  };
+  return { v, integrand: product(inside), residual: tailHasDx ? product(tail) : null };
 }
 
 /** substVars for a Σ/Π index, stopping at nested Σ/Π that rebind the same name. */
@@ -255,14 +340,13 @@ function substIdx(e: Expr, idx: string, val: Expr): Expr {
         const m = splitSumChain(e);
         if (m) {
           // A bodyless header binds the rest of its product chain as its body
-          // (`sum[n=1..2] sum[n=1..3] n`). Canonicalize to the 4-arg call so
-          // the rebinding guard below sees that body as the inner Σ's own,
-          // not as a sibling factor ours may substitute into.
-          const call = substIdx(
-            { kind: 'call', name: m.header.name, args: [...m.header.args, m.body] },
-            idx,
-            val,
-          );
+          // (`sum[n=1..2] sum[n=1..3] n`). Canonicalize to the full call so
+          // the rebinding guard below sees that body as the inner binder's
+          // own, not as a sibling factor ours may substitute into.
+          const canonical: Expr = isSumHeader(m.header)
+            ? { kind: 'call', name: m.header.name, args: [...m.header.args, m.body] }
+            : intCallOf(m.header, m.body);
+          const call = substIdx(canonical, idx, val);
           return m.coeff ? { kind: 'bin', op: m.op, a: substIdx(m.coeff, idx, val), b: call } : call;
         }
       }
@@ -273,6 +357,18 @@ function substIdx(e: Expr, idx: string, val: Expr): Expr {
         // The inner Σ rebinds idx: substitute in its bounds but not its body.
         const args = e.args.map((a, k) => (k === 0 || k === 3 ? a : substIdx(a, idx, val)));
         return { kind: 'call', name: e.name, args };
+      }
+      if (e.name === 'int' && (e.args.length === 1 || e.args.length === 3)) {
+        // An ∫ whose dx names this index rebinds it: bounds only.
+        const bodyAt = e.args.length - 1;
+        let dx: { v: string } | null = null;
+        try {
+          dx = stripDx(e.args[bodyAt]);
+        } catch { /* multiple dx factors: expansion will report it */ }
+        if (dx && dx.v === idx) {
+          const args = e.args.map((a, k) => (k === bodyAt ? a : substIdx(a, idx, val)));
+          return { kind: 'call', name: 'int', args };
+        }
       }
       return { kind: 'call', name: e.name, args: e.args.map(a => substIdx(a, idx, val)) };
     }
@@ -363,8 +459,117 @@ function expandSum(header: SumCall, body: Expr, ctx: Ctx): Expr {
 }
 
 /**
+ * Cache of expanded integrals. The expansion is a pure function of the
+ * resolved integrand and bounds — slider VALUES stay symbolic inside it — so
+ * a slider drag's per-keystroke recompiles hit this instead of re-running
+ * the symbolic engine and its verification quadratures.
+ */
+const intMemo = new Map<string, Expr>();
+
+/**
+ * Expand an ∫: a verified antiderivative when integrate.ts finds one
+ * (definite values additionally checked against adaptive quadrature — the
+ * fundamental theorem lies across a non-integrable singularity), otherwise
+ * a fixed Gauss–Legendre sum in ordinary Expr form.
+ */
+/** ±1 for a bound written as ±inf/±∞, 0 for a finite (or absent) bound. */
+const infOf = (e: Expr | null): 1 | -1 | 0 => {
+  if (!e) return 0;
+  if (e.kind === 'var' && e.name === 'inf') return 1;
+  if (e.kind === 'neg' && e.a.kind === 'var' && e.a.name === 'inf') return -1;
+  return 0;
+};
+
+/**
+ * Stand-in argument for an antiderivative's limit at ±∞. Far beyond any plot
+ * range, so F(±BIG) matches the true limit wherever F converges by then —
+ * and verifyDefinite runs the REAL improper quadrature, so a
+ * not-yet-converged (or divergent) limit is rejected, never reported.
+ */
+const INT_BIG = 1e8;
+
+function expandInt(bounds: [Expr, Expr] | null, rawBody: Expr, ctx: Ctx): Expr {
+  // Resolve the body FIRST: a d/dt inside consumes its own dt, user
+  // functions inline, and nested (parenthesized) integrals expand — only
+  // then is the surviving d<letter> factor unambiguous.
+  const m = stripDx(rx(rawBody, ctx));
+  if (!m) throw new Error('∫ needs its variable as a dx factor: int(x^2 dx) or int[0..2] x^2 dx.');
+  const v = m.v;
+  const integrand = m.integrand;
+  let lo = bounds && rx(bounds[0], ctx);
+  let hi = bounds && rx(bounds[1], ctx);
+  let loI = infOf(lo);
+  let hiI = infOf(hi);
+  // Normalize a downhill infinite range (int[inf..0]) to the negated uphill one.
+  let flip = false;
+  if (loI === 1 || hiI === -1) {
+    [lo, hi] = [hi, lo];
+    [loI, hiI] = [hiI, loI];
+    flip = true;
+    if (loI === 1 || hiI === -1) return num(0); // int[inf..inf]: equal bounds
+  }
+  const memoKey = JSON.stringify([v, integrand, lo, hi]);
+  const done = (out: Expr): Expr => {
+    const signed = flip ? neg(out) : out;
+    // An enclosing integral's measure rides along: (∫ inner) · residual.
+    return m.residual ? { kind: 'bin', op: '*', a: signed, b: m.residual } : signed;
+  };
+  const hit = intMemo.get(memoKey);
+  if (hit) return done(hit);
+
+  const F = antiderivative(integrand, v);
+  let out: Expr | null = null;
+  if (!bounds) {
+    out = F;
+  } else if (F) {
+    const loSub = loI ? num(loI * INT_BIG) : lo!;
+    const hiSub = hiI ? num(hiI * INT_BIG) : hi!;
+    const val = foldNums(sub(substVars(F, { [v]: hiSub }), substVars(F, { [v]: loSub })));
+    const loChk = loI ? num(loI * Infinity) : lo!;
+    const hiChk = hiI ? num(hiI * Infinity) : hi!;
+    if (verifyDefinite(val, integrand, v, loChk, hiChk)) out = val;
+  }
+  if (!out) {
+    // Numeric fallback. An indefinite ∫ anchors at 0: F(x) = ∫₀ˣ; infinite
+    // ranges transform onto a finite interval first (improperSum).
+    ctx.terms += QUAD_TERMS;
+    if (ctx.terms > SUM_MAX_TOTAL) {
+      throw new Error(`Nested Σ/∫ expand to too many terms (limit ${SUM_MAX_TOTAL} total).`);
+    }
+    out = foldNums(loI || hiI
+      ? improperSum(integrand, v, loI ? null : lo, hiI ? null : hi)
+      : quadratureSum(integrand, v, lo ?? num(0), hi ?? { kind: 'var', name: v }));
+    if (JSON.stringify(out).length > 400_000) {
+      throw new Error('∫ has no closed form here and its numeric expansion is too large.');
+    }
+  }
+  if (intMemo.size > 500) intMemo.clear();
+  intMemo.set(memoKey, out);
+  return done(out);
+}
+
+/** Whether a parsed (unresolved) expression uses ∫ anywhere — after
+ *  resolution the integral is gone, so row readouts test the parse. */
+export function usesIntegral(e: Expr): boolean {
+  switch (e.kind) {
+    case 'num': return false;
+    case 'var': return e.name === 'int';
+    case 'neg': return usesIntegral(e.a);
+    case 'bin': return usesIntegral(e.a) || usesIntegral(e.b);
+    case 'call': return e.name === 'int' || e.args.some(usesIntegral);
+    case 'eq': return usesIntegral(e.l) || usesIntegral(e.r);
+    case 'ineq': return usesIntegral(e.l) || usesIntegral(e.r);
+    case 'vec': return e.items.some(usesIntegral);
+    case 'list': return e.items.some(usesIntegral);
+    case 'piecewise':
+      return e.cases.some(c => usesIntegral(c.cond) || usesIntegral(c.value))
+        || (e.otherwise ? usesIntegral(e.otherwise) : false);
+  }
+}
+
+/**
  * Inline user-function calls, resolve d/dx derivative notation, and expand
- * Σ/Π sums (post-order).
+ * Σ/Π sums and ∫ integrals (post-order).
  */
 export function resolveExpr(e: Expr, getFn: GetFn, opts: ResolveOpts = {}): Expr {
   return rx(e, { getFn, opts, terms: 0 });
@@ -379,11 +584,14 @@ function rx(e: Expr, ctx: Ctx): Expr {
     case 'neg': return { kind: 'neg', a: rx(e.a, ctx) };
     case 'bin': {
       if (e.op === '*' || e.op === '/') {
-        // Σ headers capture their trailing product chain before it resolves,
-        // so `sum[n=1..N] sin(n x)/n` divides each term, not the whole sum.
+        // Σ/∫ headers capture their trailing product chain before it
+        // resolves, so `sum[n=1..N] sin(n x)/n` divides each term, not the
+        // whole sum, and `int[0..1] x^2 dx` binds through to its dx.
         const m = splitSumChain(e);
         if (m) {
-          const body = expandSum(m.header, m.body, ctx);
+          const body = isSumHeader(m.header)
+            ? expandSum(m.header, m.body, ctx)
+            : expandInt(intBounds(m.header), m.body, ctx);
           return m.coeff ? { kind: 'bin', op: m.op, a: rx(m.coeff, ctx), b: body } : body;
         }
       }
@@ -408,7 +616,12 @@ function rx(e: Expr, ctx: Ctx): Expr {
         }
         return expandSum(e as SumCall, e.args[3], ctx);
       }
-      if (e.name === '[range]') throw new Error("'..' ranges only appear in sum(n=1..N, …) or prod(…).");
+      if (e.name === 'int') {
+        if (e.args.length === 2) throw new Error('∫ needs a body: write int[a..b] f(x) dx.');
+        const body = e.args[e.args.length - 1];
+        return expandInt(e.args.length === 3 ? [e.args[0], e.args[1]] : null, body, ctx);
+      }
+      if (e.name === '[range]') throw new Error("'..' ranges only appear in sum(n=1..N, …), prod(…) or int[a..b].");
       const args = e.args.map(x => rx(x, ctx));
       const fn = getFn(e.name);
       if (fn) {
@@ -744,7 +957,9 @@ export function buildDefs(raw: Definition[]): BuiltDefs {
   for (const [name, e] of defs.consts) {
     for (const fv of freeVars(e)) {
       if (fv !== 't' && !constNames.has(fv) && !stateNames.has(fv)) {
-        errors.set(name, `${name} can only depend on other constants and t (found ${fv}).`);
+        errors.set(name, fv === 'inf'
+          ? `inf only works as an ∫ bound — write it inline: int[-inf..x] f(x) dx.`
+          : `${name} can only depend on other constants and t (found ${fv}).`);
         defs.consts.delete(name);
         break;
       }

@@ -19,7 +19,7 @@ import { type Expr, evaluate, freeVars } from './expr.ts';
 
 // --- exact rationals (bigint numerator / positive bigint denominator) ---
 
-interface Frac { n: bigint; d: bigint }
+export interface Frac { n: bigint; d: bigint }
 
 function bgcd(a: bigint, b: bigint): bigint {
   a = a < 0n ? -a : a;
@@ -28,7 +28,7 @@ function bgcd(a: bigint, b: bigint): bigint {
   return a;
 }
 
-function frac(n: bigint, d: bigint): Frac {
+export function frac(n: bigint, d: bigint): Frac {
   if (d < 0n) { n = -n; d = -d; }
   const g = bgcd(n, d) || 1n;
   return { n: n / g, d: d / g };
@@ -54,7 +54,7 @@ function fromNumber(v: number): Frac | null {
 
 // --- polynomials as dense coefficient arrays, ascending degree ---
 
-type FPoly = Frac[];
+export type FPoly = Frac[];
 
 function ftrim(p: FPoly): FPoly {
   let n = p.length;
@@ -62,17 +62,17 @@ function ftrim(p: FPoly): FPoly {
   return p.slice(0, n);
 }
 
-function fpadd(a: FPoly, b: FPoly): FPoly {
+export function fpadd(a: FPoly, b: FPoly): FPoly {
   const out: FPoly = [];
   for (let i = 0; i < Math.max(a.length, b.length); i++) out.push(fadd(a[i] ?? F0, b[i] ?? F0));
   return ftrim(out);
 }
 
-function fpscale(a: FPoly, s: Frac): FPoly {
+export function fpscale(a: FPoly, s: Frac): FPoly {
   return ftrim(a.map(c => fmul(c, s)));
 }
 
-function fpmul(a: FPoly, b: FPoly): FPoly {
+export function fpmul(a: FPoly, b: FPoly): FPoly {
   if (!a.length || !b.length) return [];
   const out: FPoly = Array.from({ length: a.length + b.length - 1 }, () => F0);
   for (let i = 0; i < a.length; i++) {
@@ -81,12 +81,12 @@ function fpmul(a: FPoly, b: FPoly): FPoly {
   return ftrim(out);
 }
 
-function fpderiv(a: FPoly): FPoly {
+export function fpderiv(a: FPoly): FPoly {
   return ftrim(a.slice(1).map((c, i) => fmul(c, { n: BigInt(i + 1), d: 1n })));
 }
 
 /** Long division; returns quotient and remainder. b must be non-zero. */
-function fpdivmod(a: FPoly, b: FPoly): { q: FPoly; r: FPoly } {
+export function fpdivmod(a: FPoly, b: FPoly): { q: FPoly; r: FPoly } {
   const q: FPoly = [];
   let r = a.slice();
   const db = b.length - 1;
@@ -104,14 +104,14 @@ function fpdivmod(a: FPoly, b: FPoly): { q: FPoly; r: FPoly } {
 }
 
 /** Division known to be exact (used inside Yun's algorithm). */
-function fpdivExact(a: FPoly, b: FPoly): FPoly {
+export function fpdivExact(a: FPoly, b: FPoly): FPoly {
   const { q, r } = fpdivmod(a, b);
   if (r.length) throw new Error('poly: inexact division');
   return q;
 }
 
 /** Clear denominators and divide by integer content → primitive ℤ[x]. */
-function primitive(p: FPoly): FPoly {
+export function primitive(p: FPoly): FPoly {
   if (!p.length) return [];
   let l = 1n;
   for (const c of p) l = (l / bgcd(l, c.d)) * c.d;
@@ -123,7 +123,7 @@ function primitive(p: FPoly): FPoly {
 }
 
 /** Polynomial gcd via Euclid with primitive-part reduction (controls blowup). */
-function fpgcd(a: FPoly, b: FPoly): FPoly {
+export function fpgcd(a: FPoly, b: FPoly): FPoly {
   let x = primitive(a);
   let y = primitive(b);
   if (x.length < y.length) [x, y] = [y, x];
@@ -133,6 +133,28 @@ function fpgcd(a: FPoly, b: FPoly): FPoly {
     y = primitive(r);
   }
   return x;
+}
+
+/**
+ * Extended Euclid: g = gcd(a, b) with s·a + t·b = g (g as fpgcd computes it,
+ * up to a rational scale absorbed into s and t). Exact Frac arithmetic, no
+ * primitive-part shortcuts — the cofactors are the point (Hermite reduction
+ * in integrate.ts solves A = s·D + t·D′ with them).
+ */
+export function fpextgcd(a: FPoly, b: FPoly): { g: FPoly; s: FPoly; t: FPoly } {
+  let r0 = a.slice();
+  let r1 = b.slice();
+  let s0: FPoly = [{ n: 1n, d: 1n }];
+  let s1: FPoly = [];
+  let t0: FPoly = [];
+  let t1: FPoly = [{ n: 1n, d: 1n }];
+  while (r1.length) {
+    const { q, r } = fpdivmod(r0, r1);
+    [r0, r1] = [r1, r];
+    [s0, s1] = [s1, fpadd(s0, fpscale(fpmul(q, s1), { n: -1n, d: 1n }))];
+    [t0, t1] = [t1, fpadd(t0, fpscale(fpmul(q, t1), { n: -1n, d: 1n }))];
+  }
+  return { g: r0, s: s0, t: t0 };
 }
 
 // --- expression → polynomial coefficients ---
@@ -249,7 +271,7 @@ function polyIn(e: Expr, v: string): FPoly | null {
 // --- Yun's square-free decomposition ---
 
 /** f = ∏ out[j].p ^ out[j].mult with each p square-free and pairwise coprime. */
-function squareFree(f: FPoly): Array<{ p: FPoly; mult: number }> {
+export function squareFree(f: FPoly): Array<{ p: FPoly; mult: number }> {
   const df = fpderiv(f);
   const g = fpgcd(f, df);
   if (g.length <= 1) return [{ p: f, mult: 1 }];
@@ -434,7 +456,7 @@ function bitLength(x: bigint): number {
 }
 
 /** All real roots of a square-free primitive integer polynomial. */
-function realRootsSquareFree(p: ZPoly): number[] {
+export function realRootsSquareFree(p: ZPoly): number[] {
   const roots: number[] = [];
   p = p.slice();
   while (p.length && p[0] === 0n) {

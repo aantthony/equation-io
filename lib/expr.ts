@@ -45,8 +45,8 @@ export const FUNCTIONS = new Set([
   // Small-matrix helpers (det, trace, matvec, linear solve), also lowered
   // symbolically — Cramer's rule for 2×2 and 3×3 (see mat.ts).
   'det', 'trace', 'solve',
-  // Not real functions: Σ/Π binders, expanded symbolically by resolveExpr.
-  'sum', 'prod',
+  // Not real functions: Σ/Π/∫ binders, expanded symbolically by resolveExpr.
+  'sum', 'prod', 'int',
   // Whole-expression plot modes (see classify): domain coloring, conformal
   // grids, escape-time iteration, and swept tubes.
   'domain', 'conformal', 'iter', 'tube',
@@ -234,6 +234,7 @@ const ops = operators<PNode>({
     if (a?.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
     const name = canonicalFn(a.name);
     if (name === 'sum' || name === 'prod') return sumCall(name, b);
+    if (name === 'int') return intCall(b);
     // Tuple literals inside a call flatten into the argument list, so
     // tube((a, b, c)) === tube(a, b, c) and |(3, 4)| reaches abs as (3, 4);
     // geometry statements re-pair adjacent scalars into points (lib/geom.ts).
@@ -244,6 +245,27 @@ const ops = operators<PNode>({
 });
 
 const isRange = (e: Expr): e is Expr & { kind: 'call' } => e.kind === 'call' && e.name === '[range]';
+
+/**
+ * Shape an ∫ into a call node: args are [lo, hi] for the header form
+ * `int[a..b] …` (body bound from its product chain, like Σ), [body] for the
+ * indefinite `int(f dx)`, and [lo, hi, body] for `int(a..b, f dx)`.
+ * resolveExpr integrates all of them symbolically (or expands a quadrature).
+ */
+function intCall(b: PNode | null | undefined): Expr {
+  const usage = () => new Error('Expected int(f(x) dx) or int[a..b] f(x) dx.');
+  if (!b || b.kind === 'popen') throw usage();
+  const items = b.kind === 'series' ? b.items.map(asExpr) : [asExpr(b)];
+  const ranges = items.filter(isRange);
+  const bodies = items.filter(x => !isRange(x));
+  if (!items.length || ranges.length > 1 || bodies.length > 1) throw usage();
+  const bounds = ranges.length ? [ranges[0].args[0], ranges[0].args[1]] : [];
+  if (!bodies.length) {
+    if (!bounds.length) throw usage();
+    return { kind: 'call', name: 'int', args: bounds }; // header awaiting its body
+  }
+  return { kind: 'call', name: 'int', args: [...bounds, bodies[0]] };
+}
 
 /**
  * Shape a Σ/Π header into a call node: args are [index, lo, hi] for the
@@ -283,7 +305,7 @@ const syntax: PatternDict = {
   number: /^\d+\.?\d*$/,
   bar: /^\|$/,
   whitespace: /\s$/,
-  symbol: /^[A-Za-z_Σ∑Π∏][A-Za-z_0-9]*'*$/,
+  symbol: /^[A-Za-z_Σ∑Π∏∫∞][A-Za-z_0-9]*'*$/,
   operator: x => !!ops[x] || MULTI_CHAR_OPS.some(m => m.startsWith(x)),
   invalid(x) { throw new Error(`Invalid character: ${JSON.stringify(x)}.`); },
 };
@@ -294,7 +316,8 @@ function op(str: string): Token {
   return { type: 'operator', str, line: -1, loc: [-1, -1] };
 }
 
-const SYMBOL_ALIASES: Record<string, string> = { 'Σ': 'sum', '∑': 'sum', 'Π': 'prod', '∏': 'prod' };
+const SYMBOL_ALIASES: Record<string, string> =
+  { 'Σ': 'sum', '∑': 'sum', 'Π': 'prod', '∏': 'prod', '∫': 'int', '∞': 'inf' };
 
 /**
  * Map Σ/Π glyphs to sum/prod, and repair `1..N`: the greedy number match
