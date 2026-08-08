@@ -131,6 +131,8 @@ html, body {
   /* Keep the panel on screen with many equations: cap it at the viewport
      (12px margin top and bottom) and let #equations scroll inside. */
   max-height: calc(100% - 24px - env(safe-area-inset-bottom));
+  /* A remembered width (panel-resize.ts) from a wider screen re-clamps here. */
+  max-width: calc(100% - 24px - env(safe-area-inset-left) - env(safe-area-inset-right));
   display: flex;
   flex-direction: column;
   background: var(--panel-bg);
@@ -186,6 +188,39 @@ html, body {
   background: var(--panel-border);
 }
 #panel-grip:hover::after { background: var(--muted); }
+
+/* The resize strip (panel-resize.ts): straddles the panel's outer vertical
+   edge — the one away from the pinned corner — below the grip. A grabber
+   pill like the grip's appears on hover; the strip itself stays invisible. */
+#panel-resize {
+  position: absolute;
+  top: 16px;
+  bottom: 0;
+  right: -5px;
+  width: 10px;
+  z-index: 1;
+  cursor: ew-resize;
+  /* No browser pan may start on the strip: its pointermoves keep arriving
+     for the whole drag, same deal as the grip. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#panel.pin-right #panel-resize {
+  right: auto;
+  left: -5px;
+}
+#panel-resize::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 4px;
+  height: 36px;
+  margin: -18px 0 0 -2px;
+  border-radius: 2px;
+}
+#panel-resize:hover::after,
+#panel-resize:active::after { background: var(--panel-border); }
 
 #theme-toggle,
 #state-reset {

@@ -63,6 +63,7 @@ import {
   niceSpacing,
 } from './render2d.ts';
 import { type Camera3D, Renderer3D, type Scene3D, cameraBoxR, drawLabels3D } from './render3d.ts';
+import { initPanelResize } from './panel-resize.ts';
 import { initPanelSwipe } from './panel-swipe.ts';
 import { initTheme, onThemeChange, theme, toggleTheme } from './theme.ts';
 
@@ -2776,6 +2777,13 @@ initPanelSwipe(
   document.getElementById('panel-chip')!,
   document.getElementById('panel-grip')!,
   listEl,
+);
+
+// Drag the strip on the panel's outer vertical edge to resize it (the width
+// persists; double-click resets).
+initPanelResize(
+  document.getElementById('panel')!,
+  document.getElementById('panel-resize')!,
 );
 
 // --- boot ---
