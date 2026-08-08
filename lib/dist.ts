@@ -397,24 +397,32 @@ const mulberry32 = (seed: number) => (): number => {
 
 /**
  * The stratified standard-uniform stream for a variable name: quantile
- * midpoints (i + ½)/N shuffled by a name-seeded permutation. Memoized
- * forever — the stream is a pure function of the name.
+ * midpoints (i + ½)/N shuffled by a permutation seeded from the name and
+ * the current sample salt. Marginals are exact at any salt; the salt only
+ * redraws the *pairing* between variables — the Monte Carlo part. Streams
+ * are memoized per name and refilled in place when the salt has moved on,
+ * so resampling every frame allocates nothing.
  */
-const streams = new Map<string, Float64Array>();
+let streamSalt = 0;
+const streams = new Map<string, { salt: number; u: Float64Array }>();
 function uniformStream(name: string): Float64Array {
   let s = streams.get(name);
-  if (s) return s;
-  s = new Float64Array(SAMPLE_COUNT);
-  for (let i = 0; i < SAMPLE_COUNT; i++) s[i] = (i + 0.5) / SAMPLE_COUNT;
-  const rand = mulberry32(fnv1a(name));
+  if (s && s.salt === streamSalt) return s.u;
+  if (!s) {
+    s = { salt: streamSalt, u: new Float64Array(SAMPLE_COUNT) };
+    streams.set(name, s);
+  }
+  const u = s.u;
+  for (let i = 0; i < SAMPLE_COUNT; i++) u[i] = (i + 0.5) / SAMPLE_COUNT;
+  const rand = mulberry32(fnv1a(name) ^ streamSalt);
   for (let i = SAMPLE_COUNT - 1; i > 0; i--) {
     const j = Math.floor(rand() * (i + 1));
-    const t = s[i];
-    s[i] = s[j];
-    s[j] = t;
+    const t = u[i];
+    u[i] = u[j];
+    u[j] = t;
   }
-  streams.set(name, s);
-  return s;
+  s.salt = streamSalt;
+  return u;
 }
 
 /** Acklam's rational approximation to the standard normal quantile (~1e-9). */
@@ -710,6 +718,241 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
   return { pts, atoms, mean, sd, mass };
 }
 
+// --- deterministic conditional-CDF curves (the quadrature tier) ---
+//
+// Between the exact laws and the Monte Carlo estimate: a derived variable
+// over ONE or TWO independent bases gets its CDF by conditioning,
+//
+//   F(z) = E_X[ P(g(x, Y) ≤ z) ],
+//
+// with both expectations taken over quantile-midpoint grids. The inner
+// grid's sorted g-values are order statistics — known quantiles of the
+// conditional law — so each sorted column IS a conditional CDF read off by
+// linear interpolation; the outer average is the midpoint rule in
+// probability space. Everything is deterministic: no pairing noise, so the
+// flat plateau of Y/(X+1) renders flat, and the density (the differentiated
+// CDF) keeps kinks within a couple of grid cells instead of a kernel
+// bandwidth. A curve computes once per definition + parameter values and
+// survives resample() — there is no noise to redraw. Three or more
+// variables fall through to the sampled tier: the tensor grid would not
+// scale.
+
+const QC_OUTER = 512; // conditioning-variable quantile nodes (two-var case)
+const QC_INNER = 512; // inner-variable grid per node
+const QC_SINGLE = 8192; // inner grid for one-variable transforms
+const QC_BINS = 512; // density grid resolution (matches estimateCurve)
+
+/** The quantile function of a base distribution at these parameter values,
+ *  or null while the parameters are invalid. */
+function quantileClosure(
+  d: BaseDist,
+  env: Record<string, number>,
+): ((u: number) => number) | null {
+  const a = d.args.map(e => evaluate(e, env));
+  if (!a.every(isFinite)) return null;
+  switch (d.kind) {
+    case 'normal':
+      return a[1] > 0 ? u => a[0] + a[1] * normalQuantile(u) : null;
+    case 'uniform':
+      return a[1] > a[0] ? u => a[0] + (a[1] - a[0]) * u : null;
+    case 'exponential':
+      return a[0] > 0 ? u => -Math.log(1 - u) / a[0] : null;
+  }
+}
+
+function conditionalCurve(
+  g: Expr,
+  vars: Array<{ name: string; quantile: (u: number) => number }>,
+  env: Record<string, number>,
+): DensityCurve | null {
+  const outer = vars.length === 2 ? vars[0] : null;
+  const inner = vars[vars.length - 1];
+  const NX = outer ? QC_OUTER : 1;
+  const M = outer ? QC_INNER : QC_SINGLE;
+  const cells = NX * M;
+  const innerCol = new Float64Array(M);
+  for (let j = 0; j < M; j++) innerCol[j] = inner.quantile((j + 0.5) / M);
+  const cols = new Map([[inner.name, innerCol]]);
+
+  // g over the whole grid, one sorted column per conditioning node. (The
+  // typed-array sort is numeric; non-finite values land at the ends.)
+  const sorted: Float64Array[] = [];
+  let finCount = 0;
+  let sum = 0;
+  let sumsq = 0;
+  for (let i = 0; i < NX; i++) {
+    const e = outer ? { ...env, [outer.name]: outer.quantile((i + 0.5) / NX) } : env;
+    const col = evalCols(g, cols, e, M).slice(); // own copy: g = bare var hands back innerCol
+    col.sort();
+    sorted.push(col);
+    for (let j = 0; j < M; j++) {
+      const v = col[j];
+      if (isFinite(v)) {
+        finCount++;
+        sum += v;
+        sumsq += v * v;
+      }
+    }
+  }
+  if (finCount < 16) return null; // (almost) nowhere defined
+  const mean = sum / finCount;
+  const sd = Math.sqrt(Math.max(sumsq / finCount - mean * mean, 0));
+  const mass = finCount / cells;
+
+  // Exactly repeated values are point masses (piecewise branches, floor,
+  // constants): pooled across columns, heavy values become stems, and the
+  // continuous CDF below must not carry their jumps.
+  const runMass = new Map<number, number>();
+  for (const col of sorted) {
+    for (let j = 0; j < M; ) {
+      const v = col[j];
+      let k = j + 1;
+      while (k < M && col[k] === v) k++;
+      if (k - j > 1 && isFinite(v)) runMass.set(v, (runMass.get(v) ?? 0) + (k - j) / cells);
+      j = k;
+    }
+  }
+  let atoms: Array<{ x: number; p: number }> | undefined;
+  const atomValues = new Set<number>();
+  for (const [x, p] of runMass) {
+    if (p >= 0.002) {
+      atomValues.add(x);
+      (atoms ??= []).push({ x, p });
+    }
+  }
+  atoms?.sort((a, b) => a.x - b.x);
+
+  // Drawn range from the continuous part: pooled decimated quantiles, and
+  // the same hard-edge rule as the sampler — an end the tail-trim cannot
+  // reach is the support edge itself and must cut off straight.
+  let contCount = 0;
+  let cmin = Infinity;
+  let cmax = -Infinity;
+  for (const col of sorted) {
+    for (let j = 0; j < M; j++) {
+      const v = col[j];
+      if (isFinite(v) && !atomValues.has(v)) {
+        contCount++;
+        if (v < cmin) cmin = v;
+        if (v > cmax) cmax = v;
+      }
+    }
+  }
+  if (contCount < 16 || !(cmax > cmin)) return { pts: [], atoms, mean, sd, mass };
+  const stride = Math.max(1, Math.floor(contCount / 8192));
+  const pool: number[] = [];
+  let seen = 0;
+  for (const col of sorted) {
+    for (let j = 0; j < M; j++) {
+      const v = col[j];
+      if (isFinite(v) && !atomValues.has(v) && seen++ % stride === 0) pool.push(v);
+    }
+  }
+  pool.sort((a, b) => a - b);
+  const q = (p: number) => pool[Math.min(pool.length - 1, Math.floor(p * pool.length))];
+  const span = q(0.995) - q(0.005);
+  if (!(span > 0)) return { pts: [], atoms, mean, sd, mass };
+  const hardLo = q(0.005) - cmin <= 0.25 * span;
+  const hardHi = cmax - q(0.995) <= 0.25 * span;
+  const lo = hardLo ? cmin : q(0.005);
+  const hi = hardHi ? cmax : q(0.995);
+
+  // Accumulate F on the grid: each column contributes its interpolated
+  // conditional CDF with equal weight (quantile midpoints carry equal
+  // probability). Order statistics sit at run-midpoint quantiles; half-gap
+  // extensions carry F to 0 and to the column's full continuous mass —
+  // exact for a locally linear g, so a uniform's support edge lands exactly.
+  const B = QC_BINS;
+  const dz = (hi - lo) / B;
+  const F = new Float64Array(B + 1);
+  const w = 1 / NX;
+  for (const col of sorted) {
+    const nx: number[] = [];
+    const nF: number[] = [];
+    let cum = 0;
+    for (let j = 0; j < M; ) {
+      const v = col[j];
+      let k = j + 1;
+      while (k < M && col[k] === v) k++;
+      if (isFinite(v) && !atomValues.has(v)) {
+        nx.push(v);
+        nF.push((cum + (k - j) / 2) / M);
+        cum += k - j;
+      }
+      j = k;
+    }
+    if (!cum) continue;
+    const top = cum / M;
+    let zeroX: number;
+    let topX: number;
+    if (nx.length > 1) {
+      const last = nx.length - 1;
+      const s0 = (nF[1] - nF[0]) / (nx[1] - nx[0]);
+      const s1 = (nF[last] - nF[last - 1]) / (nx[last] - nx[last - 1]);
+      zeroX = nx[0] - nF[0] / s0;
+      topX = nx[last] + (top - nF[last]) / s1;
+    } else {
+      zeroX = nx[0] - dz / 2; // a lone value: a step smeared over one cell
+      topX = nx[0] + dz / 2;
+    }
+    const bx = [zeroX, ...nx, topX];
+    const bF = [0, ...nF, top];
+    let p = 0;
+    for (let k = 0; k <= B; k++) {
+      const z = lo + k * dz;
+      if (z <= zeroX) continue;
+      if (z >= topX) {
+        F[k] += w * top;
+        continue;
+      }
+      while (bx[p + 1] < z) p++;
+      F[k] += w * (bF[p] + ((z - bx[p]) / (bx[p + 1] - bx[p])) * (bF[p + 1] - bF[p]));
+    }
+  }
+
+  // The density is the differentiated CDF. A narrow binomial pass then
+  // absorbs the midpoint rule's cell-scale ripple (worst where the
+  // conditional CDF has a moving square-root edge, e.g. X²+Y²) at the cost
+  // of rounding kinks over ±2 cells — far inside a line width.
+  const raw = new Float64Array(B + 1);
+  for (let k = 0; k <= B; k++) {
+    const a = k === 0 ? F[0] : F[k - 1];
+    const b = k === B ? F[B] : F[k + 1];
+    raw[k] = Math.max(0, (b - a) / (k === 0 || k === B ? dz : 2 * dz));
+  }
+  const KERNEL = [1, 4, 6, 4, 1];
+  const dens = new Float64Array(B + 1);
+  for (let k = 0; k <= B; k++) {
+    let s = 0;
+    let ws = 0;
+    for (let d = -2; d <= 2; d++) {
+      const j = k + d;
+      if (j < 0 || j > B) continue; // clipped at ends, renormalized below
+      s += KERNEL[d + 2] * raw[j];
+      ws += KERNEL[d + 2];
+    }
+    dens[k] = s / ws;
+  }
+
+  const pts: number[] = [];
+  if (hardLo) pts.push(lo, 0); // the jump itself: a vertical at the edge
+  for (let k = 0; k <= B; k++) pts.push(lo + k * dz, dens[k]);
+  if (hardHi) pts.push(hi, 0);
+  // The curve's area is the in-window continuous probability — the promise
+  // a density plot makes. Differencing and smoothing each perturb it a
+  // little, so restore it exactly.
+  let area = 0;
+  for (let i = 0; i + 3 < pts.length; i += 2) {
+    area += ((pts[i + 1] + pts[i + 3]) / 2) * (pts[i + 2] - pts[i]);
+  }
+  const target = F[B] - F[0];
+  if (area > 0 && target > 0) {
+    const scale = target / area;
+    for (let i = 1; i < pts.length; i += 2) pts[i] *= scale;
+  }
+  return { pts, atoms, mean, sd, mass };
+}
+
 /** Linear interpolation of a density polyline at x (0 outside its range). */
 export function densityAt(curve: DensityCurve, x: number): number {
   const p = curve.pts;
@@ -744,7 +987,12 @@ interface CacheEntry {
   sig: string;
   /** Joint sample column (present once columns() ran for this sig). */
   col?: Float64Array;
+  /** Exact usum piecewise-polynomial curve. */
   curve?: DensityCurve | null;
+  /** Deterministic conditional-CDF curve (the quadrature tier). */
+  qc?: DensityCurve | null;
+  /** Sampled KDE estimate — the last-resort tier, dropped by resample(). */
+  est?: DensityCurve | null;
   /** Quadrature moments (present once quadMoments ran for this sig). */
   qm?: { mean: number; sd: number; mass: number } | null;
 }
@@ -1007,6 +1255,25 @@ export class RVSystem {
 
   size(): number {
     return this.rvs.size;
+  }
+
+  /**
+   * Redraw the joint sample: a fresh shuffle salt, and the sample-derived
+   * cache fields (columns, KDE estimates) dropped so they recompute with
+   * new pairing noise. The app calls this once per rendered frame — the KDE
+   * wobble then shimmers like the sampling noise it is instead of freezing
+   * into structure that looks real. Deterministic artifacts survive: exact
+   * laws, quadrature moments, and conditional-CDF curves have no noise to
+   * redraw. Tests never call this, so the default salt keeps them
+   * deterministic.
+   */
+  resample(salt: number = (Math.random() * 0x100000000) >>> 0): void {
+    if (salt === streamSalt) return;
+    streamSalt = salt;
+    for (const e of this.cache.values()) {
+      delete e.col;
+      delete e.est;
+    }
   }
 
   /** End a recompile: drop cached samples of variables no longer declared. */
@@ -1305,9 +1572,11 @@ export class RVSystem {
   }
 
   /**
-   * The density curve for a variable: the *exact* piecewise polynomial when
-   * its law is a uniform convolution, the sample estimate otherwise. (Rows
-   * whose law is a closed-form pdf never come here — they draw through the
+   * The density curve for a variable, by the cheapest honest tier: the
+   * *exact* piecewise polynomial when its law is a uniform convolution, the
+   * deterministic conditional-CDF curve for transforms of one or two
+   * independent bases, the sample estimate as the last resort. (Rows whose
+   * law is a closed-form pdf never come here — they draw through the
    * shader.)
    */
   curve(name: string, env: Record<string, number>): DensityCurve | null {
@@ -1322,10 +1591,39 @@ export class RVSystem {
       }
       return slot.curve;
     }
+    const rv = this.rvs.get(name);
+    if (!rv) throw new Error(`${name} has an error in its definition.`);
+    const slot = this.entry(name, this.sig(rv, env));
+    if (slot.qc === undefined) slot.qc = this.condCurve(name, env);
+    if (slot.qc) return slot.qc;
     const col = this.columns(name, env);
     const entry = this.cache.get(name)!;
-    if (entry.curve === undefined) entry.curve = estimateCurve(col);
-    return entry.curve;
+    if (entry.est === undefined) entry.est = estimateCurve(col);
+    return entry.est;
+  }
+
+  /** The conditional-CDF quadrature curve for a derived variable over one
+   *  or two independent bases, or null when that tier does not apply. */
+  private condCurve(name: string, env: Record<string, number>): DensityCurve | null {
+    const rv = this.rvs.get(name);
+    if (rv?.kind !== 'derived') return null;
+    const g = this.grounded(name);
+    if (!g) return null;
+    const bases = [...freeVars(g)].filter(n => this.rvs.has(n)).sort();
+    if (!bases.length || bases.length > 2) return null;
+    const vars: Array<{ name: string; quantile: (u: number) => number }> = [];
+    for (const n of bases) {
+      const b = this.rvs.get(n)!;
+      if (b.kind !== 'base') return null;
+      const quantile = quantileClosure(b.dist, env);
+      if (!quantile) return null;
+      vars.push({ name: n, quantile });
+    }
+    try {
+      return conditionalCurve(g, vars, env);
+    } catch {
+      return null; // unbound parameter or broken expression: the sampled tier reports it
+    }
   }
 
   /** Exact mean and sd under the variable's law, or null when sampled. */
@@ -1433,10 +1731,13 @@ export class RVSystem {
 
   /** The mean of a variable: exact under its law when one is derivable,
    *  quadrature against the base pdf for one-variable transforms, otherwise
-   *  the finite-sample mean (NaN when nothing is finite). */
+   *  the curve's mean (quadrature-grade for conditional-CDF curves, the
+   *  finite-sample mean for estimates; NaN when nothing is finite). */
   mean(name: string, env: Record<string, number>): number {
     const m = this.exactMoments(name, env) ?? this.quadMoments(name, env);
     if (m) return m.mean;
+    const c = this.curve(name, env);
+    if (c) return c.mean;
     const col = this.columns(name, env);
     let sum = 0;
     let n = 0;

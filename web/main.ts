@@ -367,6 +367,11 @@ function render() {
     constEnv = { ...stateVals };
   }
 
+  // Fresh joint sample every frame: estimated density curves shimmer with
+  // their true sampling noise instead of freezing one pairing into wiggles
+  // that read as structure. Exact laws don't sample and are unaffected.
+  if (rvSys.size() > 0) rvSys.resample();
+
   gl.clearColor(theme.bg[0], theme.bg[1], theme.bg[2], 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
