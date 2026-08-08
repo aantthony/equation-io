@@ -58,8 +58,12 @@
     <div id="panel-grip" title="Drag to move the panel; flick it off-screen to hide it" aria-hidden="true"></div>
     <!-- Resize strip on the outer vertical edge (the pinned edge stays
          anchored). Drag to change the panel width; double-click to reset.
-         See panel-resize.ts. -->
-    <div id="panel-resize" title="Drag to resize the panel; double-click to reset" aria-hidden="true"></div>
+         Also an ARIA window splitter: focusable, arrows resize, Home/End
+         jump to min/max, Enter resets. panel-resize.ts keeps the aria-value*
+         attributes current. -->
+    <div id="panel-resize" role="separator" aria-orientation="vertical" tabindex="0"
+         aria-label="Resize the equations panel"
+         title="Drag to resize the panel; double-click to reset"></div>
     <button id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">☾</button>
     <button id="state-reset" type="button" aria-label="Restart the simulation" title="Restart the simulation" hidden>↻</button>
     <div id="equations" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Equations, one per line" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="enter"></div>

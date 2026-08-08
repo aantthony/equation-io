@@ -221,6 +221,10 @@ html, body {
 }
 #panel-resize:hover::after,
 #panel-resize:active::after { background: var(--panel-border); }
+/* Keyboard focus shows the pill in the accent color instead of the default
+   outline, which would trace the whole off-edge strip. */
+#panel-resize { outline: none; }
+#panel-resize:focus-visible::after { background: var(--accent); }
 
 #theme-toggle,
 #state-reset {

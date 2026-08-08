@@ -8,6 +8,12 @@
  * fits on screen, and a CSS max-width re-clamps a remembered width on a
  * screen narrower than the last visit.
  *
+ * The strip is also an ARIA window splitter (role="separator", focusable):
+ * arrow keys resize — the arrow moves the edge in that screen direction, so
+ * the panel's pin side decides whether that widens or narrows — Home/End
+ * jump to the min/max width, and Enter resets to the default. The
+ * aria-value* attributes track the current/min/max width in pixels.
+ *
  * Touch drags on the strip are resizes, never panel throws: the strip stops
  * its touchstart from reaching panel-swipe.ts, and its touch-action: none
  * keeps the browser from panning so pointermoves keep arriving.
@@ -19,17 +25,46 @@ const WIDTH_KEY = 'eq-panel-width';
 const MIN_WIDTH = 220;
 /** Screen margin on each side while resizing (matches the panel's CSS). */
 const MARGIN = 12;
+/** Arrow-key resize step (px). */
+const KEY_STEP = 16;
 
 export function initPanelResize(panel: HTMLElement, handle: HTMLElement): void {
-  const clampWidth = (w: number) =>
-    Math.round(Math.min(Math.max(w, MIN_WIDTH), document.documentElement.clientWidth - 2 * MARGIN));
+  const maxWidth = () => document.documentElement.clientWidth - 2 * MARGIN;
+  const clampWidth = (w: number) => Math.round(Math.min(Math.max(w, MIN_WIDTH), maxWidth()));
+
+  const syncAria = () => {
+    handle.setAttribute('aria-valuemin', String(MIN_WIDTH));
+    handle.setAttribute('aria-valuemax', String(Math.round(maxWidth())));
+    handle.setAttribute('aria-valuenow', String(Math.round(panel.getBoundingClientRect().width)));
+  };
+
+  const save = () => {
+    try {
+      localStorage.setItem(WIDTH_KEY, String(Math.round(panel.getBoundingClientRect().width)));
+    } catch {} // private mode: the width just won't stick across visits
+  };
+
+  const setWidth = (w: number) => {
+    panel.style.width = `${clampWidth(w)}px`;
+    syncAria();
+  };
+
+  /** Back to the stylesheet default, forgetting the stored width. */
+  const reset = () => {
+    panel.style.width = '';
+    try {
+      localStorage.removeItem(WIDTH_KEY);
+    } catch {}
+    syncAria();
+  };
 
   // Restore the remembered width, re-clamped: the screen may have shrunk
   // since it was saved.
   try {
     const w = Number(localStorage.getItem(WIDTH_KEY));
-    if (w >= MIN_WIDTH) panel.style.width = `${clampWidth(w)}px`;
+    if (w >= MIN_WIDTH) setWidth(w);
   } catch {}
+  syncAria();
 
   let drag: { id: number; x0: number; w0: number } | null = null;
 
@@ -48,25 +83,43 @@ export function initPanelResize(panel: HTMLElement, handle: HTMLElement): void {
     // pinned left, dragging right widens; pinned right, mirrored.
     const dx = e.clientX - drag.x0;
     const dw = panel.classList.contains('pin-right') ? -dx : dx;
-    panel.style.width = `${clampWidth(drag.w0 + dw)}px`;
+    setWidth(drag.w0 + dw);
   });
 
   const end = (e: PointerEvent) => {
     if (!drag || e.pointerId !== drag.id) return;
     drag = null;
-    try {
-      localStorage.setItem(WIDTH_KEY, String(parseFloat(panel.style.width)));
-    } catch {} // private mode: the width just won't stick across visits
+    save();
   };
   handle.addEventListener('pointerup', end);
   handle.addEventListener('pointercancel', end);
 
-  handle.addEventListener('dblclick', () => {
-    panel.style.width = '';
-    try {
-      localStorage.removeItem(WIDTH_KEY);
-    } catch {}
+  handle.addEventListener('dblclick', reset);
+
+  handle.addEventListener('keydown', e => {
+    // Arrows move the edge in that screen direction: away from the pinned
+    // side widens (same mapping the pointer drag uses).
+    const edgeStep = e.key === 'ArrowRight' ? KEY_STEP : e.key === 'ArrowLeft' ? -KEY_STEP : 0;
+    if (edgeStep) {
+      const dw = panel.classList.contains('pin-right') ? -edgeStep : edgeStep;
+      setWidth(panel.getBoundingClientRect().width + dw);
+      save();
+    } else if (e.key === 'Home') {
+      setWidth(MIN_WIDTH);
+      save();
+    } else if (e.key === 'End') {
+      setWidth(maxWidth());
+      save();
+    } else if (e.key === 'Enter') {
+      reset();
+    } else {
+      return;
+    }
+    e.preventDefault();
   });
+
+  // The max (and the clamped current width) move with the viewport.
+  window.addEventListener('resize', syncAria);
 
   // Keep panel-swipe.ts from treating a resize touch as a panel drag.
   handle.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
