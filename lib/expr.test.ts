@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluate, Expr, freeVars, ISPRIME_MAX, parseExpr } from './expr.ts';
-import { toGLSL } from './glsl.ts';
+import { evaluate, Expr, freeVars, ISPRIME_MAX, LANCZOS, parseExpr } from './expr.ts';
+import { GLSL_PRELUDE, toGLSL } from './glsl.ts';
 
 function evalExpr(e: Expr, env: Record<string, number>): number {
   switch (e.kind) {
@@ -204,6 +204,26 @@ describe('factorial and special functions', () => {
     expect(toGLSL(parseExpr('x!'))).toBe('eq_factorial(x)');
     expect(toGLSL(parseExpr('sinc(x)'))).toBe('eq_sinc(x)');
     expect(toGLSL(parseExpr('coth(x)'))).toBe('eq_coth(x)');
+  });
+
+  it('feeds the one LANCZOS array into the GLSL prelude', () => {
+    for (const c of LANCZOS) expect(GLSL_PRELUDE).toContain(`+ ${c} / (z + `);
+  });
+
+  it('rejects != instead of reading it as postfix factorial', () => {
+    expect(() => parseExpr('x != 2')).toThrow(/!=/);
+    expect(() => parseExpr('x!=2')).toThrow(/!=/);
+    expect(ev('x! = 2', { x: 3 })).toBe(4); // spaced: the equation x! = 2, as l - r
+  });
+
+  it('stays finite up to the true double overflow (log-space Lanczos)', () => {
+    expect(ev('gamma(150)') / ev('149!')).toBeCloseTo(1, 9);
+    expect(ev('gamma(171)') / ev('170!')).toBeCloseTo(1, 9);
+    expect(ev('gamma(172)')).toBe(Infinity); // 171! really is beyond a double
+    expect(ev('169.5!')).toBeLessThan(Infinity);
+    // Reflection stays finite too: Γ(x)Γ(1−x) = π/sin(πx) deep in the negatives.
+    expect(Math.abs(ev('gamma(-142.7)'))).toBeGreaterThan(0);
+    expect(ev('gamma(-142.7) gamma(143.7)')).toBeCloseTo(Math.PI / Math.sin(-142.7 * Math.PI), 6);
   });
 });
 

@@ -53,6 +53,13 @@ export const FUNCTIONS = new Set([
 ]);
 
 /**
+ * Builtins added after graphs existed in the wild: a definition or random
+ * variable may claim these names, shadowing the builtin, so a saved graph
+ * that defines its own `gamma(x) = …` or `sinc = …` keeps its meaning.
+ */
+export const SHADOWABLE_FNS: ReadonlySet<string> = new Set(['gamma', 'factorial', 'sinc', 'coth']);
+
+/**
  * Flatten a (possibly chained) inequality into its comparisons; comparison k
  * compares the previous comparison's right side, so 0 < y < x yields
  * [0 < y, y < x].
@@ -203,6 +210,13 @@ const ops = operators<PNode>({
   }),
 
   ':': BinaryInfix<PNode>((a, b): PNode => ({ kind: 'pcase', cond: asExpr(a), value: asExpr(b) })),
+
+  // Recognized as one token so it never half-matches as postfix '!' followed
+  // by '=' — x != 2 would silently graph factorial(x) = 2. There is no ≠
+  // relation to plot, so it only explains itself.
+  '!=': BinaryInfix<PNode>((): PNode => {
+    throw new Error("'!=' is not supported — for a factorial equation, put a space before '=': x! = 2.");
+  }),
 
   '<': asIneq('<'),
   '<=': asIneq('<='),
@@ -361,9 +375,11 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   for (const token of bare) {
     if (token.type === 'whitespace') continue;
 
-    // Postfix '!' ends a value, so 5!x and 3!(x+1) multiply implicitly.
+    // A postfix operator (per the ops table: '!') ends a value, so 5!x and
+    // 3!(x+1) multiply implicitly.
+    const afterPostfix = last?.type === 'operator' && ops[last.str]?.n === 1 && !ops[last.str].right;
     const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol'
-      || last.type === 'parenclose' || (last.type === 'operator' && last.str === '!'));
+      || last.type === 'parenclose' || afterPostfix);
 
     if (token.type === 'bar') {
       // |x| is abs(x): a bar after a value closes the innermost open bar;
@@ -534,8 +550,10 @@ export function realPow(a: number, b: number): number {
   return NaN; // no small-denominator rational found: irrational-looking exponent
 }
 
-/** Lanczos coefficients (g = 5, n = 6): relative error < 2e-10 over the reals. */
-const LANCZOS = [
+/** Lanczos coefficients (g = 5, n = 6): relative error < 2e-10 over the
+ *  reals. Interpolated into the eq_gamma() GLSL twin (glsl.ts) too, so both
+ *  implementations share this one array. */
+export const LANCZOS = [
   76.18009172947146, -86.50532032941677, 24.01409824083091,
   -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5,
 ];
@@ -557,18 +575,26 @@ export function gammaFn(x: number): number {
   let ser = 1.000000000190015;
   for (let i = 0; i < LANCZOS.length; i++) ser += LANCZOS[i] / (z + i + 1);
   const t = z + 5.5;
-  return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * ser;
+  // Assembled in log space: a bare pow(t, z + 0.5) factor overflows a double
+  // from x ≈ 143, well before Γ itself does.
+  return Math.exp((z + 0.5) * Math.log(t) - t + Math.log(2.5066282746310002 * ser));
 }
+
+/** k! for k = 0..170, every factorial a double can hold. */
+const FACTORIALS = new Float64Array(171);
+FACTORIALS[0] = 1;
+for (let k = 1; k < FACTORIALS.length; k++) FACTORIALS[k] = FACTORIALS[k - 1] * k;
 
 /** x! = Γ(x + 1), except exact for the whole numbers a double can hold. */
 export function factorialFn(x: number): number {
-  if (Number.isInteger(x) && x >= 0 && x <= 170) {
-    let r = 1;
-    for (let k = 2; k <= x; k++) r *= k;
-    return r;
-  }
+  if (Number.isInteger(x) && x >= 0 && x <= 170) return FACTORIALS[x];
   return gammaFn(x + 1);
 }
+
+/** sin(x)/x with the removable hole filled: sinc(0) = 1. */
+export const sincFn = (x: number): number => (x === 0 ? 1 : Math.sin(x) / x);
+
+export const cothFn = (x: number): number => 1 / Math.tanh(x);
 
 export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -600,8 +626,8 @@ export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   },
   gamma: gammaFn,
   factorial: factorialFn,
-  sinc: x => (x === 0 ? 1 : Math.sin(x) / x),
-  coth: x => 1 / Math.tanh(x),
+  sinc: sincFn,
+  coth: cothFn,
 };
 
 /** Numerically evaluate a scalar expression with the given variable bindings. */

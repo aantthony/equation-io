@@ -30,7 +30,7 @@
 import {
   EVAL_FNS,
   type Expr,
-  FUNCTIONS,
+  SHADOWABLE_FNS,
   builtinFn,
   evaluate,
   freeVars,
@@ -41,7 +41,7 @@ import {
   substVars,
 } from './expr.ts';
 import { usesComplex } from './complex.ts';
-import { type GetFn, RESERVED, type ResolveOpts, resolveExpr } from './defs.ts';
+import { type GetFn, RESERVED, type ResolveOpts, nameable, resolveExpr } from './defs.ts';
 import { quadrature } from './integrate.ts';
 
 // --- base distributions ---
@@ -317,7 +317,7 @@ export function scanRandomRows(texts: readonly (string | null)[]): {
     }
     const m = CONST_ROW_RE.exec(text);
     // The name must be claimable as a definition (`e = X` stays an equation).
-    if (m && !FUNCTIONS.has(m[1]) && !RESERVED.has(m[1]) && !m[1].startsWith('u_')) {
+    if (m && nameable(m[1])) {
       candidates.set(i, { name: m[1], rhs: m[2] });
     }
   });
@@ -1523,7 +1523,10 @@ export function buildRVSystem(sys: RVSystem, scan: ReturnType<typeof scanRandomR
 
   const claim = (i: number, name: string): boolean => {
     rowRV.set(i, name);
-    if (RESERVED.has(name) || builtinFn(name)) {
+    // Late-addition builtins (gamma, sinc, …) stay claimable: a graph saved
+    // before they existed may use one as a random variable name.
+    const builtin = builtinFn(name);
+    if (RESERVED.has(name) || (builtin && !SHADOWABLE_FNS.has(builtin))) {
       errors.set(i, `Cannot use ${name} as a random variable name.`);
     } else if (sys.has(name) || opts.taken(name)) {
       errors.set(i, `${name} is already defined.`);

@@ -4,7 +4,7 @@
  * An equation l = r compiles to the scalar field F = l - r; the graph is the
  * zero set of F, which the renderers extract in a fragment shader.
  */
-import { type Expr, ISPRIME_MAX, ineqComparisons } from './expr.ts';
+import { type Expr, ISPRIME_MAX, LANCZOS, ineqComparisons } from './expr.ts';
 
 export const FN_GLSL: Record<string, string> = {
   ln: 'log',
@@ -68,26 +68,26 @@ float eq_isprime(float x) {
   return 1.0;
 }
 float eq_gamma(float x) {
-  // Lanczos g=5 like gammaFn() in expr.ts, with the x < 0.5 reflection
-  // inlined (GLSL has no recursion). float32 can't hit the negative-integer
-  // poles exactly, so they render as the divergence they neighbor.
+  // Lanczos g=5 — the coefficients interpolate from LANCZOS in expr.ts, the
+  // gammaFn() twin — with the x < 0.5 reflection inlined (GLSL has no
+  // recursion). float32 can't hit the negative-integer poles exactly, so
+  // they render as the divergence they neighbor.
   float z = x < 0.5 ? 1.0 - x : x;
   z -= 1.0;
   float ser = 1.000000000190015
-    + 76.18009172947146 / (z + 1.0)
-    - 86.50532032941677 / (z + 2.0)
-    + 24.01409824083091 / (z + 3.0)
-    - 1.231739572450155 / (z + 4.0)
-    + 0.001208650973866179 / (z + 5.0)
-    - 0.000005395239384953 / (z + 6.0);
+${LANCZOS.map((c, i) => `    + ${c} / (z + ${i + 1}.0)`).join('\n')};
   float t = z + 5.5;
-  float g = 2.5066282746310002 * pow(t, z + 0.5) * exp(-t) * ser;
+  // Assembled in log space: a bare pow(t, z + 0.5) factor overflows float32
+  // from x ≈ 27, well before Γ itself does (~35).
+  float g = exp((z + 0.5) * log(t) - t + log(2.5066282746310002 * ser));
   if (x >= 0.5) return g;
   return 3.141592653589793 / (sin(3.141592653589793 * x) * g);
 }
 float eq_factorial(float x) { return eq_gamma(x + 1.0); }
 float eq_sinc(float x) { return x == 0.0 ? 1.0 : sin(x) / x; }
-float eq_coth(float x) { return cosh(x) / sinh(x); }
+// 1/tanh, not cosh/sinh: the latter is Inf/Inf = NaN for |x| > ~89 where
+// coth is ±1 (and the cothFn() CPU twin says so).
+float eq_coth(float x) { return 1.0 / tanh(x); }
 float eq_pow(float a, float b) {
   // Support negative bases via the "real odd root" convention, e.g.
   // (-8)^(1/3) = -2, matching graphing calculators like Desmos. For a < 0,

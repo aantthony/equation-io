@@ -56,6 +56,10 @@ export function pow(a: Expr, b: Expr): Expr {
 
 const call = (name: string, ...args: Expr[]): Expr => ({ kind: 'call', name, args });
 
+/** A function with no usable symbolic derivative: callers may fall back to
+ *  finite differences (unlike other diff() errors, which are real errors). */
+export class NonSmoothError extends Error {}
+
 /** d(e)/d(v). Throws for functions without a usable derivative. */
 export function diff(e: Expr, v: string): Expr {
   switch (e.kind) {
@@ -102,7 +106,7 @@ export function diff(e: Expr, v: string): Expr {
         // φ′ = φ·(−z·z′ − s′/s): the −z z′ from the exponent, −s′/s from 1/s.
         return mul(pdf, sub(mul(neg(z), dz), div(diff(s, v), s)));
       }
-      if (e.args.length !== 1) throw new Error(`Cannot differentiate ${e.name}.`);
+      if (e.args.length !== 1) throw new NonSmoothError(`Cannot differentiate ${e.name}.`);
       const a = e.args[0];
       const da = diff(a, v);
       const chain = (outer: Expr) => mul(outer, da);
@@ -126,14 +130,23 @@ export function diff(e: Expr, v: string): Expr {
         case 'sqrt': return div(da, mul(num(2), call('sqrt', a)));
         case 'abs': return chain(call('sign', a));
         case 'erf': return chain(mul(num(2 / Math.sqrt(Math.PI)), call('exp', neg(pow(a, num(2))))));
-        // The removable hole at 0 stays: the expression is pointwise NaN
-        // there, one sample out of a whole curve.
-        case 'sinc': return chain(sub(div(call('cos', a), a), div(call('sin', a), pow(a, num(2)))));
+        case 'sinc':
+          // (cos x − sinc x)/x away from 0 — this form cancels less than
+          // cos/x − sin/x² — and the removable hole filled in: sinc is
+          // differentiable at 0 with derivative 0.
+          return chain({
+            kind: 'piecewise',
+            cases: [{
+              cond: { kind: 'ineq', op: '>', l: call('abs', a), r: ZERO },
+              value: div(sub(call('cos', a), call('sinc', a)), a),
+            }],
+            otherwise: ZERO,
+          });
         case 'coth': return chain(sub(ONE, pow(call('coth', a), num(2))));
         default:
           // min/max/floor/mod/… (and gamma: digamma isn't in the language):
           // no smooth derivative; caller falls back to FD.
-          throw new Error(`Cannot differentiate ${e.name}.`);
+          throw new NonSmoothError(`Cannot differentiate ${e.name}.`);
       }
     }
     case 'eq': return sub(diff(e.l, v), diff(e.r, v));
