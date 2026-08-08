@@ -22,6 +22,18 @@ describe('expression stack machine', () => {
     }
   });
 
+  it('matches the AST evaluator on negative bases with fractional exponents', () => {
+    const e = parseExpr('x^(1/3)');
+    const prog = compileProg(e, new Map([['x', 0]]));
+    const stack = new Float64Array(prog.depth);
+    expect(run(prog, [-8], stack)).toBeCloseTo(evaluate(e, { x: -8 }), 12);
+    expect(run(prog, [-8], stack)).toBeCloseTo(-2, 12);
+    expect(run(prog, [8], stack)).toBeCloseTo(2, 12);
+    const even = parseExpr('x^(1/2)');
+    const evenProg = compileProg(even, new Map([['x', 0]]));
+    expect(run(evenProg, [-4], new Float64Array(evenProg.depth))).toBeNaN();
+  });
+
   it('reports the true stack depth for deeply right-nested expressions', () => {
     // 1+(1+(1+(... x ...))) nests 80 deep — more than any fixed small stack.
     const deep = '1+('.repeat(80) + 'x' + ')'.repeat(80);
