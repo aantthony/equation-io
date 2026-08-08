@@ -102,11 +102,12 @@ describe('buildTube', () => {
   it('places every ring vertex at the tube radius with unit normals', () => {
     const fr = curveFrames(helix.pts, helix.d1, helix.d2, helix.d3);
     const tube = buildTube(helix.pts, fr, 0.25, 16);
-    expect(tube.positions.length).toBe(N * 16 * 3);
+    const stride = 17; // duplicated seam column
+    expect(tube.positions.length).toBe(N * stride * 3);
     expect(tube.indices.length).toBe((N - 1) * 16 * 6);
     for (const i of [0, 57, 399]) {
-      for (let s = 0; s < 16; s++) {
-        const o = (i * 16 + s) * 3;
+      for (let s = 0; s < stride; s++) {
+        const o = (i * stride + s) * 3;
         const dx = tube.positions[o] - helix.pts[i * 3];
         const dy = tube.positions[o + 1] - helix.pts[i * 3 + 1];
         const dz = tube.positions[o + 2] - helix.pts[i * 3 + 2];
@@ -114,7 +115,7 @@ describe('buildTube', () => {
         expect(Math.hypot(tube.normals[o], tube.normals[o + 1], tube.normals[o + 2])).toBeCloseTo(1, 5);
       }
     }
-    for (const ix of tube.indices) expect(ix).toBeLessThan(N * 16);
+    for (const ix of tube.indices) expect(ix).toBeLessThan(N * stride);
   });
 
   it('drops triangles that touch invalid rings', () => {
@@ -124,9 +125,40 @@ describe('buildTube', () => {
     const tube = buildTube(pts, fr, 0.2, 8);
     expect(tube.indices.length).toBe((N - 1 - 2) * 8 * 6);
     for (const ix of tube.indices) {
-      const ring = Math.floor(ix / 8);
+      const ring = Math.floor(ix / 9);
       expect(ring).not.toBe(100);
     }
+  });
+
+  it('lays material coordinates along arclength and around the RMF ring', () => {
+    const fr = curveFrames(helix.pts, helix.d1, helix.d2, helix.d3);
+    const tube = buildTube(helix.pts, fr, 0.25, 16);
+    const stride = 17;
+    // Constant-speed helix: arclength fraction u is linear in the parameter.
+    for (const i of [0, 100, 399]) {
+      expect(tube.uvs[(i * stride) * 2]).toBeCloseTo(i / (N - 1), 3);
+    }
+    // Ring seam duplicates position but carries v = 1 instead of 0.
+    const i = 100;
+    expect(tube.uvs[(i * stride) * 2 + 1]).toBe(0);
+    expect(tube.uvs[(i * stride + 16) * 2 + 1]).toBeCloseTo(1, 6);
+    for (let c = 0; c < 3; c++) {
+      expect(tube.positions[(i * stride + 16) * 3 + c]).toBeCloseTo(tube.positions[(i * stride) * 3 + c], 5);
+    }
+  });
+
+  it('sizes checker cells to be square-ish and even around closed loops', () => {
+    const circle = sample(
+      u => [3 * Math.cos(2 * Math.PI * u), 3 * Math.sin(2 * Math.PI * u), 0],
+    );
+    const fr = curveFrames(circle.pts);
+    const tube = buildTube(circle.pts, fr, 0.25, 16);
+    const [lenCells, angCells] = tube.cells;
+    expect(angCells).toBe(8);
+    expect(lenCells % 2).toBe(0);
+    // Circumference 2π·3 against angular cell 2π·0.25/8: ~96 cells.
+    expect(lenCells).toBeGreaterThan(80);
+    expect(lenCells).toBeLessThan(110);
   });
 });
 

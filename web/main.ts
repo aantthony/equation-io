@@ -573,8 +573,7 @@ function render() {
           }
           const fr = curveFrames(pts, sampleDeriv(plot.d1), sampleDeriv(plot.d2), sampleDeriv(plot.d3));
           if (radius > 0) {
-            const { positions, normals, indices } = buildTube(pts, fr, radius, TUBE_SEGMENTS);
-            scene.tubes.push({ positions, normals, indices, color });
+            scene.tubes.push({ ...buildTube(pts, fr, radius, TUBE_SEGMENTS), color });
           } else {
             scene.curves.push({ pts, color });
           }
