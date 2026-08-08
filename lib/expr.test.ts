@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { evaluate, Expr, freeVars, ISPRIME_MAX, parseExpr } from './expr.ts';
-import { toGLSL } from './glsl.ts';
+import { evaluate, Expr, freeVars, ISPRIME_MAX, LANCZOS, parseExpr } from './expr.ts';
+import { GLSL_PRELUDE, toGLSL } from './glsl.ts';
 
 function evalExpr(e: Expr, env: Record<string, number>): number {
   switch (e.kind) {
@@ -159,6 +159,71 @@ describe('toGLSL', () => {
 
   it('compiles equations to a difference', () => {
     expect(toGLSL(parseExpr('y=x'))).toBe('(y - (x))');
+  });
+});
+
+describe('factorial and special functions', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('evaluates postfix factorial exactly on whole numbers', () => {
+    expect(ev('5!')).toBe(120);
+    expect(ev('0!')).toBe(1);
+    expect(ev('3!!')).toBe(720);
+    expect(ev('170!')).toBe(7.257415615307994e306);
+    expect(ev('171!')).toBe(Infinity);
+  });
+
+  it('binds tighter than ^ and unary minus, and ends a value', () => {
+    expect(ev('2^3!')).toBe(64);
+    expect(ev('-3!')).toBe(-6);
+    expect(ev('3! x', { x: 2 })).toBe(12); // implicit multiplication after !
+    expect(ev('3!(x + 1)', { x: 1 })).toBe(12);
+  });
+
+  it('extends to the reals through Gamma, undefined at the poles', () => {
+    expect(ev('gamma(5)')).toBeCloseTo(24, 9);
+    // Lanczos g=5 is documented to ~2e-10 relative error; hold it to that.
+    expect(ev('gamma(0.5)')).toBeCloseTo(Math.sqrt(Math.PI), 9);
+    expect(ev('gamma(-0.5)')).toBeCloseTo(-2 * Math.sqrt(Math.PI), 9);
+    expect(ev('(0.5)!')).toBeCloseTo(0.5 * Math.sqrt(Math.PI), 9);
+    expect(ev('Gamma(4)')).toBeCloseTo(6, 9); // case-folded like other builtins
+    expect(ev('gamma(0)')).toBeNaN();
+    expect(ev('gamma(-3)')).toBeNaN();
+    expect(ev('(-1)!')).toBeNaN();
+  });
+
+  it('evaluates sinc and coth', () => {
+    expect(ev('sinc(0)')).toBe(1);
+    expect(ev('sinc(pi)')).toBeCloseTo(0, 12);
+    expect(ev('sinc(1.5)')).toBeCloseTo(Math.sin(1.5) / 1.5, 12);
+    expect(ev('coth(1)')).toBeCloseTo(1 / Math.tanh(1), 12);
+  });
+
+  it('compiles to the GLSL twins', () => {
+    expect(toGLSL(parseExpr('gamma(x)'))).toBe('eq_gamma(x)');
+    expect(toGLSL(parseExpr('x!'))).toBe('eq_factorial(x)');
+    expect(toGLSL(parseExpr('sinc(x)'))).toBe('eq_sinc(x)');
+    expect(toGLSL(parseExpr('coth(x)'))).toBe('eq_coth(x)');
+  });
+
+  it('feeds the one LANCZOS array into the GLSL prelude', () => {
+    for (const c of LANCZOS) expect(GLSL_PRELUDE).toContain(`+ ${c} / (z + `);
+  });
+
+  it('rejects != instead of reading it as postfix factorial', () => {
+    expect(() => parseExpr('x != 2')).toThrow(/!=/);
+    expect(() => parseExpr('x!=2')).toThrow(/!=/);
+    expect(ev('x! = 2', { x: 3 })).toBe(4); // spaced: the equation x! = 2, as l - r
+  });
+
+  it('stays finite up to the true double overflow (log-space Lanczos)', () => {
+    expect(ev('gamma(150)') / ev('149!')).toBeCloseTo(1, 9);
+    expect(ev('gamma(171)') / ev('170!')).toBeCloseTo(1, 9);
+    expect(ev('gamma(172)')).toBe(Infinity); // 171! really is beyond a double
+    expect(ev('169.5!')).toBeLessThan(Infinity);
+    // Reflection stays finite too: Γ(x)Γ(1−x) = π/sin(πx) deep in the negatives.
+    expect(Math.abs(ev('gamma(-142.7)'))).toBeGreaterThan(0);
+    expect(ev('gamma(-142.7) gamma(143.7)')).toBeCloseTo(Math.PI / Math.sin(-142.7 * Math.PI), 6);
   });
 });
 

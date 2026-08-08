@@ -38,6 +38,13 @@ describe('diff', () => {
     expect(ddx('|x^2-1|', { x: 0.5 })).toBe(-1); // sign(x^2-1)*2x = -1
   });
 
+  it('differentiates sinc, including the removable hole at 0', () => {
+    const fd = (f: (x: number) => number, x: number) => (f(x + 1e-6) - f(x - 1e-6)) / 2e-6;
+    expect(ddx('sinc(x)', { x: 0 })).toBe(0);
+    expect(ddx('sinc(x)', { x: 2 })).toBeCloseTo(fd(x => Math.sin(x) / x, 2));
+    expect(ddx('sinc(x)', { x: -0.7 })).toBeCloseTo(fd(x => Math.sin(x) / x, -0.7));
+  });
+
   it('throws for non-smooth functions', () => {
     expect(() => diff(parseExpr('min(x, 1)'), 'x')).toThrow(/differentiate/);
     expect(() => diff(parseExpr('floor(x)'), 'x')).toThrow(/differentiate/);

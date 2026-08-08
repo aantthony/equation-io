@@ -7,7 +7,7 @@ import {
   resolveExpr,
   scanDefinition,
 } from './defs.ts';
-import { evaluate, parseExpr } from './expr.ts';
+import { evaluate, gammaFn, parseExpr } from './expr.ts';
 import { toGLSL } from './glsl.ts';
 import { classify } from './plot.ts';
 
@@ -26,6 +26,16 @@ describe('scanDefinition', () => {
     expect(scanDefinition('sin(x) = 1')).toBeNull(); // built-in
     expect(scanDefinition('x^2 + y^2 = 4')).toBeNull();
     expect(scanDefinition('e = 3')).toBeNull();
+  });
+
+  it('lets a definition shadow a late-addition builtin', () => {
+    // Graphs saved before gamma/sinc/… existed may define these names.
+    expect(scanDefinition('gamma(x) = 1/sqrt(1-x^2)')).toMatchObject({ kind: 'fn', name: 'gamma' });
+    expect(scanDefinition('sinc = 0.5')).toMatchObject({ kind: 'const', name: 'sinc' });
+    const { defs, errors } = buildDefs([{ kind: 'fn', name: 'gamma', params: ['x'], rhs: '2x' }]);
+    expect(errors.size).toBe(0);
+    const e = resolveExpr(parseExpr('gamma(3) + 1', new Set(['gamma'])), n => defs.fns.get(n));
+    expect(evaluate(e, {})).toBe(7); // the user's 2x, not Γ(3) + 1 = 3
   });
 });
 
@@ -55,6 +65,13 @@ describe('d/dx derivative syntax', () => {
 
   it('nests', () => {
     expect(at('d/dx (d/dx (x^3))', { x: 2 })).toBe(12);
+  });
+
+  it('falls back to finite differences where diff() has no answer', () => {
+    const fd = (f: (x: number) => number, x: number) => (f(x + 1e-4) - f(x - 1e-4)) / 2e-4;
+    expect(at('d/dx (x!)', { x: 4 })).toBeCloseTo(fd(x => gammaFn(x + 1), 4), 10);
+    expect(at('d/dx gamma(x)', { x: 4 })).toBeCloseTo(fd(gammaFn, 4), 10);
+    expect(at('d/dx floor(x)', { x: 0.5 })).toBe(0);
   });
 });
 

@@ -20,8 +20,8 @@
  *   otherwise by expanding a fixed Gauss–Legendre sum the same way Σ
  *   expands — so every downstream consumer still sees ordinary expressions.
  */
-import { add, diff, div, mul, neg, pow, sub } from './diff.ts';
-import { FUNCTIONS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
+import { NonSmoothError, add, diff, div, mul, neg, pow, sub } from './diff.ts';
+import { FUNCTIONS, SHADOWABLE_FNS, type Expr, evaluate, freeVars, parseExpr, substVars } from './expr.ts';
 import { QUAD_TERMS, antiderivative, improperSum, quadratureSum, verifyDefinite } from './integrate.ts';
 import { lowerGeom, pointComps, vecStateComps } from './geom.ts';
 import { type Mat, matrixFromList } from './mat.ts';
@@ -117,8 +117,10 @@ const CONST_RE = /^\s*([A-Za-z_]\w*)\s*=(?!=)([\s\S]+)$/;
 const STATE_RE = /^\s*([A-Za-z_]\w*)'\s*=(?!=)([\s\S]+)$/;
 const INIT_RE = /^\s*([A-Za-z_]\w*)\s*\(\s*0\s*\)\s*=(?!=)([\s\S]+)$/;
 
-/** A name a definition may claim: not a builtin, not reserved, not a uniform. */
-const nameable = (n: string): boolean => !FUNCTIONS.has(n) && !RESERVED.has(n) && !n.startsWith('u_');
+/** A name a definition may claim: not a builtin (except the late-addition
+ *  ones old graphs may define themselves), not reserved, not a uniform. */
+export const nameable = (n: string): boolean =>
+  (!FUNCTIONS.has(n) || SHADOWABLE_FNS.has(n)) && !RESERVED.has(n) && !n.startsWith('u_');
 
 /** Detect a definition row before parsing (so calls to it parse everywhere). */
 export function scanDefinition(text: string): Definition | null {
@@ -175,8 +177,25 @@ function numeratorWrap(n: Expr): { order: number; wrap: (x: Expr) => Expr } | nu
   return null;
 }
 
+/** Step for the central-difference fallback. Balances truncation against
+ *  float32 roundoff — plots evaluate the expanded expression on the GPU. */
+const FD_H = 1e-4;
+
 function applyDiff(e: Expr, v: string, order: number): Expr {
-  for (let k = 0; k < order; k++) e = diff(e, v);
+  for (let k = 0; k < order; k++) {
+    try {
+      e = diff(e, v);
+    } catch (err) {
+      if (!(err instanceof NonSmoothError)) throw err;
+      // factorial, gamma, floor, …: expand a symbolic central difference,
+      // the fallback roots.ts and the renderer's normals use when diff() throws.
+      const vv: Expr = { kind: 'var', name: v };
+      e = div(
+        sub(substVars(e, { [v]: add(vv, num(FD_H)) }), substVars(e, { [v]: sub(vv, num(FD_H)) })),
+        num(2 * FD_H),
+      );
+    }
+  }
   return e;
 }
 

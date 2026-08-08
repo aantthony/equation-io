@@ -36,7 +36,7 @@ export const FUNCTIONS = new Set([
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
   'erf', 'normalpdf', 'normalcdf',
-  'gcd', 'isprime',
+  'gcd', 'isprime', 'gamma', 'factorial', 'sinc', 'coth',
   're', 'im', 'arg', 'conj',
   // Point (2D vector) helpers and geometry statements, lowered symbolically
   // by lowerGeom before anything evaluates or compiles them.
@@ -51,6 +51,13 @@ export const FUNCTIONS = new Set([
   // grids, escape-time iteration, and swept tubes.
   'domain', 'conformal', 'iter', 'tube',
 ]);
+
+/**
+ * Builtins added after graphs existed in the wild: a definition or random
+ * variable may claim these names, shadowing the builtin, so a saved graph
+ * that defines its own `gamma(x) = …` or `sinc = …` keeps its meaning.
+ */
+export const SHADOWABLE_FNS: ReadonlySet<string> = new Set(['gamma', 'factorial', 'sinc', 'coth']);
 
 /**
  * Flatten a (possibly chained) inequality into its comparisons; comparison k
@@ -204,6 +211,13 @@ const ops = operators<PNode>({
 
   ':': BinaryInfix<PNode>((a, b): PNode => ({ kind: 'pcase', cond: asExpr(a), value: asExpr(b) })),
 
+  // Recognized as one token so it never half-matches as postfix '!' followed
+  // by '=' — x != 2 would silently graph factorial(x) = 2. There is no ≠
+  // relation to plot, so it only explains itself.
+  '!=': BinaryInfix<PNode>((): PNode => {
+    throw new Error("'!=' is not supported — for a factorial equation, put a space before '=': x! = 2.");
+  }),
+
   '<': asIneq('<'),
   '<=': asIneq('<='),
   '≤': asIneq('<='),
@@ -228,6 +242,10 @@ const ops = operators<PNode>({
   '[impl]': asBin('*'),
 
   '^': BinaryRightInfix<PNode>((a, b): PNode => bin('^')(asVecOrExpr(a), asVecOrExpr(b))),
+
+  // Postfix factorial: declared after '^' so 2^3! parses as 2^(3!), and
+  // [neg] (sharing '^'s level) stays below it: -x! is -(x!).
+  '!': Postfix<PNode>((a): Expr => ({ kind: 'call', name: 'factorial', args: [asExpr(a)] })),
 
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
@@ -357,7 +375,11 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   for (const token of bare) {
     if (token.type === 'whitespace') continue;
 
-    const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol' || last.type === 'parenclose');
+    // A postfix operator (per the ops table: '!') ends a value, so 5!x and
+    // 3!(x+1) multiply implicitly.
+    const afterPostfix = last?.type === 'operator' && ops[last.str]?.n === 1 && !ops[last.str].right;
+    const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol'
+      || last.type === 'parenclose' || afterPostfix);
 
     if (token.type === 'bar') {
       // |x| is abs(x): a bar after a value closes the innermost open bar;
@@ -528,6 +550,52 @@ export function realPow(a: number, b: number): number {
   return NaN; // no small-denominator rational found: irrational-looking exponent
 }
 
+/** Lanczos coefficients (g = 5, n = 6): relative error < 2e-10 over the
+ *  reals. Interpolated into the eq_gamma() GLSL twin (glsl.ts) too, so both
+ *  implementations share this one array. */
+export const LANCZOS = [
+  76.18009172947146, -86.50532032941677, 24.01409824083091,
+  -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5,
+];
+
+/**
+ * Real Γ(x). Poles at 0, −1, −2, … evaluate to NaN; other negative reals go
+ * through the reflection formula Γ(x)Γ(1−x) = π/sin(πx). Overflows to
+ * Infinity above x ≈ 171.62, like the rest of double arithmetic.
+ *
+ * Kept in sync with the eq_gamma() GLSL twin in glsl.ts (same Lanczos
+ * coefficients and reflection, minus the exact-pole check float32 can't do).
+ */
+export function gammaFn(x: number): number {
+  if (x < 0.5) {
+    if (Number.isInteger(x)) return NaN; // pole
+    return Math.PI / (Math.sin(Math.PI * x) * gammaFn(1 - x));
+  }
+  const z = x - 1;
+  let ser = 1.000000000190015;
+  for (let i = 0; i < LANCZOS.length; i++) ser += LANCZOS[i] / (z + i + 1);
+  const t = z + 5.5;
+  // Assembled in log space: a bare pow(t, z + 0.5) factor overflows a double
+  // from x ≈ 143, well before Γ itself does.
+  return Math.exp((z + 0.5) * Math.log(t) - t + Math.log(2.5066282746310002 * ser));
+}
+
+/** k! for k = 0..170, every factorial a double can hold. */
+const FACTORIALS = new Float64Array(171);
+FACTORIALS[0] = 1;
+for (let k = 1; k < FACTORIALS.length; k++) FACTORIALS[k] = FACTORIALS[k - 1] * k;
+
+/** x! = Γ(x + 1), except exact for the whole numbers a double can hold. */
+export function factorialFn(x: number): number {
+  if (Number.isInteger(x) && x >= 0 && x <= 170) return FACTORIALS[x];
+  return gammaFn(x + 1);
+}
+
+/** sin(x)/x with the removable hole filled: sinc(0) = 1. */
+export const sincFn = (x: number): number => (x === 0 ? 1 : Math.sin(x) / x);
+
+export const cothFn = (x: number): number => 1 / Math.tanh(x);
+
 export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
@@ -556,6 +624,10 @@ export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
     for (let i = 2; i * i <= n; i++) if (n % i === 0) return 0;
     return 1;
   },
+  gamma: gammaFn,
+  factorial: factorialFn,
+  sinc: sincFn,
+  coth: cothFn,
 };
 
 /** Numerically evaluate a scalar expression with the given variable bindings. */

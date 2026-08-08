@@ -5,7 +5,7 @@
  * sample is too slow and Workers forbid dynamic codegen (`new Function`), so
  * expressions compile once to opcode arrays run by a small stack machine.
  */
-import { type Expr, erf, ineqComparisons, normalcdf, normalpdf, realPow } from '../lib/expr.ts';
+import { type Expr, cothFn, erf, factorialFn, gammaFn, ineqComparisons, normalcdf, normalpdf, realPow, sincFn } from '../lib/expr.ts';
 
 const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2, Fn3, Lt, Le, Gt, Ge, Sel }
 
@@ -20,6 +20,7 @@ const FN1: Record<string, (x: number) => number> = {
   fract: x => x - Math.floor(x),
   re: x => x, im: () => 0, arg: x => (x < 0 ? Math.PI : 0), conj: x => x,
   erf,
+  gamma: gammaFn, factorial: factorialFn, sinc: sincFn, coth: cothFn,
 };
 
 const FN2: Record<string, (a: number, b: number) => number> = {
