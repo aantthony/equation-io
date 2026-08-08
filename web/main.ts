@@ -2210,15 +2210,13 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
   ]],
 ];
 
-function insertExample(text: string) {
+function openExample(text: string) {
   pushUndo(null);
-  // Fill the trailing empty line (or append) so existing equations stay.
-  // Multi-row examples separate rows with ';' (the same separator as the hash).
-  for (const part of splitStatements(text)) {
-    let eq = equations[equations.length - 1];
-    if (!eq || eq.text.trim()) eq = addEquation('');
-    eq.text = part.trim();
-  }
+  // An example is a fresh start: it replaces the whole document (undo brings
+  // the old one back). Multi-row examples separate rows with ';' (the same
+  // separator as the hash).
+  equations.length = 0;
+  for (const part of splitStatements(text)) addEquation(part.trim());
   recompileAll();
   saveUrl();
   renderAll();
@@ -2239,7 +2237,7 @@ function buildExamplesMenu() {
       const code = document.createElement('code');
       code.textContent = text;
       item.append(code);
-      item.addEventListener('click', () => insertExample(text));
+      item.addEventListener('click', () => openExample(text));
       group.append(item);
     }
     list.append(group);
