@@ -52,6 +52,10 @@
   <canvas id="gl"></canvas>
   <canvas id="overlay"></canvas>
   <div id="panel">
+    <!-- Drag affordance for pointers that can't use the panel-wide touch
+         drag (a mouse drag over text means selection): grab here to move the
+         panel between corners or flick it off-screen. See panel-swipe.ts. -->
+    <div id="panel-grip" title="Drag to move the panel; flick it off-screen to hide it" aria-hidden="true"></div>
     <button id="theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">☾</button>
     <button id="state-reset" type="button" aria-label="Restart the simulation" title="Restart the simulation" hidden>↻</button>
     <div id="equations" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Equations, one per line" spellcheck="false" autocapitalize="off" autocorrect="off" enterkeyhint="enter"></div>
@@ -64,6 +68,10 @@
       <a id="about-link" href="/about/">about</a>
     </div>
   </div>
+  <!-- The panel's collapsed form: swiping the panel off-screen (touch; see
+       panel-swipe.ts) leaves this chip in its corner. Tap to spring the panel
+       back, or drag to pull it back in. -->
+  <button id="panel-chip" type="button" hidden aria-label="Show the equations">y=</button>
   <noscript>
     <h1>Equation.io — free online graphing calculator</h1>
     <p>

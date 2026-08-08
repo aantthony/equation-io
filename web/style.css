@@ -8,6 +8,15 @@
    the caret, text selection, and the panel's internal scrolling alone. */
 * { touch-action: pan-x pan-y; }
 
+/* The page is an app, not a document: chrome, buttons and the graph never
+   select (no blue sweep on select-all, no long-press selection on labels).
+   Only real text surfaces opt back in — the equation editor and the slider
+   bound fields below. Inherited, so those two opt-ins cover their subtrees. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* Light theme (default). The dark overrides live in [data-theme="dark"] below;
    the JS theme switch flips data-theme on <html>, so every panel color moves
    with the WebGL background in one place. */
@@ -114,6 +123,11 @@ html, body {
   top: calc(12px + env(safe-area-inset-top));
   left: calc(12px + env(safe-area-inset-left));
   width: 300px;
+  /* Tighter than the blanket pan-x pan-y: nothing in the panel scrolls
+     sideways, so declaring pan-y keeps horizontal touchmoves cancelable and
+     the swipe-to-dismiss drag (panel-swipe.ts) can claim them. Vertical
+     panning stays native for #equations/#examples scrolling. */
+  touch-action: pan-y;
   /* Keep the panel on screen with many equations: cap it at the viewport
      (12px margin top and bottom) and let #equations scroll inside. */
   max-height: calc(100% - 24px - env(safe-area-inset-bottom));
@@ -124,8 +138,54 @@ html, body {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   box-shadow: 0 4px 20px var(--panel-shadow);
-  padding: 8px;
+  /* Extra top room for the grip strip. */
+  padding: 16px 8px 8px;
 }
+
+/* Corner pinning (panel-swipe.ts): flicking the panel re-anchors it via
+   these classes rather than a transform, so a bottom-pinned panel grows
+   upward as equations are added and rotations keep it glued to its corner. */
+#panel.pin-right {
+  left: auto;
+  right: calc(12px + env(safe-area-inset-right));
+}
+#panel.pin-bottom {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  max-height: calc(100% - 24px - env(safe-area-inset-top));
+}
+
+/* The drag handle: a strip along the panel's top edge (under the corner
+   buttons) drawn as an iOS-sheet grabber pill. Touches can drag the panel
+   from anywhere, but for a mouse this is the one drag surface — anywhere
+   else a mouse drag means text selection. */
+#panel-grip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 16px;
+  z-index: 1;
+  cursor: grab;
+  /* No browser pan may start on the handle, so its touchmoves stay
+     cancelable and a drag claims instantly — even mid-edit, when the text
+     below cedes to caret and selection gestures. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#panel-grip:active { cursor: grabbing; }
+#panel-grip::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: var(--panel-border);
+}
+#panel-grip:hover::after { background: var(--muted); }
 
 #theme-toggle,
 #state-reset {
@@ -152,17 +212,25 @@ html, body {
 #state-reset:hover { background: var(--eq-focus); color: var(--muted-hover); }
 
 #equations {
-  /* Scrolls when the list outgrows the panel's max-height; `contain` stops a
-     scroll that hits the end from chaining into a page overscroll bounce. */
+  /* Scrolls when the list outgrows the panel's max-height. `none` (not
+     `contain`) so a scroll that hits the end neither chains into a page
+     bounce nor bounces the list itself — at the edge the browser lets go of
+     the touch, which is what hands "keep swiping past the end" to the
+     panel-dismiss gesture (panel-swipe.ts), the way iOS sheets take over
+     from their scroll views. */
   overflow-y: auto;
   min-height: 0;
   flex: 0 1 auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   outline: none;
   color: var(--text);
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   padding: 2px 0;
   caret-color: var(--text);
+  /* Opt back out of the body's user-select: none — explicitly, because on
+     iOS a non-selectable ancestor otherwise leaves the editable untappable. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .eq-line {
   position: relative;
@@ -257,6 +325,9 @@ html, body {
   text-align: center;
   appearance: textfield;
   -moz-appearance: textfield;
+  /* Editable despite sitting inside a non-selectable .eq-widget. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .eq-slider-bound:focus { color: var(--bound-focus); }
 .eq-slider-bound::-webkit-outer-spin-button,
@@ -298,7 +369,6 @@ html, body {
   font: italic 12px ui-sans-serif, system-ui;
   color: var(--summary);
   cursor: pointer;
-  user-select: none;
 }
 .eq-curve-toggle input {
   margin: 0;
@@ -341,15 +411,15 @@ html, body {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-#panel { position: relative; }
-
 #examples {
   /* Never shrinks (the summary row stays visible), but caps itself and scrolls
-     internally so an open example tree can't push the panel past its max. */
+     internally so an open example tree can't push the panel past its max.
+     `none` for the same reason as #equations: the swipe-dismiss gesture picks
+     up where the scroll ends. */
   flex: none;
   max-height: 40%;
   overflow-y: auto;
-  overscroll-behavior: contain;
+  overscroll-behavior: none;
   border-top: 1px solid var(--divider);
   margin-top: 4px;
   padding: 4px;
@@ -373,7 +443,6 @@ html, body {
 #examples > summary {
   color: var(--muted);
   cursor: pointer;
-  user-select: none;
   padding: 2px;
 }
 #examples > summary:hover { color: var(--muted-hover); }
@@ -383,7 +452,6 @@ html, body {
 #examples details > summary {
   color: var(--summary);
   cursor: pointer;
-  user-select: none;
   padding: 2px;
   font-weight: 500;
 }
@@ -410,3 +478,52 @@ html, body {
   text-overflow: ellipsis;
 }
 .ex-item:hover code { color: var(--ex-code-hover); }
+
+/* The panel's collapsed form: after a swipe dismisses the panel
+   (panel-swipe.ts), this chip pops into its corner. Tapping springs the
+   panel back; dragging pulls it back in under the finger. */
+#panel-chip {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  left: calc(12px + env(safe-area-inset-left));
+  width: 46px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 11px;
+  background: var(--panel-bg);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 20px var(--panel-shadow);
+  color: var(--text);
+  font: 15px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  cursor: pointer;
+  /* A drag handle as much as a button: no browser pan may start on it, so
+     its touchmoves stay cancelable for the pull-open gesture. */
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Hidden pose; .shown transitions from it, popping the chip in as the
+     panel clears the screen. A transition (not an animation) so JS can
+     stage the flip: unhide, reflow, then add .shown. */
+  opacity: 0;
+  transform: scale(0.5);
+  transition:
+    transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1),
+    opacity 0.18s ease-out;
+}
+#panel-chip.shown {
+  opacity: 1;
+  transform: none;
+}
+/* The chip sits at whichever corner the panel left from (same classes as
+   the panel's pinning, applied together in panel-swipe.ts). */
+#panel-chip.pin-right {
+  left: auto;
+  right: calc(12px + env(safe-area-inset-right));
+}
+#panel-chip.pin-bottom {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+}
+@media (prefers-reduced-motion: reduce) {
+  #panel-chip { transition: opacity 0.15s ease-out; }
+}

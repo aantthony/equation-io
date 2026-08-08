@@ -55,6 +55,7 @@ import {
   niceSpacing,
 } from './render2d.ts';
 import { type Camera3D, Renderer3D, type Scene3D, cameraBoxR, drawLabels3D } from './render3d.ts';
+import { initPanelSwipe } from './panel-swipe.ts';
 import { initTheme, onThemeChange, theme, toggleTheme } from './theme.ts';
 
 interface Equation {
@@ -1764,23 +1765,44 @@ listEl.addEventListener('cut', e => {
 
 // Click on a line's left gutter: comment rows toggle their group collapsed
 // (the ::before chevron), other rows cycle their color dot.
-listEl.addEventListener('pointerdown', e => {
+
+/** The equation whose gutter (chevron / color dot) an event lands on. */
+function gutterHit(e: { target: EventTarget | null; clientX: number }): Equation | null {
   const line = e.target instanceof HTMLElement ? e.target.closest('.eq-line') : null;
-  if (!line) return;
-  if (e.clientX - line.getBoundingClientRect().left > 22) return;
+  if (!line) return null;
+  if (e.clientX - line.getBoundingClientRect().left > 22) return null;
   const eq = equations[lineEls().indexOf(line as HTMLElement)];
-  if (!eq || eq.def) return;
+  return !eq || eq.def ? null : eq;
+}
+
+function gutterAct(eq: Equation) {
   if (eq.comment) {
-    e.preventDefault();
     eq.collapsed = !eq.collapsed || undefined;
     reconcile();
     return;
   }
-  e.preventDefault();
   pushUndo(`color:${eq.id}`);
   eq.colorIndex = (eq.colorIndex + 1) % theme.palette.length;
   reconcile();
   requestRender();
+}
+
+// Mouse acts on press. Touch waits for the click — which never comes if the
+// touch turns into a scroll or a panel-dismiss swipe (panel-swipe.ts), so
+// flinging the panel away from the gutter cannot also recolor a row.
+let gutterTouchPending = false;
+listEl.addEventListener('pointerdown', e => {
+  const eq = gutterHit(e);
+  gutterTouchPending = !!eq && e.pointerType === 'touch';
+  if (!eq) return;
+  e.preventDefault(); // keep the caret and selection out of the gutter
+  if (!gutterTouchPending) gutterAct(eq);
+});
+listEl.addEventListener('click', e => {
+  if (!gutterTouchPending) return;
+  gutterTouchPending = false;
+  const eq = gutterHit(e);
+  if (eq) gutterAct(eq);
 });
 
 // Highlight the line holding the caret (no per-line focus to key off).
@@ -2506,6 +2528,20 @@ onThemeChange(() => {
 });
 syncThemeToggle();
 themeToggle?.addEventListener('click', toggleTheme);
+
+// --- panel flinging ---
+
+// The panel is a corner-pinned floating card: flick it (touch anywhere on
+// it; mouse via the grip strip) to another corner, or throw it past any
+// edge to dismiss it — the y= chip it leaves behind brings it back. The
+// equation list is passed in so text gestures (iOS caret and selection-
+// handle drags) are never mistaken for throws.
+initPanelSwipe(
+  document.getElementById('panel')!,
+  document.getElementById('panel-chip')!,
+  document.getElementById('panel-grip')!,
+  listEl,
+);
 
 // --- boot ---
 

@@ -79,7 +79,11 @@ for (let i = 0; ; i++) {
   await new Promise(r => setTimeout(r, 200));
 }
 
-const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader'] });
+// CHROMIUM overrides the browser binary, for containers with a system build.
+const browser = await chromium.launch({
+  executablePath: process.env.CHROMIUM || undefined,
+  args: ['--enable-unsafe-swiftshader'],
+});
 const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
 
 // --- events originating in slider widgets must not edit the document ---
