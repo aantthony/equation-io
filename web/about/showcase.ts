@@ -257,6 +257,22 @@ export const SHOWCASE: ShowcaseItem[] = [
     group: 'Calculus & sliders',
   },
   {
+    slug: 'running-integral',
+    title: 'Integrals too',
+    blurb: '∫ is symbolic where a closed form exists — a running integral plots like any other curve, and definite ones report their value.',
+    eqs: ['f(x) = sin(x)^2', 'y = f(x)', 'y = int[0..x] f(t) dt'],
+    group: 'Calculus & sliders',
+    view: { cy: 0.85, span: 4 },
+  },
+  {
+    slug: 'sine-integral',
+    title: 'Beyond closed forms',
+    blurb: 'Si(x) has no elementary antiderivative — a quadrature sum expands instead, so it still compiles to the GPU.',
+    eqs: ['y = int[0..x] sin(t)/t dt'],
+    group: 'Calculus & sliders',
+    view: { span: 5.5 },
+  },
+  {
     slug: 'lissajous',
     title: 'Parametric motion',
     blurb: 'Curves in u, moving points in t — on the same axes.',
@@ -348,6 +364,27 @@ export const SHOWCASE: ShowcaseItem[] = [
     eqs: ['m = 1', 's = 0.5', 'X ~ Normal(m, s)', 'P(0 < X < 2)'],
     group: 'Probability',
     view: { cx: 1, cy: 0.35, span: 2 },
+  },
+  {
+    slug: 'clt',
+    title: 'Sums are convolutions',
+    blurb: 'Distinct variables are independent, so the density of S is a real convolution — four uniforms already hug the matching normal.',
+    eqs: [
+      'X1 ~ Uniform(0, 1)', 'X2 ~ Uniform(0, 1)', 'X3 ~ Uniform(0, 1)', 'X4 ~ Uniform(0, 1)',
+      'S = X1 + X2 + X3 + X4', 'Z ~ Normal(2, sqrt(1/3))',
+    ],
+    group: 'Probability',
+    // Crops just under y = 1 and right of x = 1, so the four unit-box base
+    // densities stay out of frame and the two bells carry the shot.
+    view: { cx: 2, cy: 0.42, span: 1.15 },
+  },
+  {
+    slug: 'conditional-rv',
+    title: 'Compute with random variables',
+    blurb: 'Derived variables get densities of their own — the stem is Y’s point mass — and P works on any event, even P(Y > X).',
+    eqs: ['X ~ Normal(0, 1)', 'Y = {X > 0: X^2, 1}', 'P(Y > 0.5)'],
+    group: 'Probability',
+    view: { cx: 0.3, cy: 0.4, span: 1.7 },
   },
   {
     slug: 'blob',
