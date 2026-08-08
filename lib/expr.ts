@@ -36,7 +36,7 @@ export const FUNCTIONS = new Set([
   'sqrt', 'abs', 'exp', 'ln', 'log', 'floor', 'ceil', 'round',
   'min', 'max', 'mod', 'sign', 'fract',
   'erf', 'normalpdf', 'normalcdf',
-  'gcd', 'isprime',
+  'gcd', 'isprime', 'gamma', 'factorial', 'sinc', 'coth',
   're', 'im', 'arg', 'conj',
   // Point (2D vector) helpers and geometry statements, lowered symbolically
   // by lowerGeom before anything evaluates or compiles them.
@@ -229,6 +229,10 @@ const ops = operators<PNode>({
 
   '^': BinaryRightInfix<PNode>((a, b): PNode => bin('^')(asVecOrExpr(a), asVecOrExpr(b))),
 
+  // Postfix factorial: declared after '^' so 2^3! parses as 2^(3!), and
+  // [neg] (sharing '^'s level) stays below it: -x! is -(x!).
+  '!': Postfix<PNode>((a): Expr => ({ kind: 'call', name: 'factorial', args: [asExpr(a)] })),
+
   // Function application: binds tighter than '^' so sin(x)^2 means (sin(x))^2.
   '[apply]': BinaryInfix<PNode>((a, b): Expr => {
     if (a?.kind !== 'var' || !isFnName(a.name)) throw new Error('Expected a function name.');
@@ -357,7 +361,9 @@ function *addImplicitTokens(bare: Iterable<Token>): Iterable<Token> {
   for (const token of bare) {
     if (token.type === 'whitespace') continue;
 
-    const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol' || last.type === 'parenclose');
+    // Postfix '!' ends a value, so 5!x and 3!(x+1) multiply implicitly.
+    const afterValue = last !== null && (last.type === 'number' || last.type === 'symbol'
+      || last.type === 'parenclose' || (last.type === 'operator' && last.str === '!'));
 
     if (token.type === 'bar') {
       // |x| is abs(x): a bar after a value closes the innermost open bar;
@@ -528,6 +534,42 @@ export function realPow(a: number, b: number): number {
   return NaN; // no small-denominator rational found: irrational-looking exponent
 }
 
+/** Lanczos coefficients (g = 5, n = 6): relative error < 2e-10 over the reals. */
+const LANCZOS = [
+  76.18009172947146, -86.50532032941677, 24.01409824083091,
+  -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5,
+];
+
+/**
+ * Real Γ(x). Poles at 0, −1, −2, … evaluate to NaN; other negative reals go
+ * through the reflection formula Γ(x)Γ(1−x) = π/sin(πx). Overflows to
+ * Infinity above x ≈ 171.62, like the rest of double arithmetic.
+ *
+ * Kept in sync with the eq_gamma() GLSL twin in glsl.ts (same Lanczos
+ * coefficients and reflection, minus the exact-pole check float32 can't do).
+ */
+export function gammaFn(x: number): number {
+  if (x < 0.5) {
+    if (Number.isInteger(x)) return NaN; // pole
+    return Math.PI / (Math.sin(Math.PI * x) * gammaFn(1 - x));
+  }
+  const z = x - 1;
+  let ser = 1.000000000190015;
+  for (let i = 0; i < LANCZOS.length; i++) ser += LANCZOS[i] / (z + i + 1);
+  const t = z + 5.5;
+  return Math.sqrt(2 * Math.PI) * Math.pow(t, z + 0.5) * Math.exp(-t) * ser;
+}
+
+/** x! = Γ(x + 1), except exact for the whole numbers a double can hold. */
+export function factorialFn(x: number): number {
+  if (Number.isInteger(x) && x >= 0 && x <= 170) {
+    let r = 1;
+    for (let k = 2; k <= x; k++) r *= k;
+    return r;
+  }
+  return gammaFn(x + 1);
+}
+
 export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
   asin: Math.asin, acos: Math.acos, atan: Math.atan, atan2: Math.atan2,
@@ -556,6 +598,10 @@ export const EVAL_FNS: Record<string, (...xs: number[]) => number> = {
     for (let i = 2; i * i <= n; i++) if (n % i === 0) return 0;
     return 1;
   },
+  gamma: gammaFn,
+  factorial: factorialFn,
+  sinc: x => (x === 0 ? 1 : Math.sin(x) / x),
+  coth: x => 1 / Math.tanh(x),
 };
 
 /** Numerically evaluate a scalar expression with the given variable bindings. */

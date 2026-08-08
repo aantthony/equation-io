@@ -22,6 +22,15 @@ describe('expression stack machine', () => {
     }
   });
 
+  it('matches the AST evaluator on the special functions', () => {
+    const e = parseExpr('x! + gamma(x + 3) + sinc(x) + coth(x)');
+    const prog = compileProg(e, new Map([['x', 0]]));
+    const stack = new Float64Array(prog.depth);
+    for (const x of [2.5, 0.3, -0.7]) {
+      expect(run(prog, [x], stack)).toBeCloseTo(evaluate(e, { x }), 12);
+    }
+  });
+
   it('matches the AST evaluator on negative bases with fractional exponents', () => {
     const e = parseExpr('x^(1/3)');
     const prog = compileProg(e, new Map([['x', 0]]));

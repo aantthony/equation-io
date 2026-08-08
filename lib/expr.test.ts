@@ -162,6 +162,51 @@ describe('toGLSL', () => {
   });
 });
 
+describe('factorial and special functions', () => {
+  const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
+
+  it('evaluates postfix factorial exactly on whole numbers', () => {
+    expect(ev('5!')).toBe(120);
+    expect(ev('0!')).toBe(1);
+    expect(ev('3!!')).toBe(720);
+    expect(ev('170!')).toBe(7.257415615307994e306);
+    expect(ev('171!')).toBe(Infinity);
+  });
+
+  it('binds tighter than ^ and unary minus, and ends a value', () => {
+    expect(ev('2^3!')).toBe(64);
+    expect(ev('-3!')).toBe(-6);
+    expect(ev('3! x', { x: 2 })).toBe(12); // implicit multiplication after !
+    expect(ev('3!(x + 1)', { x: 1 })).toBe(12);
+  });
+
+  it('extends to the reals through Gamma, undefined at the poles', () => {
+    expect(ev('gamma(5)')).toBeCloseTo(24, 9);
+    // Lanczos g=5 is documented to ~2e-10 relative error; hold it to that.
+    expect(ev('gamma(0.5)')).toBeCloseTo(Math.sqrt(Math.PI), 9);
+    expect(ev('gamma(-0.5)')).toBeCloseTo(-2 * Math.sqrt(Math.PI), 9);
+    expect(ev('(0.5)!')).toBeCloseTo(0.5 * Math.sqrt(Math.PI), 9);
+    expect(ev('Gamma(4)')).toBeCloseTo(6, 9); // case-folded like other builtins
+    expect(ev('gamma(0)')).toBeNaN();
+    expect(ev('gamma(-3)')).toBeNaN();
+    expect(ev('(-1)!')).toBeNaN();
+  });
+
+  it('evaluates sinc and coth', () => {
+    expect(ev('sinc(0)')).toBe(1);
+    expect(ev('sinc(pi)')).toBeCloseTo(0, 12);
+    expect(ev('sinc(1.5)')).toBeCloseTo(Math.sin(1.5) / 1.5, 12);
+    expect(ev('coth(1)')).toBeCloseTo(1 / Math.tanh(1), 12);
+  });
+
+  it('compiles to the GLSL twins', () => {
+    expect(toGLSL(parseExpr('gamma(x)'))).toBe('eq_gamma(x)');
+    expect(toGLSL(parseExpr('x!'))).toBe('eq_factorial(x)');
+    expect(toGLSL(parseExpr('sinc(x)'))).toBe('eq_sinc(x)');
+    expect(toGLSL(parseExpr('coth(x)'))).toBe('eq_coth(x)');
+  });
+});
+
 describe('negative base with fractional exponent (real odd roots)', () => {
   const ev = (s: string, env: Record<string, number> = {}) => evaluate(parseExpr(s), env);
 

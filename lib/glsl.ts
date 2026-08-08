@@ -18,6 +18,10 @@ export const FN_GLSL: Record<string, string> = {
   normalcdf: 'eq_normalcdf',
   gcd: 'eq_gcd',
   isprime: 'eq_isprime',
+  gamma: 'eq_gamma',
+  factorial: 'eq_factorial',
+  sinc: 'eq_sinc',
+  coth: 'eq_coth',
 };
 
 /** Helper functions some expressions need; prepend once to the shader. */
@@ -63,6 +67,27 @@ float eq_isprime(float x) {
   }
   return 1.0;
 }
+float eq_gamma(float x) {
+  // Lanczos g=5 like gammaFn() in expr.ts, with the x < 0.5 reflection
+  // inlined (GLSL has no recursion). float32 can't hit the negative-integer
+  // poles exactly, so they render as the divergence they neighbor.
+  float z = x < 0.5 ? 1.0 - x : x;
+  z -= 1.0;
+  float ser = 1.000000000190015
+    + 76.18009172947146 / (z + 1.0)
+    - 86.50532032941677 / (z + 2.0)
+    + 24.01409824083091 / (z + 3.0)
+    - 1.231739572450155 / (z + 4.0)
+    + 0.001208650973866179 / (z + 5.0)
+    - 0.000005395239384953 / (z + 6.0);
+  float t = z + 5.5;
+  float g = 2.5066282746310002 * pow(t, z + 0.5) * exp(-t) * ser;
+  if (x >= 0.5) return g;
+  return 3.141592653589793 / (sin(3.141592653589793 * x) * g);
+}
+float eq_factorial(float x) { return eq_gamma(x + 1.0); }
+float eq_sinc(float x) { return x == 0.0 ? 1.0 : sin(x) / x; }
+float eq_coth(float x) { return cosh(x) / sinh(x); }
 float eq_pow(float a, float b) {
   // Support negative bases via the "real odd root" convention, e.g.
   // (-8)^(1/3) = -2, matching graphing calculators like Desmos. For a < 0,

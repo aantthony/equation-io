@@ -126,8 +126,13 @@ export function diff(e: Expr, v: string): Expr {
         case 'sqrt': return div(da, mul(num(2), call('sqrt', a)));
         case 'abs': return chain(call('sign', a));
         case 'erf': return chain(mul(num(2 / Math.sqrt(Math.PI)), call('exp', neg(pow(a, num(2))))));
+        // The removable hole at 0 stays: the expression is pointwise NaN
+        // there, one sample out of a whole curve.
+        case 'sinc': return chain(sub(div(call('cos', a), a), div(call('sin', a), pow(a, num(2)))));
+        case 'coth': return chain(sub(ONE, pow(call('coth', a), num(2))));
         default:
-          // min/max/floor/mod/…: no smooth derivative; caller falls back to FD.
+          // min/max/floor/mod/… (and gamma: digamma isn't in the language):
+          // no smooth derivative; caller falls back to FD.
           throw new Error(`Cannot differentiate ${e.name}.`);
       }
     }
