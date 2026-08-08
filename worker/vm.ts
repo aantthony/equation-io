@@ -5,7 +5,7 @@
  * sample is too slow and Workers forbid dynamic codegen (`new Function`), so
  * expressions compile once to opcode arrays run by a small stack machine.
  */
-import { type Expr, erf, ineqComparisons, normalcdf, normalpdf } from '../lib/expr.ts';
+import { type Expr, erf, ineqComparisons, normalcdf, normalpdf, realPow } from '../lib/expr.ts';
 
 const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2, Fn3, Lt, Le, Gt, Ge, Sel }
 
@@ -154,7 +154,7 @@ export function run(p: Prog, vars: ArrayLike<number>, stack: Float64Array): numb
       case Op.Sub: sp--; stack[sp - 1] -= stack[sp]; break;
       case Op.Mul: sp--; stack[sp - 1] *= stack[sp]; break;
       case Op.Div: sp--; stack[sp - 1] /= stack[sp]; break;
-      case Op.Pow: sp--; stack[sp - 1] = Math.pow(stack[sp - 1], stack[sp]); break;
+      case Op.Pow: sp--; stack[sp - 1] = realPow(stack[sp - 1], stack[sp]); break;
       case Op.Neg: stack[sp - 1] = -stack[sp - 1]; break;
       case Op.Fn1: stack[sp - 1] = FN1_TABLE[arg](stack[sp - 1]); break;
       case Op.Fn2: sp--; stack[sp - 1] = FN2_TABLE[arg](stack[sp - 1], stack[sp]); break;
