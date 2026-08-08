@@ -64,14 +64,31 @@ float eq_isprime(float x) {
   return 1.0;
 }
 float eq_pow(float a, float b) {
-  // Support negative bases for integer exponents (e.g. (-2)^3).
+  // Support negative bases via the "real odd root" convention, e.g.
+  // (-8)^(1/3) = -2, matching graphing calculators like Desmos. For a < 0,
+  // find the exponent's rational form p/q in lowest terms via a tolerance
+  // search over small denominators (q = 1..12); if q is odd, the root is
+  // real: sign * |a|^b, sign negative iff the reduced numerator p is odd.
+  // No match within tolerance, or an even q (an even root, e.g. (-4)^(1/2)),
+  // leaves the result NaN. Tolerance 1e-6 is tight enough that a typed
+  // decimal like 0.33333 (~3.3e-6 from 1/3) is left undefined rather than
+  // silently snapped. Kept in sync with realPow() in expr.ts (same
+  // algorithm; eq_gcd stands in for the CPU version's inline gcd loop).
   if (a >= 0.0) return pow(a, b);
-  float bi = floor(b + 0.5);
-  if (abs(b - bi) < 1e-6) {
-    float m = pow(-a, b);
-    return mod(bi, 2.0) < 0.5 ? m : -m;
+  for (int q = 1; q <= 12; q++) {
+    float fq = float(q);
+    float p = floor(b * fq + 0.5);
+    float g = eq_gcd(abs(p), fq);
+    if (g < 1.0) g = 1.0;
+    float pr = p / g;
+    float qr = fq / g;
+    if (abs(b - pr / qr) < 1e-6) {
+      if (mod(qr, 2.0) < 0.5) return sqrt(-1.0); // even root: undefined
+      float sign = mod(abs(pr), 2.0) > 0.5 ? -1.0 : 1.0;
+      return sign * pow(-a, b);
+    }
   }
-  return sqrt(-1.0); // NaN: undefined for negative base, fractional exponent
+  return sqrt(-1.0); // no small-denominator rational found
 }
 // Complex arithmetic on vec2(re, im).
 vec2 c_mul(vec2 a, vec2 b) { return vec2(a.x*b.x - a.y*b.y, a.x*b.y + a.y*b.x); }
