@@ -1,21 +1,29 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CORNER_PROJECT_S,
   type Sample,
   type Vec2,
   claimGesture,
-  exitDistances,
-  exitTarget,
+  cornerPositions,
+  dismissEdge,
+  exitRay,
   makeSpring,
+  nearestCorner,
   project,
   releaseVelocity,
   rubberband,
-  shouldDismiss,
   shouldOpen,
   stepSpring,
+  throwDir,
 } from './fling.ts';
 
-/** A 300×500 panel sitting 12px in from the top-left corner. */
-const BOX = { left: 12, top: 12, width: 300, height: 500 };
+/** A 300×500 panel in a 390×720 phone viewport with 12px margins. */
+const W = 300;
+const H = 500;
+const VW = 390;
+const VH = 720;
+const M = { top: 12, right: 12, bottom: 12, left: 12 };
+const CORNERS = cornerPositions(VW, VH, W, H, M);
 
 describe('rubberband', () => {
   it('resists immediately and saturates at the limit', () => {
@@ -77,26 +85,112 @@ describe('releaseVelocity', () => {
   });
 });
 
-describe('shouldDismiss', () => {
-  it('dismisses a slow drag carried past half the panel', () => {
-    expect(shouldDismiss({ x: 0, y: -260 }, { x: 0, y: 0 }, BOX)).toBe(true);
-    expect(shouldDismiss({ x: -160, y: 0 }, { x: 0, y: 0 }, BOX)).toBe(true);
+describe('cornerPositions', () => {
+  it('rests the panel inside the margins at all four corners', () => {
+    expect(CORNERS).toEqual([
+      { x: 12, y: 12 },
+      { x: VW - 12 - W, y: 12 },
+      { x: 12, y: VH - 12 - H },
+      { x: VW - 12 - W, y: VH - 12 - H },
+    ]);
   });
 
-  it('cancels a slow drag short of half', () => {
-    expect(shouldDismiss({ x: 0, y: -240 }, { x: 0, y: 0 }, BOX)).toBe(false);
-    expect(shouldDismiss({ x: -140, y: 0 }, { x: 0, y: 0 }, BOX)).toBe(false);
+  it('honors asymmetric margins (safe areas)', () => {
+    const c = cornerPositions(VW, VH, W, H, { top: 60, right: 12, bottom: 40, left: 20 });
+    expect(c[0]).toEqual({ x: 20, y: 60 });
+    expect(c[3]).toEqual({ x: VW - 12 - W, y: VH - 40 - H });
+  });
+});
+
+describe('nearestCorner', () => {
+  it('picks the corner the projected point belongs to', () => {
+    expect(nearestCorner({ x: 0, y: 0 }, CORNERS)).toBe(0);
+    expect(nearestCorner({ x: VW, y: 0 }, CORNERS)).toBe(1);
+    expect(nearestCorner({ x: 0, y: VH }, CORNERS)).toBe(2);
+    expect(nearestCorner({ x: VW, y: VH }, CORNERS)).toBe(3);
   });
 
-  it('lets a flick dismiss from a short distance (projection covers the rest)', () => {
-    // 60px in, flicked up at 1600px/s: projects to 60 + 320 past halfway.
-    expect(shouldDismiss({ x: 0, y: -60 }, { x: 0, y: -1600 }, BOX)).toBe(true);
-    expect(shouldDismiss({ x: -40, y: 0 }, { x: -1400, y: 0 }, BOX)).toBe(true);
+  it('is decided by the projection, so a soft flick crosses the screen', () => {
+    // At TL, flicked down at 1500 px/s: the projected point, not the current
+    // one, must land in BL territory.
+    const pos = CORNERS[0];
+    const v = { x: 0, y: 1500 };
+    expect(nearestCorner(project(pos, v, CORNER_PROJECT_S), CORNERS)).toBe(2);
+    // The same flick judged at the current position would stay put.
+    expect(nearestCorner(pos, CORNERS)).toBe(0);
+  });
+});
+
+describe('dismissEdge', () => {
+  it('stays on-screen for positions inside the viewport', () => {
+    for (const c of CORNERS) expect(dismissEdge(c, W, H, VW, VH)).toBeNull();
+    expect(dismissEdge({ x: 45, y: 110 }, W, H, VW, VH)).toBeNull();
+  });
+
+  it('commits once more than half the panel projects past an edge', () => {
+    expect(dismissEdge({ x: -151, y: 12 }, W, H, VW, VH)).toBe('left');
+    expect(dismissEdge({ x: -149, y: 12 }, W, H, VW, VH)).toBeNull();
+    expect(dismissEdge({ x: 12, y: -251 }, W, H, VW, VH)).toBe('top');
+    expect(dismissEdge({ x: VW - W + 151, y: 12 }, W, H, VW, VH)).toBe('right');
+    expect(dismissEdge({ x: 12, y: VH - H + 251 }, W, H, VW, VH)).toBe('bottom');
+  });
+
+  it('lets a flick commit through the projection', () => {
+    // 60px into a drag toward the top, flicked at 1600 px/s.
+    const proj = project({ x: 12, y: -48 }, { x: 0, y: -1600 });
+    expect(dismissEdge(proj, W, H, VW, VH)).toBe('top');
   });
 
   it('lets a pull-back flick rescue a drag already past half', () => {
-    // Physically past halfway, but thrown back toward home on release.
-    expect(shouldDismiss({ x: 0, y: -270 }, { x: 0, y: 800 }, BOX)).toBe(false);
+    const proj = project({ x: 12, y: -260 }, { x: 0, y: 900 });
+    expect(dismissEdge(proj, W, H, VW, VH)).toBeNull();
+  });
+
+  it('reads a diagonal hurl as its deepest edge', () => {
+    // Past half on the left (fraction 160/300) and beyond on the top
+    // (fraction 300/500): top is the deeper crossing.
+    expect(dismissEdge({ x: -160, y: -300 }, W, H, VW, VH)).toBe('top');
+  });
+});
+
+describe('throwDir', () => {
+  const edge = 'left' as const;
+
+  it('follows the throw when there is one', () => {
+    expect(throwDir({ x: -900, y: -200 }, { x: -10, y: 0 }, edge)).toEqual({ x: -900, y: -200 });
+  });
+
+  it('keeps a slow carry’s heading', () => {
+    expect(throwDir({ x: -40, y: 0 }, { x: -180, y: -30 }, edge)).toEqual({ x: -180, y: -30 });
+  });
+
+  it('falls back to straight out the crossed edge', () => {
+    expect(throwDir({ x: 0, y: 0 }, { x: 0, y: 0 }, 'bottom')).toEqual({ x: 0, y: 1 });
+  });
+});
+
+describe('exitRay', () => {
+  it('continues along the throw until one side fully clears', () => {
+    // From TL thrown hard left with a slight upward drift.
+    const t = exitRay({ x: -80, y: 0 }, { x: -1200, y: -100 }, W, H, VW, VH);
+    expect(t.x).toBeCloseTo(-W - 28, 5);
+    expect(t.y).toBeCloseTo(-((-W - 28 + 80) / -1200) * 100, 5);
+  });
+
+  it('can leave past any corner on a diagonal throw', () => {
+    // From BR, thrown down-right: exits whichever side the ray meets first.
+    const pos = CORNERS[3];
+    const t = exitRay(pos, { x: 900, y: 900 }, W, H, VW, VH);
+    const clearsRight = t.x >= VW + 28 - 1e-6;
+    const clearsBottom = t.y >= VH + 28 - 1e-6;
+    expect(clearsRight || clearsBottom).toBe(true);
+    // And it kept the 45° heading.
+    expect(t.x - pos.x).toBeCloseTo(t.y - pos.y, 5);
+  });
+
+  it('leaves a panel already fully out where it is', () => {
+    const out = { x: -W - 100, y: 12 };
+    expect(exitRay(out, { x: -500, y: 0 }, W, H, VW, VH)).toEqual(out);
   });
 });
 
@@ -115,48 +209,13 @@ describe('shouldOpen', () => {
     expect(shouldOpen({ x: -160, y: -120 }, { x: 0, y: 0 }, diag)).toBe(true);
     expect(shouldOpen({ x: -360, y: -270 }, { x: 0, y: 0 }, diag)).toBe(false);
   });
-});
 
-describe('exitTarget', () => {
-  const dists = exitDistances(BOX); // {x: 340, y: 540}
-
-  it('computes exit travel from the panel box', () => {
-    expect(dists).toEqual({ x: 12 + 300 + 28, y: 12 + 500 + 28 });
-  });
-
-  it('continues along the throw line until one axis clears the screen', () => {
-    const t = exitTarget({ x: -80, y: -10 }, { x: -1200, y: -100 }, dists);
-    // Leftward is the near exit: x lands exactly fully off-screen.
-    expect(t.x).toBeCloseTo(-340, 5);
-    // y keeps the throw's slope: 100/1200 of the remaining 260px of x travel.
-    expect(t.y).toBeCloseTo(-10 - (260 / 1200) * 100, 5);
-  });
-
-  it('falls back to the drag displacement on a slow release', () => {
-    const t = exitTarget({ x: -180, y: -6 }, { x: -40, y: 0 }, dists);
-    expect(t.x).toBeCloseTo(-340, 5);
-    expect(t.y).toBeCloseTo(-6 - (160 / 180) * 6, 5);
-  });
-
-  it('drops throw components that point back on-screen', () => {
-    // Thrown up and to the right: exits straight up, x pinned where it is.
-    const t = exitTarget({ x: -30, y: -100 }, { x: 600, y: -900 }, dists);
-    expect(t.x).toBe(-30);
-    expect(t.y).toBeCloseTo(-540, 5);
-  });
-
-  it('uses the displacement when the whole throw points on-screen', () => {
-    // Deep left drag released with a small down-right jitter above the speed
-    // floor: the exit must still leave leftward, not "straight up".
-    const t = exitTarget({ x: -260, y: 0 }, { x: 200, y: 260 }, dists);
-    expect(t.x).toBeCloseTo(-340, 5);
-    expect(t.y).toBe(0);
-  });
-
-  it('goes straight up given nothing to go on', () => {
-    const t = exitTarget({ x: 0, y: 0 }, { x: 0, y: 0 }, dists);
-    expect(t.x).toBe(0);
-    expect(t.y).toBeCloseTo(-540, 5);
+  it('works for parks past the far edges too', () => {
+    // Pinned bottom-right, thrown off to the right: parked is positive-x.
+    const parkedRight: Vec2 = { x: 340, y: 0 };
+    expect(shouldOpen({ x: 120, y: 0 }, { x: 0, y: 0 }, parkedRight)).toBe(true);
+    expect(shouldOpen({ x: 220, y: 0 }, { x: 0, y: 0 }, parkedRight)).toBe(false);
+    expect(shouldOpen({ x: 320, y: 0 }, { x: -1200, y: 0 }, parkedRight)).toBe(true);
   });
 });
 

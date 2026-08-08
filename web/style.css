@@ -129,8 +129,56 @@ html, body {
   border: 1px solid var(--panel-border);
   border-radius: 10px;
   box-shadow: 0 4px 20px var(--panel-shadow);
-  padding: 8px;
+  /* Extra top room for the grip strip. */
+  padding: 16px 8px 8px;
 }
+
+/* Corner pinning (panel-swipe.ts): flicking the panel re-anchors it via
+   these classes rather than a transform, so a bottom-pinned panel grows
+   upward as equations are added and rotations keep it glued to its corner. */
+#panel.pin-right {
+  left: auto;
+  right: calc(12px + env(safe-area-inset-right));
+}
+#panel.pin-bottom {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  max-height: calc(100% - 24px - env(safe-area-inset-top));
+}
+
+/* The drag handle: a strip along the panel's top edge (under the corner
+   buttons) drawn as an iOS-sheet grabber pill. Touches can drag the panel
+   from anywhere, but for a mouse this is the one drag surface — anywhere
+   else a mouse drag means text selection. */
+#panel-grip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 16px;
+  z-index: 1;
+  cursor: grab;
+  /* No browser pan may start on the handle, so its touchmoves stay
+     cancelable and a drag claims instantly — even mid-edit, when the text
+     below cedes to caret and selection gestures. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+#panel-grip:active { cursor: grabbing; }
+#panel-grip::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  width: 36px;
+  height: 4px;
+  margin-left: -18px;
+  border-radius: 2px;
+  background: var(--panel-border);
+}
+#panel-grip:hover::after { background: var(--muted); }
 
 #theme-toggle,
 #state-reset {
@@ -350,8 +398,6 @@ html, body {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-#panel { position: relative; }
-
 #examples {
   /* Never shrinks (the summary row stays visible), but caps itself and scrolls
      internally so an open example tree can't push the panel past its max.
@@ -458,6 +504,16 @@ html, body {
 #panel-chip.shown {
   opacity: 1;
   transform: none;
+}
+/* The chip sits at whichever corner the panel left from (same classes as
+   the panel's pinning, applied together in panel-swipe.ts). */
+#panel-chip.pin-right {
+  left: auto;
+  right: calc(12px + env(safe-area-inset-right));
+}
+#panel-chip.pin-bottom {
+  top: auto;
+  bottom: calc(12px + env(safe-area-inset-bottom));
 }
 @media (prefers-reduced-motion: reduce) {
   #panel-chip { transition: opacity 0.15s ease-out; }

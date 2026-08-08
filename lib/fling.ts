@@ -1,20 +1,24 @@
 /**
- * Touch-dismissal physics: the math behind flicking a panel off-screen the
- * way iOS moves its sheets and banners. Pure and DOM-free — web/panel-swipe.ts
- * owns the touch events and styles — so the tuning that makes the gesture
- * feel right lives under test.
+ * Touch-dismissal and corner-pinning physics: the math behind flicking a
+ * panel between screen corners or off-screen entirely, the way iOS moves its
+ * sheets, banners, and picture-in-picture window. Pure and DOM-free —
+ * web/panel-swipe.ts owns the events and styles — so the tuning that makes
+ * the gesture feel right lives under test.
  *
  * The feel comes from four rules borrowed from UIKit:
  *  - while touched, the panel is pinned to the finger — no easing, no lag;
- *  - directions that cannot dismiss resist with a diminishing-returns rubber
- *    band instead of a hard stop;
  *  - release decides by *projected momentum* (where the panel would coast to,
- *    not where it is), so a slow drag past halfway and a short sharp flick
- *    both dismiss;
+ *    not where it is), so a slow drag past halfway off an edge and a short
+ *    sharp flick both dismiss, and a soft directional flick is enough to send
+ *    the panel across the screen to another corner;
+ *  - the projected point picks the destination: past half the panel beyond
+ *    any screen edge it leaves along the throw line, otherwise it belongs to
+ *    the nearest corner — Apple's picture-in-picture recipe;
  *  - the hand-off from finger to animation is a spring seeded with the
  *    release velocity, so motion stays continuous through the release.
  *
- * Units are px and seconds throughout (sample times in ms, as events give).
+ * Coordinates are the panel's top-left corner in viewport space, px and
+ * seconds throughout (sample times in ms, as events give).
  */
 
 export interface Vec2 {
@@ -31,10 +35,12 @@ export interface Sample {
 }
 
 /**
- * Diminishing-returns pull for directions that cannot dismiss, UIScrollView's
- * overscroll curve: starts at slope `c` and approaches `limit` asymptotically,
- * so the panel visibly gives but can never be dragged far the wrong way.
- * Negative input (a direction that is free, not resisted) passes through 0.
+ * Diminishing-returns pull, UIScrollView's overscroll curve: starts at slope
+ * `c` and approaches `limit` asymptotically, so pulling the panel past a
+ * boundary visibly gives but never gets far. Used when pulling the panel
+ * open beyond its parked and home positions; ordinary panel drags are free
+ * in every direction (every direction leads somewhere). Negative input (a
+ * free direction) passes through 0.
  */
 export function rubberband(d: number, limit = 90, c = 0.55): number {
   if (d <= 0) return 0;
@@ -65,80 +71,126 @@ export function releaseVelocity(samples: readonly Sample[], t: number): Vec2 {
   return { x: (last.x - first.x) / dt, y: (last.y - first.y) / dt };
 }
 
-/** How far ahead a release looks: ~the distance a friction-decayed coast
- *  would add. Larger reads more flick-sensitive. */
+/** How far ahead the *dismissal* test looks: ~the distance a friction-decayed
+ *  coast would add. Kept short so leaving the screen takes real intent. */
 const PROJECT_S = 0.2;
+
+/** How far ahead the *corner* pick looks. Longer than the dismissal horizon:
+ *  crossing the screen should take a soft directional flick, not a hurl —
+ *  the panel glides the distance the finger implied. */
+export const CORNER_PROJECT_S = 0.35;
 
 /** Where the gesture would coast to if the finger's momentum carried on. */
 export function project(offset: Vec2, v: Vec2, tau = PROJECT_S): Vec2 {
   return { x: offset.x + v.x * tau, y: offset.y + v.y * tau };
 }
 
-/** The panel's at-rest viewport box, as the DOM side measures it. */
-export interface Box {
-  left: number;
+/** Clear margins the panel rests inside (screen edge + safe areas). */
+export interface Margins {
   top: number;
-  width: number;
-  height: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
 /**
- * Travel needed per axis (as a positive number) before a panel anchored at
- * the top-left has fully cleared the screen; `pad` covers its drop shadow.
+ * The four rest positions of a w×h panel — TL, TR, BL, BR — as top-left
+ * coordinates inside a vw×vh viewport.
  */
-export function exitDistances(box: Box, pad = 28): Vec2 {
-  return { x: box.left + box.width + pad, y: box.top + box.height + pad };
+export function cornerPositions(vw: number, vh: number, w: number, h: number, m: Margins): Vec2[] {
+  return [
+    { x: m.left, y: m.top },
+    { x: vw - m.right - w, y: m.top },
+    { x: m.left, y: vh - m.bottom - h },
+    { x: vw - m.right - w, y: vh - m.bottom - h },
+  ];
 }
 
-/**
- * Commit or cancel: dismiss when the projected point has crossed half the
- * panel on either dismissing axis (up or left). Encodes both ways out — a
- * slow deliberate drag past halfway with no speed, and a flick whose
- * projection covers the distance the finger didn't.
- */
-export function shouldDismiss(offset: Vec2, v: Vec2, box: Box): boolean {
-  const p = project(offset, v);
-  return -p.x > box.width / 2 || -p.y > box.height / 2;
+/** Index of the corner nearest to `p` — fed the *projected* release point,
+ *  this is Apple's fluid-interfaces corner-pinning rule. */
+export function nearestCorner(p: Vec2, corners: readonly Vec2[]): number {
+  let best = 0;
+  let bestD = Infinity;
+  corners.forEach((c, i) => {
+    const d = (c.x - p.x) ** 2 + (c.y - p.y) ** 2;
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  return best;
 }
 
+export type Edge = 'left' | 'right' | 'top' | 'bottom';
+
 /**
- * Whether releasing a pull-open drag (from the collapsed chip) should open
- * the panel: the projected point must be more than halfway home along the
- * ray it was parked on. The mirror of shouldDismiss.
+ * Commit or stay: the edge the projected position has pushed more than half
+ * the panel beyond — the dismissal decision — or null to remain on-screen.
+ * All four edges count, so the panel can be thrown out past any corner. Ties
+ * go to the deepest overhang, so a diagonal hurl reads as the edge it most
+ * clearly crossed.
  */
-export function shouldOpen(offset: Vec2, v: Vec2, parked: Vec2): boolean {
-  const p = project(offset, v);
-  const len2 = parked.x * parked.x + parked.y * parked.y;
-  if (!len2) return true;
-  return (p.x * parked.x + p.y * parked.y) / len2 < 0.5;
+export function dismissEdge(proj: Vec2, w: number, h: number, vw: number, vh: number): Edge | null {
+  // Each entry: how far the panel pokes past that edge, and the size of the
+  // panel on that axis (the yardstick for "half").
+  const overhangs: Array<[Edge, number, number]> = [
+    ['left', -proj.x, w],
+    ['right', proj.x + w - vw, w],
+    ['top', -proj.y, h],
+    ['bottom', proj.y + h - vh, h],
+  ];
+  let best: Edge | null = null;
+  let bestFrac = 0.5; // more than half the panel must be projected out
+  for (const [edge, over, size] of overhangs) {
+    const frac = over / size;
+    if (frac > bestFrac) {
+      bestFrac = frac;
+      best = edge;
+    }
+  }
+  return best;
 }
 
 /** Slower than this (px/s) a release has no direction of its own. */
 const THROW_MIN_SPEED = 250;
 
 /**
- * Where a dismissal flies to: continue along the release velocity — the panel
- * leaves on the line it was thrown, like a flicked photo — stopping as soon
- * as one axis has fully cleared the screen. A slow release reuses the drag
- * displacement as its direction instead. Components pointing back on-screen
- * (down, right) are dropped: nothing exits that way.
+ * The direction a dismissal leaves in: the throw velocity when there is one,
+ * else the drag displacement (a slow carry keeps its heading), else straight
+ * out the crossed edge.
  */
-export function exitTarget(offset: Vec2, v: Vec2, dists: Vec2, minSpeed = THROW_MIN_SPEED): Vec2 {
-  const fast = Math.hypot(v.x, v.y) >= minSpeed;
-  let dx = fast ? Math.min(v.x, 0) : 0;
-  let dy = fast ? Math.min(v.y, 0) : 0;
-  if (!dx && !dy) {
-    // Slow release, or a throw pointing entirely back on-screen: leave along
-    // the drag displacement instead.
-    dx = Math.min(offset.x, 0);
-    dy = Math.min(offset.y, 0);
-  }
-  if (!dx && !dy) dy = -1; // nothing to go on at all: straight up
-  const s = Math.min(
-    dx < 0 ? (-dists.x - offset.x) / dx : Infinity,
-    dy < 0 ? (-dists.y - offset.y) / dy : Infinity,
-  );
-  return { x: offset.x + dx * s, y: offset.y + dy * s };
+export function throwDir(v: Vec2, disp: Vec2, edge: Edge, minSpeed = THROW_MIN_SPEED): Vec2 {
+  if (Math.hypot(v.x, v.y) >= minSpeed) return v;
+  if (Math.hypot(disp.x, disp.y) > 1) return disp;
+  return { left: { x: -1, y: 0 }, right: { x: 1, y: 0 }, top: { x: 0, y: -1 }, bottom: { x: 0, y: 1 } }[edge];
+}
+
+/**
+ * Where a dismissal flies to: from `pos` along `dir` until the panel has
+ * fully cleared the viewport on whichever side the ray reaches first (`pad`
+ * covers the drop shadow). A panel already fully out stays where it is.
+ */
+export function exitRay(pos: Vec2, dir: Vec2, w: number, h: number, vw: number, vh: number, pad = 28): Vec2 {
+  let t = Infinity;
+  if (dir.x < 0) t = Math.min(t, (-w - pad - pos.x) / dir.x);
+  if (dir.x > 0) t = Math.min(t, (vw + pad - pos.x) / dir.x);
+  if (dir.y < 0) t = Math.min(t, (-h - pad - pos.y) / dir.y);
+  if (dir.y > 0) t = Math.min(t, (vh + pad - pos.y) / dir.y);
+  if (!isFinite(t) || t <= 0) return pos;
+  return { x: pos.x + dir.x * t, y: pos.y + dir.y * t };
+}
+
+/**
+ * Whether releasing a pull-open drag (from the collapsed chip) should open
+ * the panel: the projected point must be more than halfway home along the
+ * ray it was parked on, `parked` and `offset` both relative to the pinned
+ * corner's rest position. The mirror of dismissEdge.
+ */
+export function shouldOpen(offset: Vec2, v: Vec2, parked: Vec2): boolean {
+  const p = project(offset, v);
+  const len2 = parked.x * parked.x + parked.y * parked.y;
+  if (!len2) return true;
+  return (p.x * parked.x + p.y * parked.y) / len2 < 0.5;
 }
 
 /**

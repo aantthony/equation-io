@@ -2529,12 +2529,19 @@ onThemeChange(() => {
 syncThemeToggle();
 themeToggle?.addEventListener('click', toggleTheme);
 
-// --- panel swipe (mobile) ---
+// --- panel flinging ---
 
-// On a phone the panel covers most of the graph; a swipe throws it off-screen
-// (up or to the side — it follows the finger and leaves along the flick), and
-// the y= chip it leaves behind brings it back.
-initPanelSwipe(document.getElementById('panel')!, document.getElementById('panel-chip')!);
+// The panel is a corner-pinned floating card: flick it (touch anywhere on
+// it; mouse via the grip strip) to another corner, or throw it past any
+// edge to dismiss it — the y= chip it leaves behind brings it back. The
+// equation list is passed in so text gestures (iOS caret and selection-
+// handle drags) are never mistaken for throws.
+initPanelSwipe(
+  document.getElementById('panel')!,
+  document.getElementById('panel-chip')!,
+  document.getElementById('panel-grip')!,
+  listEl,
+);
 
 // --- boot ---
 

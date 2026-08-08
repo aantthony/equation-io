@@ -1,77 +1,140 @@
 /**
- * Swipe-to-dismiss for the equations panel — the mobile way to get the panel
- * off the graph.
+ * Swipe-to-move and swipe-to-dismiss for the equations panel.
  *
- * The gesture follows Apple's touch grammar: from the first move the panel is
- * pinned to the finger (drag it up, left, or diagonally — both exits work),
- * directions that cannot dismiss give with a rubber band, and release
- * projects the remaining momentum: carried or flicked past halfway the panel
- * flies off along the throw line, otherwise it springs back home. Every
+ * The panel is a corner-pinned floating card, Apple's picture-in-picture
+ * grammar: from the first move it is pinned to the pointer, and release
+ * decides by projected momentum — thrown more than half past any screen
+ * edge it flies off along the throw line and a `y=` chip takes the nearest
+ * corner; otherwise it glides to whichever corner the projected point
+ * belongs to, so a soft directional flick sends it across the screen. Every
  * animation is a spring seeded with the release velocity, so motion is
  * continuous through the release — and interruptible: a new touch picks the
- * panel up wherever the animation currently holds it. Once dismissed, a
- * `y=` chip appears in the panel's corner; tapping it springs the panel
- * back, and dragging it pulls the panel back in under the finger.
+ * panel up wherever the animation currently holds it. Tapping the chip
+ * springs the panel back; dragging the chip pulls it back in under the
+ * finger. The chosen corner persists across visits.
  *
- * Touch-only by design. On a phone the panel covers most of the graph and
- * earns its dismissal; with a mouse it never needs to move — and a mouse
- * drag over text means selection, not throwing furniture. All physics and
- * decision math is lib/fling.ts, under test; this module owns the events,
- * the scroll-vs-swipe arbitration, and the styles.
+ * Touches drag from anywhere on the panel (scrolling lists and slider
+ * thumbs still win their own gestures, and while the editor is focused or
+ * holds a selection its text is ceded entirely — iOS caret and selection-
+ * handle drags dispatch plain touches at the text, and hijacking those
+ * would break text editing). The grip strip along the top edge drags with
+ * any pointer, which is the mouse's way in: elsewhere on the panel a mouse
+ * drag means text selection, not throwing furniture.
+ *
+ * All physics and decision math is lib/fling.ts, under test; this module
+ * owns the events, the scroll-vs-swipe arbitration, and the styles.
  */
 
 import {
+  CORNER_PROJECT_S,
   type Sample,
   type Spring,
   type Vec2,
   claimGesture,
-  exitDistances,
-  exitTarget,
+  cornerPositions,
+  dismissEdge,
+  exitRay,
   makeSpring,
+  nearestCorner,
+  project,
   releaseVelocity,
   rubberband,
-  shouldDismiss,
   shouldOpen,
   stepSpring,
+  throwDir,
 } from '../lib/fling.ts';
 
 /** Extra travel past the screen edge so the drop shadow fully clears too. */
 const EXIT_PAD = 28;
-/** Movement before a touch commits to being a drag at all (px). */
+/** Movement before a pointer commits to being a drag at all (px). */
 const SLOP = 9;
+/** The corner the panel was last pinned to, kept across visits. */
+const CORNER_KEY = 'eq-panel-corner';
 
-export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
+export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement, grip: HTMLElement, editor: HTMLElement): void {
   const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
 
-  /** The panel's translation from its at-rest place; (0,0) is home. */
+  /** Which corner the panel is pinned to: 0 TL, 1 TR, 2 BL, 3 BR. */
+  let corner = 0;
+  try {
+    const n = Number(localStorage.getItem(CORNER_KEY));
+    if (n >= 0 && n <= 3) corner = Math.floor(n);
+  } catch {}
+
+  /** The panel's translation from its pinned rest position; (0,0) is home. */
   const offset: Vec2 = { x: 0, y: 0 };
   let hidden = false;
   /** Unit direction the panel last left in; reopening retraces it. */
   let exitDir: Vec2 = { x: 0, y: -1 };
-  /** Exit travel per axis, for the outbound fade; refreshed per gesture. */
-  let dists: Vec2 = { x: 1, y: 1 };
+
+  /** Apply a corner's anchor classes: CSS anchoring (not a transform) so a
+   *  bottom-pinned panel grows upward when equations are added. */
+  const pin = (el: HTMLElement, i: number) => {
+    el.classList.toggle('pin-right', i % 2 === 1);
+    el.classList.toggle('pin-bottom', i >= 2);
+  };
+  pin(panel, corner);
+  pin(chip, corner);
 
   // --- geometry ---
 
-  /** The panel's at-rest viewport box (its live rect minus our transform). */
-  const baseBox = () => {
-    const r = panel.getBoundingClientRect();
-    return { left: r.left - offset.x, top: r.top - offset.y, width: r.width, height: r.height };
+  // env(safe-area-inset-*) is not readable from JS directly; a fixed probe
+  // with the insets as padding resolves them to pixels on demand.
+  const probe = document.createElement('div');
+  probe.style.cssText = 'position:fixed;inset:0;visibility:hidden;pointer-events:none;'
+    + 'padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)';
+  document.body.append(probe);
+
+  const margins = () => {
+    const s = getComputedStyle(probe);
+    return {
+      top: 12 + (parseFloat(s.paddingTop) || 0),
+      right: 12 + (parseFloat(s.paddingRight) || 0),
+      bottom: 12 + (parseFloat(s.paddingBottom) || 0),
+      left: 12 + (parseFloat(s.paddingLeft) || 0),
+    };
   };
 
-  /** Where a hidden panel parks: just fully off-screen along exitDir.
-   *  Recomputed from live geometry, so rotations while hidden can't strand
-   *  the panel half-visible when it returns. */
-  const parkedOffset = (): Vec2 =>
-    exitTarget({ x: 0, y: 0 }, { x: exitDir.x * 1e4, y: exitDir.y * 1e4 }, exitDistances(baseBox(), EXIT_PAD));
+  interface Geo {
+    /** Absolute top-left of the current pin's rest spot. */
+    rest: Vec2;
+    w: number;
+    h: number;
+    vw: number;
+    vh: number;
+    /** Rest positions of all four corners for the current panel size. */
+    corners: Vec2[];
+  }
+
+  /** Measured once per gesture/animation, so per-frame paint stays pure math. */
+  const measure = (): Geo => {
+    const r = panel.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    return {
+      rest: { x: r.left - offset.x, y: r.top - offset.y },
+      w: r.width,
+      h: r.height,
+      vw,
+      vh,
+      corners: cornerPositions(vw, vh, r.width, r.height, margins()),
+    };
+  };
+  let geo = measure();
 
   // --- painting ---
 
   function paint() {
-    const out = Math.min(1, Math.max(-offset.x / dists.x, -offset.y / dists.y, 0));
+    const { rest, w, h, vw, vh } = geo;
+    const x = rest.x + offset.x;
+    const y = rest.y + offset.y;
+    // A light fade once the panel starts leaving the screen; squared so the
+    // on-screen range barely dims and the flight does the fading.
+    const out = Math.min(
+      1,
+      Math.max(-x / (w + EXIT_PAD), (x + w - vw) / (w + EXIT_PAD), -y / (h + EXIT_PAD), (y + h - vh) / (h + EXIT_PAD), 0),
+    );
     panel.style.transform = offset.x || offset.y ? `translate3d(${offset.x}px, ${offset.y}px, 0)` : '';
-    // A light fade on the way out reads as speed; squared so the drag range
-    // barely dims and the flight does the fading.
     panel.style.opacity = out ? String(1 - 0.5 * out * out) : '';
   }
 
@@ -88,9 +151,9 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
 
   // --- the spring loop ---
   //
-  // One rAF loop integrating an x and a y spring toward home or the exit
+  // One rAF loop integrating an x and a y spring toward a corner or the exit
   // point. State lives in module scope rather than in an animation object so
-  // a touch can stop the loop and adopt `offset` mid-flight — catching the
+  // a pointer can stop the loop and adopt `offset` mid-flight — catching the
   // panel is just "the finger is the integrator now".
 
   let sx: Spring | null = null;
@@ -153,44 +216,75 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
 
   // --- transitions ---
 
-  function finishDismiss() {
+  /** Pin panel and chip to corner `i` and make it the new zero. Only valid
+   *  when the panel is at rest exactly on that corner (or hidden): the CSS
+   *  re-anchor and the cleared transform land on the same rect. */
+  function setCorner(i: number) {
+    corner = i;
+    try {
+      localStorage.setItem(CORNER_KEY, String(i));
+    } catch {} // private mode: the corner just won't stick across visits
+    pin(panel, i);
+    pin(chip, i);
+    offset.x = 0;
+    offset.y = 0;
+    panel.style.transform = '';
+    panel.style.opacity = '';
+  }
+
+  function finishDismiss(exitPos: Vec2) {
+    // The chip takes the corner nearest where the panel left — which is also
+    // where it will come back to.
+    setCorner(nearestCorner(exitPos, geo.corners));
     hidden = true;
     panel.style.visibility = 'hidden';
     panel.style.willChange = '';
     showChip();
   }
 
-  function dismiss(v: Vec2) {
-    // Drop the keyboard with the panel; the graph is what's being revealed.
-    if (panel.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
-    const d = exitDistances(baseBox(), EXIT_PAD);
-    dists = d;
-    const target = exitTarget(offset, v, d);
-    const len = Math.hypot(target.x, target.y) || 1;
-    exitDir = { x: target.x / len, y: target.y / len };
+  /** Shared release decision for panel drags (touch and grip alike). */
+  function releasePanel(v: Vec2, startOffset: Vec2) {
+    const { rest, w, h, vw, vh, corners } = geo;
+    const pos = { x: rest.x + offset.x, y: rest.y + offset.y };
+    const edge = dismissEdge(project(pos, v), w, h, vw, vh);
+    if (edge) {
+      // Drop the keyboard with the panel; the graph is what's being revealed.
+      if (panel.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
+      const disp = { x: offset.x - startOffset.x, y: offset.y - startOffset.y };
+      const dir = throwDir(v, disp, edge);
+      const len = Math.hypot(dir.x, dir.y) || 1;
+      exitDir = { x: dir.x / len, y: dir.y / len };
+      const exit = exitRay(pos, dir, w, h, vw, vh, EXIT_PAD);
+      const target = { x: exit.x - rest.x, y: exit.y - rest.y };
+      if (reduceMotion.matches) {
+        offset.x = target.x;
+        offset.y = target.y;
+        paint();
+        finishDismiss(exit);
+        return;
+      }
+      // Critically damped and quick: a thrown thing leaves fast, and any
+      // overshoot would land off-screen where nobody could see it anyway.
+      // Loose rest tolerances for the same reason.
+      animateTo(target, v, 0.32, 1, () => finishDismiss(exit), [6, 60]);
+      return;
+    }
+    // Not a dismissal: the projected point picks the corner (the PiP rule).
+    const i = nearestCorner(project(pos, v, CORNER_PROJECT_S), corners);
+    const target = { x: corners[i].x - rest.x, y: corners[i].y - rest.y };
     if (reduceMotion.matches) {
       offset.x = target.x;
       offset.y = target.y;
       paint();
-      finishDismiss();
-      return;
-    }
-    // Critically damped and quick: a thrown thing leaves fast, and any
-    // overshoot would land off-screen where nobody could see it anyway.
-    // Loose rest tolerances for the same reason.
-    animateTo(target, v, 0.32, 1, finishDismiss, [6, 60]);
-  }
-
-  function settle(v: Vec2) {
-    if (reduceMotion.matches) {
-      offset.x = 0;
-      offset.y = 0;
-      paint();
+      setCorner(i);
       idle();
       return;
     }
-    // Slightly underdamped: the panel arrives with one soft bounce.
-    animateTo({ x: 0, y: 0 }, v, 0.4, 0.78, idle);
+    // A glide with one soft arrival bounce; the finger's speed carries in.
+    animateTo(target, v, 0.45, 0.85, () => {
+      setCorner(i);
+      idle();
+    });
   }
 
   function present() {
@@ -198,10 +292,10 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     hideChip();
     hidden = false;
     panel.style.visibility = '';
-    const from = parkedOffset();
-    offset.x = from.x;
-    offset.y = from.y;
-    dists = exitDistances(baseBox(), EXIT_PAD);
+    geo = measure(); // offset is (0,0) while parked, so this reads the rest box
+    const parked = exitRay(geo.rest, exitDir, geo.w, geo.h, geo.vw, geo.vh, EXIT_PAD);
+    offset.x = parked.x - geo.rest.x;
+    offset.y = parked.y - geo.rest.y;
     if (reduceMotion.matches) {
       offset.x = 0;
       offset.y = 0;
@@ -213,20 +307,25 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     animateTo({ x: 0, y: 0 }, { x: 0, y: 0 }, 0.42, 0.8, idle);
   }
 
-  // --- touch handling ---
+  // --- gestures ---
 
   interface Gesture {
+    /** Touch identifier or pointerId. */
     id: number;
-    /** Touch start, client coords. */
+    /** Pointer start, client coords. */
     x0: number;
     y0: number;
-    /** Where the panel was when the touch began (pull space, unrubbered). */
+    /** Where the panel was when the pointer landed. */
     base: Vec2;
+    startOffset: Vec2;
     claimed: boolean;
-    /** Ceded to a scrollable: ignore this touch for the rest of its life. */
+    /** Ceded to a scrollable or the text editor: ignore until it ends. */
     dead: boolean;
     /** Dragging the panel back in from the chip. */
     pull: boolean;
+    /** Driven by pointer events on the grip/chip (mouse or pen). */
+    mouse: boolean;
+    fromEditor: boolean;
     scroll: { up: boolean; down: boolean } | null;
     samples: Sample[];
   }
@@ -251,11 +350,28 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     return null;
   }
 
-  /** Free toward dismissal, rubber away from it. */
-  const shape = (pull: number) => (pull <= 0 ? pull : rubberband(pull));
-  /** Pull-open space: clamped at the parked spot, rubbering past home. */
-  const shapePull = (raw: number, parked: number) =>
-    raw > 0 ? rubberband(raw) : Math.max(raw, parked);
+  /** A live selection in the editor: its iOS drag handles dispatch plain
+   *  touchmoves at the text, so those touches are never ours to claim. */
+  const editorSelection = (): boolean => {
+    const sel = getSelection();
+    return !!sel && !sel.isCollapsed && sel.anchorNode !== null && editor.contains(sel.anchorNode);
+  };
+
+  /** While focused (caret dragging, keyboard up) or holding a selection, the
+   *  editor owns every touch on its text. */
+  const editorOwnsTouches = (): boolean => {
+    const a = document.activeElement;
+    return a === editor || (!!a && editor.contains(a)) || editorSelection();
+  };
+
+  /** Pull-open space: free between the parked spot and home, rubbering past
+   *  home and stopped just past the parked spot. Sign-aware — the panel may
+   *  be parked off any side of the screen. */
+  const shapePull = (raw: number, parked: number): number => {
+    if (parked < 0) return raw >= 0 ? rubberband(raw) : Math.max(raw, parked);
+    if (parked > 0) return raw <= 0 ? -rubberband(-raw) : Math.min(raw, parked);
+    return Math.sign(raw) * rubberband(Math.abs(raw));
+  };
 
   const trackedTouch = (e: TouchEvent) => {
     const g = gesture;
@@ -264,30 +380,47 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     return null;
   };
 
+  function startPanelGesture(id: number, x: number, y: number, t: number, opts: { claimed: boolean; mouse: boolean; fromEditor: boolean; scroll: Gesture['scroll'] }) {
+    const flying = raf !== 0;
+    if (flying) stopAnim();
+    gesture = {
+      id,
+      x0: x,
+      y0: y,
+      base: { x: offset.x, y: offset.y },
+      startOffset: { x: offset.x, y: offset.y },
+      claimed: opts.claimed || flying, // a caught panel is already in hand
+      dead: false,
+      pull: false,
+      mouse: opts.mouse,
+      fromEditor: opts.fromEditor,
+      scroll: opts.scroll,
+      samples: [{ t, x, y }],
+    };
+    geo = measure();
+    panel.style.willChange = 'transform, opacity';
+  }
+
+  // --- panel touches: drag from anywhere that isn't someone else's gesture ---
+
   panel.addEventListener(
     'touchstart',
     e => {
       if (hidden || gesture || e.touches.length > 1) return;
       const t = e.changedTouches[0];
+      if (!(t.target instanceof Element)) return;
       // Range sliders and bound inputs own their drags outright. Buttons,
-      // links and the editor text stay grabbable: a tap on them never crosses
-      // the slop, and once a swipe claims the touch no click follows.
-      if (t.target instanceof Element && t.target.closest('input, select, textarea')) return;
-      const flying = raf !== 0;
-      if (flying) stopAnim();
-      gesture = {
-        id: t.identifier,
-        x0: t.clientX,
-        y0: t.clientY,
-        base: { x: offset.x, y: offset.y },
-        claimed: flying, // a caught panel is already in hand
-        dead: false,
-        pull: false,
-        scroll: t.target instanceof Element ? scrollableAt(t.target) : null,
-        samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }],
-      };
-      dists = exitDistances(baseBox(), EXIT_PAD);
-      panel.style.willChange = 'transform, opacity';
+      // links and (unfocused) editor text stay grabbable: a tap on them never
+      // crosses the slop, and once a swipe claims the touch no click follows.
+      if (t.target.closest('input, select, textarea')) return;
+      const fromEditor = editor.contains(t.target);
+      if (fromEditor && editorOwnsTouches()) return; // caret/selection drags are text edits, not throws
+      startPanelGesture(t.identifier, t.clientX, t.clientY, e.timeStamp, {
+        claimed: false,
+        mouse: false,
+        fromEditor,
+        scroll: scrollableAt(t.target),
+      });
     },
     { passive: true },
   );
@@ -296,7 +429,7 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     'touchmove',
     e => {
       const g = gesture;
-      if (!g || g.pull || g.dead) return;
+      if (!g || g.pull || g.mouse || g.dead) return;
       const t = trackedTouch(e);
       if (!t) return;
       g.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
@@ -304,6 +437,12 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
       const dx = t.clientX - g.x0;
       const dy = t.clientY - g.y0;
       if (!g.claimed) {
+        // A selection that appeared since the touch began (long-press mid-
+        // gesture) hands the touch to its drag handles.
+        if (g.fromEditor && editorSelection()) {
+          g.dead = true;
+          return;
+        }
         const claim = claimGesture(dx, dy, g.scroll, SLOP);
         if (claim === 'undecided') return;
         if (claim === 'scroll') {
@@ -311,13 +450,10 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
           return;
         }
         g.claimed = true;
-        // The touch is a panel drag now: drop the soft keyboard so the graph
-        // it reveals is visible, not the keyboard's letterbox.
-        if (panel.contains(document.activeElement)) (document.activeElement as HTMLElement).blur();
       }
       if (e.cancelable) e.preventDefault(); // ours: no scroll, no selection
-      offset.x = shape(g.base.x + dx);
-      offset.y = shape(g.base.y + dy);
+      offset.x = g.base.x + dx;
+      offset.y = g.base.y + dy;
       paint();
     },
     { passive: false },
@@ -325,27 +461,106 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
 
   const endPanelTouch = (e: TouchEvent) => {
     const g = gesture;
-    if (!g || g.pull) return;
+    if (!g || g.pull || g.mouse) return;
     if (!trackedTouch(e)) return;
     gesture = null;
     if (!g.claimed || g.dead) {
       idle();
       return;
     }
-    if (e.type === 'touchcancel') {
-      settle({ x: 0, y: 0 });
-      return;
-    }
-    const v = releaseVelocity(g.samples, e.timeStamp);
-    if (shouldDismiss(offset, v, baseBox())) dismiss(v);
-    else settle(v);
+    const v = e.type === 'touchcancel' ? { x: 0, y: 0 } : releaseVelocity(g.samples, e.timeStamp);
+    releasePanel(v, g.startOffset);
   };
   panel.addEventListener('touchend', endPanelTouch);
   panel.addEventListener('touchcancel', endPanelTouch);
 
-  // --- the chip: tap to bring the panel back, or drag it back in ---
+  // --- the grip: the same drag for mouse and pen ---
+  //
+  // Touches on the grip take the touch path above (and claim on the first
+  // real move: nothing scrollable lives under it), so only non-touch
+  // pointers are driven from here.
+
+  grip.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch' || hidden || gesture || e.button !== 0) return;
+    e.preventDefault(); // a drag, not a text-selection start
+    startPanelGesture(e.pointerId, e.clientX, e.clientY, e.timeStamp, {
+      claimed: true, // grabbing the handle is intent enough
+      mouse: true,
+      fromEditor: false,
+      scroll: null,
+    });
+    try {
+      grip.setPointerCapture(e.pointerId);
+    } catch {} // synthetic events have no active pointer to capture
+  });
+
+  grip.addEventListener('pointermove', e => {
+    const g = gesture;
+    if (!g?.mouse || g.pull || e.pointerId !== g.id) return;
+    g.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+    if (g.samples.length > 32) g.samples.shift();
+    offset.x = g.base.x + (e.clientX - g.x0);
+    offset.y = g.base.y + (e.clientY - g.y0);
+    paint();
+  });
+
+  const endGrip = (e: PointerEvent) => {
+    const g = gesture;
+    if (!g?.mouse || g.pull || e.pointerId !== g.id) return;
+    gesture = null;
+    const v = e.type === 'pointercancel' ? { x: 0, y: 0 } : releaseVelocity(g.samples, e.timeStamp);
+    releasePanel(v, g.startOffset);
+  };
+  grip.addEventListener('pointerup', endGrip);
+  grip.addEventListener('pointercancel', endGrip);
+
+  // --- the chip: tap to bring the panel back, or drag to pull it in ---
+
+  /** The drag becomes the panel: park it under the pointer and let it pull. */
+  function beginPull(g: Gesture) {
+    hidden = false;
+    panel.style.visibility = '';
+    hideChip();
+    geo = measure(); // offset is (0,0) while parked, so this reads the rest box
+    const parked = exitRay(geo.rest, exitDir, geo.w, geo.h, geo.vw, geo.vh, EXIT_PAD);
+    g.base = { x: parked.x - geo.rest.x, y: parked.y - geo.rest.y };
+    panel.style.willChange = 'transform, opacity';
+  }
+
+  function releasePull(g: Gesture, v: Vec2, cancelled: boolean) {
+    const open = !cancelled && shouldOpen(offset, v, g.base);
+    if (reduceMotion.matches) {
+      if (open) {
+        offset.x = 0;
+        offset.y = 0;
+        paint();
+        panel.style.willChange = '';
+      } else {
+        offset.x = g.base.x;
+        offset.y = g.base.y;
+        paint();
+        finishDismiss({ x: geo.rest.x + g.base.x, y: geo.rest.y + g.base.y });
+      }
+      return;
+    }
+    if (open) {
+      animateTo({ x: 0, y: 0 }, v, 0.42, 0.8, idle);
+    } else {
+      // Not pulled far enough: park it again and bring the chip back.
+      const parked = { x: geo.rest.x + g.base.x, y: geo.rest.y + g.base.y };
+      animateTo(g.base, v, 0.36, 1, () => finishDismiss(parked), [6, 60]);
+    }
+  }
+
+  /** Set when a mouse drag on the chip just ended: the click that follows a
+   *  drag is not a tap. (Touch drags never produce that click at all.) */
+  let suppressChipClick = false;
 
   chip.addEventListener('click', () => {
+    if (suppressChipClick) {
+      suppressChipClick = false;
+      return;
+    }
     if (gesture?.pull) return;
     present();
   });
@@ -360,9 +575,12 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
         x0: t.clientX,
         y0: t.clientY,
         base: { x: 0, y: 0 },
+        startOffset: { x: 0, y: 0 },
         claimed: false,
         dead: false,
         pull: true,
+        mouse: false,
+        fromEditor: false,
         scroll: null,
         samples: [{ t: e.timeStamp, x: t.clientX, y: t.clientY }],
       };
@@ -374,7 +592,7 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
     'touchmove',
     e => {
       const g = gesture;
-      if (!g?.pull) return;
+      if (!g?.pull || g.mouse) return;
       const t = trackedTouch(e);
       if (!t) return;
       g.samples.push({ t: e.timeStamp, x: t.clientX, y: t.clientY });
@@ -383,14 +601,8 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
       const dy = t.clientY - g.y0;
       if (!g.claimed) {
         if (dx * dx + dy * dy < SLOP * SLOP) return;
-        // The drag becomes the panel: park it under the finger and pull.
         g.claimed = true;
-        g.base = parkedOffset();
-        hidden = false;
-        panel.style.visibility = '';
-        hideChip();
-        dists = exitDistances(baseBox(), EXIT_PAD);
-        panel.style.willChange = 'transform, opacity';
+        beginPull(g);
       }
       if (e.cancelable) e.preventDefault();
       offset.x = shapePull(g.base.x + dx, g.base.x);
@@ -402,30 +614,62 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement): void {
 
   const endChipTouch = (e: TouchEvent) => {
     const g = gesture;
-    if (!g?.pull) return;
+    if (!g?.pull || g.mouse) return;
     if (!trackedTouch(e)) return;
     gesture = null;
     if (!g.claimed) return; // a tap: the click that follows presents
-    const v = releaseVelocity(g.samples, e.timeStamp);
-    const open = e.type !== 'touchcancel' && shouldOpen(offset, v, g.base);
-    if (reduceMotion.matches) {
-      if (open) {
-        offset.x = 0;
-        offset.y = 0;
-        paint();
-        panel.style.willChange = '';
-      } else {
-        offset.x = g.base.x;
-        offset.y = g.base.y;
-        paint();
-        finishDismiss();
-      }
-      return;
-    }
-    if (open) animateTo({ x: 0, y: 0 }, v, 0.42, 0.8, idle);
-    // Not pulled far enough: park it again and bring the chip back.
-    else animateTo(g.base, v, 0.36, 1, finishDismiss, [6, 60]);
+    releasePull(g, releaseVelocity(g.samples, e.timeStamp), e.type === 'touchcancel');
   };
   chip.addEventListener('touchend', endChipTouch);
   chip.addEventListener('touchcancel', endChipTouch);
+
+  chip.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch' || !hidden || gesture || e.button !== 0) return;
+    suppressChipClick = false;
+    gesture = {
+      id: e.pointerId,
+      x0: e.clientX,
+      y0: e.clientY,
+      base: { x: 0, y: 0 },
+      startOffset: { x: 0, y: 0 },
+      claimed: false,
+      dead: false,
+      pull: true,
+      mouse: true,
+      fromEditor: false,
+      scroll: null,
+      samples: [{ t: e.timeStamp, x: e.clientX, y: e.clientY }],
+    };
+    try {
+      chip.setPointerCapture(e.pointerId);
+    } catch {}
+  });
+
+  chip.addEventListener('pointermove', e => {
+    const g = gesture;
+    if (!g?.pull || !g.mouse || e.pointerId !== g.id) return;
+    g.samples.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+    if (g.samples.length > 32) g.samples.shift();
+    const dx = e.clientX - g.x0;
+    const dy = e.clientY - g.y0;
+    if (!g.claimed) {
+      if (dx * dx + dy * dy < SLOP * SLOP) return;
+      g.claimed = true;
+      beginPull(g);
+    }
+    offset.x = shapePull(g.base.x + dx, g.base.x);
+    offset.y = shapePull(g.base.y + dy, g.base.y);
+    paint();
+  });
+
+  const endChipPointer = (e: PointerEvent) => {
+    const g = gesture;
+    if (!g?.pull || !g.mouse || e.pointerId !== g.id) return;
+    gesture = null;
+    if (!g.claimed) return; // a plain click: the click event presents
+    suppressChipClick = true;
+    releasePull(g, releaseVelocity(g.samples, e.timeStamp), e.type === 'pointercancel');
+  };
+  chip.addEventListener('pointerup', endChipPointer);
+  chip.addEventListener('pointercancel', endChipPointer);
 }
