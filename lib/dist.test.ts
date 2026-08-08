@@ -720,3 +720,124 @@ describe('density estimation', () => {
     expect(shadePolygon(curve, 5, 6)).not.toBeNull(); // empty clip yields a flat sliver
   });
 });
+
+describe('conditional-CDF curves (the quadrature tier)', () => {
+  it('renders Y/(X+1) to reference accuracy: flat 3/2 plateau, then (1/z²−1)/2', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = Y/(X+1)']);
+    const c = sys.curve('Z', {})!;
+    for (let z = 0.05; z <= 0.45; z += 0.05) expect(densityAt(c, z)).toBeCloseTo(1.5, 3);
+    for (let z = 0.55; z <= 0.95; z += 0.1) {
+      expect(densityAt(c, z)).toBeCloseTo((1 / (z * z) - 1) / 2, 2);
+    }
+    expect(c.mean).toBeCloseTo(Math.LN2 / 2, 6);
+    expect(c.sd).toBeCloseTo(Math.sqrt(1 / 6 - (Math.LN2 / 2) ** 2), 5);
+    expect(c.mass).toBe(1);
+  });
+
+  it('renders X²+Y²: the π/4 plateau is flat, then the arccos tail', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = X^2+Y^2']);
+    const c = sys.curve('Z', {})!;
+    const plateau: number[] = [];
+    for (let z = 0.1; z <= 0.9; z += 0.1) plateau.push(densityAt(c, z));
+    for (const f of plateau) expect(f).toBeCloseTo(Math.PI / 4, 2);
+    expect(Math.max(...plateau) - Math.min(...plateau)).toBeLessThan(0.006);
+    for (const z of [1.2, 1.5, 1.8]) {
+      expect(densityAt(c, z)).toBeCloseTo(Math.PI / 4 - Math.acos(1 / Math.sqrt(z)), 2);
+    }
+    expect(c.mean).toBeCloseTo(2 / 3, 5);
+    expect(c.sd).toBeCloseTo(Math.sqrt(8 / 45), 5);
+  });
+
+  it('renders the product X·Y as −ln z', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = X Y']);
+    const c = sys.curve('Z', {})!;
+    for (let z = 0.1; z <= 0.9; z += 0.1) expect(densityAt(c, z)).toBeCloseTo(-Math.log(z), 2);
+    expect(c.mean).toBeCloseTo(0.25, 6);
+  });
+
+  it('renders a one-variable transform: X² is 1/(2√z) with hard edges', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Z = X^2']);
+    const c = sys.curve('Z', {})!;
+    for (let z = 0.2; z <= 0.9; z += 0.1) expect(densityAt(c, z)).toBeCloseTo(0.5 / Math.sqrt(z), 2);
+    expect(c.pts[1]).toBe(0); // the support edge cuts off straight down
+    expect(c.pts[c.pts.length - 1]).toBe(0);
+    expect(c.mean).toBeCloseTo(1 / 3, 6);
+  });
+
+  it('keeps point masses as stems: floor(2X) is two atoms and no curve', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Z = floor(2X)']);
+    const c = sys.curve('Z', {})!;
+    expect(c.pts.length).toBe(0);
+    expect(c.atoms).toEqual([{ x: 0, p: 0.5 }, { x: 1, p: 0.5 }]);
+  });
+
+  it('responds to slider constants through the environment', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = Y/(X+a)']);
+    expect(densityAt(sys.curve('Z', { a: 1 })!, 0.25)).toBeCloseTo(1.5, 3);
+    // a = 2: Z = Y/(X+2) is flat at 5/2 up to 1/3.
+    expect(densityAt(sys.curve('Z', { a: 2 })!, 0.25)).toBeCloseTo(2.5, 3);
+  });
+
+  it('is deterministic: resample() leaves the curve and mean untouched', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = Y/(X+1)']);
+    const c1 = sys.curve('Z', {});
+    const m1 = sys.mean('Z', {});
+    sys.resample(7);
+    expect(sys.curve('Z', {})).toBe(c1);
+    expect(sys.mean('Z', {})).toBe(m1);
+    sys.resample(0); // restore the default salt for the rest of the suite
+  });
+
+  it('zooms the drawn window past heavy tails: 1/(1+X) resolves its peak', () => {
+    // 1+X crosses its pole, so Z has ~1/z² tails: the 0.5% quantiles sit
+    // near ±48 and would starve the peak (true height ≈ 0.97 near z ≈ ½)
+    // down to a handful of grid cells. The visual window must collapse to
+    // the bulk while a light-tailed χ² keeps its full quantile range.
+    const { sys } = build(['X ~ Normal(0, 1)', 'Z = 1/(1+X)']);
+    const c = sys.curve('Z', {})!;
+    expect(c.pts[0]).toBeGreaterThan(-20);
+    expect(c.pts[c.pts.length - 2]).toBeLessThan(20);
+    const exact = (z: number) =>
+      Math.exp(-((1 / z - 1) ** 2) / 2) / (Math.sqrt(2 * Math.PI) * z * z);
+    expect(densityAt(c, 0.5)).toBeCloseTo(exact(0.5), 1);
+    expect(densityAt(c, 1)).toBeCloseTo(exact(1), 2);
+    // No finite moments (1+X crosses its pole): μ/σ are truncation
+    // artifacts, so the curve carries robust stand-ins for the readout.
+    expect(c.robust).toBeDefined();
+    expect(c.robust!.median).toBeCloseTo(0.7099, 2); // Φ(1/m − 1) = 0.6587
+    expect(c.robust!.iqr).toBeCloseTo(0.8716, 2);
+  });
+
+  it('keeps sound moments unflagged: X²+Y² shows μ/σ, not median/IQR', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = X^2+Y^2']);
+    expect(sys.curve('Z', {})!.robust).toBeUndefined();
+  });
+
+  it('re-rasterizes the visible stretch on deep zoom, at full accuracy', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Z = 1/(1+X)']);
+    const exact = (z: number) =>
+      Math.exp(-((1 / z - 1) ** 2) / 2) / (Math.sqrt(2 * Math.PI) * z * z);
+    const full = sys.curve('Z', {})!;
+    const zoomed = sys.curve('Z', {}, { lo: 0.35, hi: 0.59 })!;
+    // The full-window curve's grid is too coarse to land the peak; the
+    // zoomed rasterization must nail it (true height ≈ 0.9679).
+    expect(densityAt(full, 0.5)).not.toBeCloseTo(exact(0.5), 2);
+    expect(densityAt(zoomed, 0.5)).toBeCloseTo(exact(0.5), 3);
+    // Still one global curve: the dense stretch splices into the polyline.
+    expect(zoomed.pts[0]).toBe(full.pts[0]);
+    expect(zoomed.pts[zoomed.pts.length - 2]).toBe(full.pts[full.pts.length - 2]);
+    // Pan headroom: a nearby view reuses the cached zoom, no recompute.
+    expect(sys.curve('Z', {}, { lo: 0.36, hi: 0.6 })).toBe(zoomed);
+    // Zooming out far enough returns the plain full-window curve.
+    expect(sys.curve('Z', {}, { lo: -30, hi: 30 })).toBe(full);
+  });
+
+  it('leaves three-variable expressions to the sampled tier', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'W ~ Uniform(0, 1)', 'T = X Y W']);
+    const c1 = sys.curve('T', {})!;
+    expect(c1.mean).toBeCloseTo(0.125, 2); // sample-grade, not quadrature-grade
+    sys.resample(7);
+    expect(sys.curve('T', {})).not.toBe(c1); // sampled curves DO redraw
+    sys.resample(0);
+  });
+});
