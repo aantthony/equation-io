@@ -801,6 +801,35 @@ describe('conditional-CDF curves (the quadrature tier)', () => {
       Math.exp(-((1 / z - 1) ** 2) / 2) / (Math.sqrt(2 * Math.PI) * z * z);
     expect(densityAt(c, 0.5)).toBeCloseTo(exact(0.5), 1);
     expect(densityAt(c, 1)).toBeCloseTo(exact(1), 2);
+    // No finite moments (1+X crosses its pole): μ/σ are truncation
+    // artifacts, so the curve carries robust stand-ins for the readout.
+    expect(c.robust).toBeDefined();
+    expect(c.robust!.median).toBeCloseTo(0.7099, 2); // Φ(1/m − 1) = 0.6587
+    expect(c.robust!.iqr).toBeCloseTo(0.8716, 2);
+  });
+
+  it('keeps sound moments unflagged: X²+Y² shows μ/σ, not median/IQR', () => {
+    const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'Z = X^2+Y^2']);
+    expect(sys.curve('Z', {})!.robust).toBeUndefined();
+  });
+
+  it('re-rasterizes the visible stretch on deep zoom, at full accuracy', () => {
+    const { sys } = build(['X ~ Normal(0, 1)', 'Z = 1/(1+X)']);
+    const exact = (z: number) =>
+      Math.exp(-((1 / z - 1) ** 2) / 2) / (Math.sqrt(2 * Math.PI) * z * z);
+    const full = sys.curve('Z', {})!;
+    const zoomed = sys.curve('Z', {}, { lo: 0.35, hi: 0.59 })!;
+    // The full-window curve's grid is too coarse to land the peak; the
+    // zoomed rasterization must nail it (true height ≈ 0.9679).
+    expect(densityAt(full, 0.5)).not.toBeCloseTo(exact(0.5), 2);
+    expect(densityAt(zoomed, 0.5)).toBeCloseTo(exact(0.5), 3);
+    // Still one global curve: the dense stretch splices into the polyline.
+    expect(zoomed.pts[0]).toBe(full.pts[0]);
+    expect(zoomed.pts[zoomed.pts.length - 2]).toBe(full.pts[full.pts.length - 2]);
+    // Pan headroom: a nearby view reuses the cached zoom, no recompute.
+    expect(sys.curve('Z', {}, { lo: 0.36, hi: 0.6 })).toBe(zoomed);
+    // Zooming out far enough returns the plain full-window curve.
+    expect(sys.curve('Z', {}, { lo: -30, hi: 30 })).toBe(full);
   });
 
   it('leaves three-variable expressions to the sampled tier', () => {

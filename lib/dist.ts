@@ -376,6 +376,11 @@ export interface DensityCurve {
   sd: number;
   /** Fraction of samples that are finite (< 1 for partial support like sqrt(X)). */
   mass: number;
+  /** Present when the tails are heavy enough that mean/sd are truncation
+   *  artifacts (a 1% trim collapses the spread severalfold — 1/W through a
+   *  pole has no finite moments at all): robust location/spread for the
+   *  readout to show instead. */
+  robust?: { median: number; iqr: number };
 }
 
 const fnv1a = (s: string): number => {
@@ -651,6 +656,7 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
   const q = (p: number) => sub[Math.min(sub.length - 1, Math.floor(p * sub.length))];
   const spread = Math.min(sd, (q(0.75) - q(0.25)) / 1.349);
   if (!(spread > 0)) return { pts: [], atoms, mean, sd, mass }; // no continuous spread to draw
+  const robust = robustIfUnstable(sub, q, sd);
   // 1.4× Silverman's rule. His 0.9 factor is MISE-optimal for i.i.d. draws;
   // measured on these stratified columns, ~1.4× lowers BOTH the sup-error and
   // the curve's residual wobble (second-difference energy ÷2.4) — smoothness
@@ -761,7 +767,35 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
     const k = inWindow / area;
     for (let i = 1; i < pts.length; i += 2) pts[i] *= k;
   }
-  return { pts, atoms, mean, sd, mass };
+  return { pts, atoms, mean, sd, mass, robust };
+}
+
+/** Robust location/spread when the moments are truncation artifacts: a 1%
+ *  trim collapsing the spread severalfold means the tails own the second
+ *  moment (or it does not exist at all). Undefined while moments are sound. */
+function robustIfUnstable(
+  sortedPool: ArrayLike<number>,
+  q: (p: number) => number,
+  sd: number,
+): { median: number; iqr: number } | undefined {
+  const tlo = q(0.005);
+  const thi = q(0.995);
+  let n = 0;
+  let s = 0;
+  let s2 = 0;
+  for (let i = 0; i < sortedPool.length; i++) {
+    const v = sortedPool[i];
+    if (v >= tlo && v <= thi) {
+      n++;
+      s += v;
+      s2 += v * v;
+    }
+  }
+  if (!n) return undefined;
+  const m = s / n;
+  const sdTrim = Math.sqrt(Math.max(s2 / n - m * m, 0));
+  if (sd <= 3 * sdTrim) return undefined;
+  return { median: q(0.5), iqr: q(0.75) - q(0.25) };
 }
 
 // --- deterministic conditional-CDF curves (the quadrature tier) ---
@@ -787,6 +821,7 @@ const QC_OUTER = 512; // conditioning-variable quantile nodes (two-var case)
 const QC_INNER = 512; // inner-variable grid per node
 const QC_SINGLE = 8192; // inner grid for one-variable transforms
 const QC_BINS = 512; // density grid resolution (matches estimateCurve)
+const QC_ZOOM_MAX = 32; // deepest densification of a zoomed rasterization
 
 /** The quantile function of a base distribution at these parameter values,
  *  or null while the parameters are invalid. */
@@ -806,11 +841,30 @@ function quantileClosure(
   }
 }
 
-function conditionalCurve(
+/** The reusable half of the quadrature tier: the sorted tensor columns and
+ *  everything derived from them once — atoms, moments, the drawn window.
+ *  Rasterizing a density over ANY z-range from this is ~1ms (condDensity),
+ *  which is what lets a zoomed-in viewport recompute the visible stretch of
+ *  the curve at full grid resolution instead of magnifying polyline cells. */
+interface QCBase {
+  sorted: Float64Array[];
+  M: number;
+  NX: number;
+  atoms?: Array<{ x: number; p: number }>;
+  atomValues: Set<number>;
+  mean: number;
+  sd: number;
+  mass: number;
+  robust?: { median: number; iqr: number };
+  /** Full drawn window of the continuous part; null when purely discrete. */
+  window: { lo: number; hi: number; hardLo: boolean; hardHi: boolean } | null;
+}
+
+function conditionalBase(
   g: Expr,
   vars: Array<{ name: string; quantile: (u: number) => number }>,
   env: Record<string, number>,
-): DensityCurve | null {
+): QCBase | null {
   const outer = vars.length === 2 ? vars[0] : null;
   const inner = vars[vars.length - 1];
   const NX = outer ? QC_OUTER : 1;
@@ -884,7 +938,8 @@ function conditionalCurve(
       }
     }
   }
-  if (contCount < 16 || !(cmax > cmin)) return { pts: [], atoms, mean, sd, mass };
+  const partial = { sorted, M, NX, atoms, atomValues, mean, sd, mass };
+  if (contCount < 16 || !(cmax > cmin)) return { ...partial, window: null };
   const stride = Math.max(1, Math.floor(contCount / 8192));
   const pool: number[] = [];
   let seen = 0;
@@ -896,21 +951,32 @@ function conditionalCurve(
   }
   pool.sort((a, b) => a - b);
   const q = (p: number) => pool[Math.min(pool.length - 1, Math.floor(p * pool.length))];
+  const robust = robustIfUnstable(pool, q, sd);
   const [wlo, whi] = visualWindow(pool, cmin, cmax);
   const qlo = Math.max(q(0.005), wlo);
   const qhi = Math.min(q(0.995), whi);
   const span = qhi - qlo;
-  if (!(span > 0)) return { pts: [], atoms, mean, sd, mass };
+  if (!(span > 0)) return { ...partial, robust, window: null };
   const hardLo = qlo - cmin <= 0.25 * span;
   const hardHi = cmax - qhi <= 0.25 * span;
-  const lo = hardLo ? cmin : qlo;
-  const hi = hardHi ? cmax : qhi;
+  return {
+    ...partial,
+    robust,
+    window: { lo: hardLo ? cmin : qlo, hi: hardHi ? cmax : qhi, hardLo, hardHi },
+  };
+}
 
-  // Accumulate F on the grid: each column contributes its interpolated
-  // conditional CDF with equal weight (quantile midpoints carry equal
-  // probability). Order statistics sit at run-midpoint quantiles; half-gap
-  // extensions carry F to 0 and to the column's full continuous mass —
-  // exact for a locally linear g, so a uniform's support edge lands exactly.
+/**
+ * Rasterize the density over [lo, hi]: accumulate F on the grid — each
+ * column contributes its interpolated conditional CDF with equal weight
+ * (quantile midpoints carry equal probability); order statistics sit at
+ * run-midpoint quantiles, and half-gap extensions carry F to 0 and to the
+ * column's full continuous mass, exact for a locally linear g so a
+ * uniform's support edge lands exactly — then differentiate. Returns the
+ * bare polyline, no edge drops.
+ */
+function condDensity(base: QCBase, lo: number, hi: number): number[] {
+  const { sorted, M, NX, atomValues } = base;
   const B = QC_BINS;
   const dz = (hi - lo) / B;
   const F = new Float64Array(B + 1);
@@ -959,36 +1025,42 @@ function conditionalCurve(
     }
   }
 
-  // The density is the differentiated CDF. A narrow binomial pass then
-  // absorbs the midpoint rule's cell-scale ripple (worst where the
-  // conditional CDF has a moving square-root edge, e.g. X²+Y²) at the cost
-  // of rounding kinks over ±2 cells — far inside a line width.
+  // The density is the differentiated CDF. A narrow Gaussian pass then
+  // absorbs the outer midpoint rule's ripple (worst where the conditional
+  // CDF has a moving square-root edge, e.g. X²+Y²). The ripple lives at the
+  // FULL window's cell scale, so a zoomed-in rasterization widens the
+  // radius to keep covering it — kinks round over about one full-window
+  // cell either way, consistent at every zoom. One-variable transforms have
+  // no outer grid and keep the minimal ±2 cells.
   const raw = new Float64Array(B + 1);
   for (let k = 0; k <= B; k++) {
     const a = k === 0 ? F[0] : F[k - 1];
     const b = k === B ? F[B] : F[k + 1];
     raw[k] = Math.max(0, (b - a) / (k === 0 || k === B ? dz : 2 * dz));
   }
-  const KERNEL = [1, 4, 6, 4, 1];
+  const win = base.window!;
+  const r = NX === 1
+    ? 2
+    : Math.max(2, Math.min(64, Math.round((win.hi - win.lo) / B / dz / 2)));
+  const kern = new Float64Array(2 * r + 1);
+  for (let k = -r; k <= r; k++) kern[k + r] = Math.exp((-2 * k * k) / (r * r));
   const dens = new Float64Array(B + 1);
   for (let k = 0; k <= B; k++) {
     let s = 0;
     let ws = 0;
-    for (let d = -2; d <= 2; d++) {
+    for (let d = -r; d <= r; d++) {
       const j = k + d;
-      if (j < 0 || j > B) continue; // clipped at ends, renormalized below
-      s += KERNEL[d + 2] * raw[j];
-      ws += KERNEL[d + 2];
+      if (j < 0 || j > B) continue; // clipped at ends, renormalized here
+      s += kern[d + r] * raw[j];
+      ws += kern[d + r];
     }
     dens[k] = s / ws;
   }
 
   const pts: number[] = [];
-  if (hardLo) pts.push(lo, 0); // the jump itself: a vertical at the edge
   for (let k = 0; k <= B; k++) pts.push(lo + k * dz, dens[k]);
-  if (hardHi) pts.push(hi, 0);
-  // The curve's area is the in-window continuous probability — the promise
-  // a density plot makes. Differencing and smoothing each perturb it a
+  // The curve's area is the range's continuous probability — the promise a
+  // density plot makes. Differencing and smoothing each perturb it a
   // little, so restore it exactly.
   let area = 0;
   for (let i = 0; i + 3 < pts.length; i += 2) {
@@ -999,7 +1071,19 @@ function conditionalCurve(
     const scale = target / area;
     for (let i = 1; i < pts.length; i += 2) pts[i] *= scale;
   }
-  return { pts, atoms, mean, sd, mass };
+  return pts;
+}
+
+/** The full-window curve for a base: the density polyline between hard-edge
+ *  drops, or a bare atoms-only curve when nothing continuous is drawable. */
+function condAssemble(base: QCBase): DensityCurve {
+  const { atoms, mean, sd, mass, robust, window: win } = base;
+  if (!win) return { pts: [], atoms, mean, sd, mass, robust };
+  const pts: number[] = [];
+  if (win.hardLo) pts.push(win.lo, 0); // the jump itself: a vertical at the edge
+  pts.push(...condDensity(base, win.lo, win.hi));
+  if (win.hardHi) pts.push(win.hi, 0);
+  return { pts, atoms, mean, sd, mass, robust };
 }
 
 /** Linear interpolation of a density polyline at x (0 outside its range). */
@@ -1038,8 +1122,12 @@ interface CacheEntry {
   col?: Float64Array;
   /** Exact usum piecewise-polynomial curve. */
   curve?: DensityCurve | null;
-  /** Deterministic conditional-CDF curve (the quadrature tier). */
+  /** Quadrature-tier base: sorted tensor columns + window (the ~15ms part). */
+  qcb?: QCBase | null;
+  /** Deterministic conditional-CDF curve over the full window. */
   qc?: DensityCurve | null;
+  /** Zoomed rasterization spliced into the full curve, keyed by its range. */
+  qcz?: { lo: number; hi: number; curve: DensityCurve };
   /** Sampled KDE estimate — the last-resort tier, dropped by resample(). */
   est?: DensityCurve | null;
   /** Quadrature moments (present once quadMoments ran for this sig). */
@@ -1627,8 +1715,19 @@ export class RVSystem {
    * independent bases, the sample estimate as the last resort. (Rows whose
    * law is a closed-form pdf never come here — they draw through the
    * shader.)
+   *
+   * A quadrature-tier curve is view-aware: when the viewport zooms deep
+   * into the drawn window, the visible stretch re-rasterizes at full grid
+   * resolution from the cached base (~1ms) and splices into the global
+   * polyline, so zooming reveals the density's true shape rather than the
+   * grid's cells. The zoomed range carries ×3 pan headroom and recomputes
+   * only when the view leaves it or outgrows its resolution.
    */
-  curve(name: string, env: Record<string, number>): DensityCurve | null {
+  curve(
+    name: string,
+    env: Record<string, number>,
+    view?: { lo: number; hi: number },
+  ): DensityCurve | null {
     const law = this.exactLaw(name);
     if (law?.kind === 'usum') {
       const rv = this.rvs.get(name)!;
@@ -1643,17 +1742,51 @@ export class RVSystem {
     const rv = this.rvs.get(name);
     if (!rv) throw new Error(`${name} has an error in its definition.`);
     const slot = this.entry(name, this.sig(rv, env));
-    if (slot.qc === undefined) slot.qc = this.condCurve(name, env);
-    if (slot.qc) return slot.qc;
+    if (slot.qcb === undefined) slot.qcb = this.condBase(name, env);
+    const base = slot.qcb;
+    if (base) {
+      if (slot.qc === undefined) slot.qc = condAssemble(base);
+      const full = slot.qc!;
+      const win = base.window;
+      if (!view || !win) return full;
+      const visLo = Math.max(view.lo, win.lo);
+      const visHi = Math.min(view.hi, win.hi);
+      const visSpan = visHi - visLo;
+      const fullSpan = win.hi - win.lo;
+      if (!(visSpan > 0) || visSpan >= 0.35 * fullSpan) return full;
+      const z = slot.qcz;
+      if (z && visLo >= z.lo && visHi <= z.hi && visSpan >= 0.15 * (z.hi - z.lo)) {
+        return z.curve;
+      }
+      // Densify around the view, floored so differencing never outruns the
+      // base grid's own sample resolution.
+      const span = Math.max(3 * visSpan, fullSpan / QC_ZOOM_MAX);
+      const mid = (visLo + visHi) / 2;
+      const zLo = Math.max(win.lo, mid - span / 2);
+      const zHi = Math.min(win.hi, mid + span / 2);
+      const zoomPts = condDensity(base, zLo, zHi);
+      const fp = full.pts;
+      const pts: number[] = [];
+      for (let i = 0; i + 1 < fp.length; i += 2) if (fp[i] < zLo) pts.push(fp[i], fp[i + 1]);
+      if (!pts.length && win.hardLo && zLo <= win.lo) pts.push(win.lo, 0);
+      pts.push(...zoomPts);
+      const tail: number[] = [];
+      for (let i = 0; i + 1 < fp.length; i += 2) if (fp[i] > zHi) tail.push(fp[i], fp[i + 1]);
+      if (!tail.length && win.hardHi && zHi >= win.hi) tail.push(win.hi, 0);
+      pts.push(...tail);
+      const curve = { ...full, pts };
+      slot.qcz = { lo: zLo, hi: zHi, curve };
+      return curve;
+    }
     const col = this.columns(name, env);
     const entry = this.cache.get(name)!;
     if (entry.est === undefined) entry.est = estimateCurve(col);
     return entry.est;
   }
 
-  /** The conditional-CDF quadrature curve for a derived variable over one
+  /** The conditional-CDF quadrature base for a derived variable over one
    *  or two independent bases, or null when that tier does not apply. */
-  private condCurve(name: string, env: Record<string, number>): DensityCurve | null {
+  private condBase(name: string, env: Record<string, number>): QCBase | null {
     const rv = this.rvs.get(name);
     if (rv?.kind !== 'derived') return null;
     const g = this.grounded(name);
@@ -1669,7 +1802,7 @@ export class RVSystem {
       vars.push({ name: n, quantile });
     }
     try {
-      return conditionalCurve(g, vars, env);
+      return conditionalBase(g, vars, env);
     } catch {
       return null; // unbound parameter or broken expression: the sampled tier reports it
     }

@@ -774,7 +774,7 @@ function render() {
         case 'density': {
           let c: DensityCurve | null = null;
           try {
-            c = rvSys.curve(plot.rv, env);
+            c = rvSys.curve(plot.rv, env, { lo: xmin, hi: xmax });
           } catch { break; /* a parameter is missing this frame */ }
           if (!c) break;
           if (c.pts.length >= 4) extras.polylines.push({ pts: c.pts, color: css, width: 2 });
@@ -790,7 +790,7 @@ function render() {
           // area under the variable's density, when the body has that shape.
           if (!plot.shade) break;
           try {
-            const c = rvSys.curve(plot.shade.rv, env);
+            const c = rvSys.curve(plot.shade.rv, env, { lo: xmin, hi: xmax });
             if (!c) break;
             const lo = plot.shade.lo ? evaluate(plot.shade.lo, env) : undefined;
             const hi = plot.shade.hi ? evaluate(plot.shade.hi, env) : undefined;
@@ -810,7 +810,7 @@ function render() {
             const exact = rvSys.exactDist(plot.rv);
             let h = exact
               ? evaluate(pdfExpr(exact, { kind: 'num', value: m }), env)
-              : (c => (c ? densityAt(c, m) : 0))(rvSys.curve(plot.rv, env));
+              : (c => (c ? densityAt(c, m) : 0))(rvSys.curve(plot.rv, env, { lo: xmin, hi: xmax }));
             if (!isFinite(h) || h < 0) h = 0;
             if (h > 0) extras.polylines.push({ pts: [m, 0, m, h], color: css, width: 2 });
             extras.points.push({ x: m, y: h, color: css, r: 4 });
@@ -1027,7 +1027,12 @@ function recompileAll() {
       // still ≈, but good to display precision rather than sampling noise.
       const s = rvSys.quadMoments(name, envT0) ?? rvSys.curve(name, envT0);
       if (!s) return;
-      eq.info = `μ ≈ ${s.mean.toFixed(3)}, σ ≈ ${s.sd.toFixed(3)}`
+      // Heavy tails make μ/σ truncation artifacts (1/W through a pole has
+      // no finite moments): show robust location/spread instead of noise.
+      const r = (s as Partial<DensityCurve>).robust;
+      eq.info = (r
+        ? `median ≈ ${r.median.toFixed(3)}, IQR ≈ ${r.iqr.toFixed(3)} (heavy tails: μ, σ unstable)`
+        : `μ ≈ ${s.mean.toFixed(3)}, σ ≈ ${s.sd.toFixed(3)}`)
         + (s.mass < 0.9995 ? `, P(defined) ≈ ${s.mass.toFixed(3)}` : '');
     } catch { /* not numerically computable right now (e.g. animated) */ }
   };
