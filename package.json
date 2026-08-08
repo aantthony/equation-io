@@ -18,7 +18,7 @@
     "perf:update": "node scripts/perf.ts --update"
   },
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "homepage": "https://equation.io/",
   "engines": {
     "node": ">=24"
