@@ -8,6 +8,15 @@
    the caret, text selection, and the panel's internal scrolling alone. */
 * { touch-action: pan-x pan-y; }
 
+/* The page is an app, not a document: chrome, buttons and the graph never
+   select (no blue sweep on select-all, no long-press selection on labels).
+   Only real text surfaces opt back in — the equation editor and the slider
+   bound fields below. Inherited, so those two opt-ins cover their subtrees. */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* Light theme (default). The dark overrides live in [data-theme="dark"] below;
    the JS theme switch flips data-theme on <html>, so every panel color moves
    with the WebGL background in one place. */
@@ -162,8 +171,6 @@ html, body {
      cancelable and a drag claims instantly — even mid-edit, when the text
      below cedes to caret and selection gestures. */
   touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 #panel-grip:active { cursor: grabbing; }
@@ -220,6 +227,10 @@ html, body {
   font: 15px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
   padding: 2px 0;
   caret-color: var(--text);
+  /* Opt back out of the body's user-select: none — explicitly, because on
+     iOS a non-selectable ancestor otherwise leaves the editable untappable. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .eq-line {
   position: relative;
@@ -314,6 +325,9 @@ html, body {
   text-align: center;
   appearance: textfield;
   -moz-appearance: textfield;
+  /* Editable despite sitting inside a non-selectable .eq-widget. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .eq-slider-bound:focus { color: var(--bound-focus); }
 .eq-slider-bound::-webkit-outer-spin-button,
@@ -355,7 +369,6 @@ html, body {
   font: italic 12px ui-sans-serif, system-ui;
   color: var(--summary);
   cursor: pointer;
-  user-select: none;
 }
 .eq-curve-toggle input {
   margin: 0;
@@ -430,7 +443,6 @@ html, body {
 #examples > summary {
   color: var(--muted);
   cursor: pointer;
-  user-select: none;
   padding: 2px;
 }
 #examples > summary:hover { color: var(--muted-hover); }
@@ -440,7 +452,6 @@ html, body {
 #examples details > summary {
   color: var(--summary);
   cursor: pointer;
-  user-select: none;
   padding: 2px;
   font-weight: 500;
 }
@@ -490,8 +501,6 @@ html, body {
      its touchmoves stay cancelable for the pull-open gesture. */
   touch-action: none;
   -webkit-tap-highlight-color: transparent;
-  user-select: none;
-  -webkit-user-select: none;
   /* Hidden pose; .shown transitions from it, popping the chip in as the
      panel clears the screen. A transition (not an animation) so JS can
      stage the flip: unhide, reflow, then add .shown. */
