@@ -788,6 +788,21 @@ describe('conditional-CDF curves (the quadrature tier)', () => {
     sys.resample(0); // restore the default salt for the rest of the suite
   });
 
+  it('zooms the drawn window past heavy tails: 1/(1+X) resolves its peak', () => {
+    // 1+X crosses its pole, so Z has ~1/z² tails: the 0.5% quantiles sit
+    // near ±48 and would starve the peak (true height ≈ 0.97 near z ≈ ½)
+    // down to a handful of grid cells. The visual window must collapse to
+    // the bulk while a light-tailed χ² keeps its full quantile range.
+    const { sys } = build(['X ~ Normal(0, 1)', 'Z = 1/(1+X)']);
+    const c = sys.curve('Z', {})!;
+    expect(c.pts[0]).toBeGreaterThan(-20);
+    expect(c.pts[c.pts.length - 2]).toBeLessThan(20);
+    const exact = (z: number) =>
+      Math.exp(-((1 / z - 1) ** 2) / 2) / (Math.sqrt(2 * Math.PI) * z * z);
+    expect(densityAt(c, 0.5)).toBeCloseTo(exact(0.5), 1);
+    expect(densityAt(c, 1)).toBeCloseTo(exact(1), 2);
+  });
+
   it('leaves three-variable expressions to the sampled tier', () => {
     const { sys } = build(['X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'W ~ Uniform(0, 1)', 'T = X Y W']);
     const c1 = sys.curve('T', {})!;

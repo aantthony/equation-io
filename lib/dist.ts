@@ -557,6 +557,51 @@ function evalCols(
  *  the continuous remainder as a binned kernel density estimate (Silverman
  *  bandwidth over a robust spread) whose area equals its share of the
  *  finite-sample mass. Null when nothing is finite. */
+/**
+ * Clip a drawn window to where the density is visually present: iterate a
+ * coarse-histogram zoom over a value pool, trimming end bins below ~1/256
+ * of the peak bin — sub-pixel at plot scale. Without this, heavy tails
+ * (anything through a pole, like 1/(1+X) for normal X) stretch a
+ * fixed-quantile window by orders of magnitude and starve the peak of grid
+ * resolution. Light-tailed pools trim nothing: their peak-to-tail ratio
+ * never clears the threshold.
+ */
+function visualWindow(pool: ArrayLike<number>, lo0: number, hi0: number): [number, number] {
+  let wlo = lo0;
+  let whi = hi0;
+  const NB = 256;
+  const counts = new Float64Array(NB);
+  for (let iter = 0; iter < 4; iter++) {
+    const bw = (whi - wlo) / NB;
+    if (!(bw > 0)) break;
+    counts.fill(0);
+    for (let i = 0; i < pool.length; i++) {
+      const v = pool[i];
+      if (v >= wlo && v <= whi) counts[Math.min(NB - 1, Math.floor((v - wlo) / bw))]++;
+    }
+    let peak = 0;
+    for (let b = 0; b < NB; b++) peak = Math.max(peak, counts[b]);
+    const thresh = peak / NB;
+    if (thresh <= 1) break; // no dominant peak: the pool is already balanced
+    let a = 0;
+    while (a < NB && counts[a] < thresh) a++;
+    let b = NB - 1;
+    while (b >= 0 && counts[b] < thresh) b--;
+    if (b < a) break;
+    const nlo = wlo + a * bw;
+    const nhi = wlo + (b + 1) * bw;
+    // Zoom only on a genuine scale problem — the trim would collapse the
+    // window several-fold. A modest proposed trim means the tails carry
+    // honest visible mass (a singular peak over a light tail proposes one
+    // every round); keep them and stop, or iteration would compound
+    // sub-threshold trims into a real bite of probability.
+    if (nhi - nlo > 0.25 * (whi - wlo)) break;
+    wlo = nlo;
+    whi = nhi;
+  }
+  return [wlo, whi];
+}
+
 function estimateCurve(col: Float64Array): DensityCurve | null {
   let finite: number[] = [];
   let sum = 0;
@@ -621,8 +666,9 @@ function estimateCurve(col: Float64Array): DensityCurve | null {
     if (x < x0) x0 = x;
     if (x > x1) x1 = x;
   }
-  let lo = q(0.005) - 3 * h;
-  let hi = q(0.995) + 3 * h;
+  const [wlo, whi] = visualWindow(sub, x0, x1);
+  let lo = Math.max(q(0.005), wlo) - 3 * h;
+  let hi = Math.min(q(0.995), whi) + 3 * h;
   const hardLo = lo <= x0;
   const hardHi = hi >= x1;
   if (hardLo) lo = x0;
@@ -850,12 +896,15 @@ function conditionalCurve(
   }
   pool.sort((a, b) => a - b);
   const q = (p: number) => pool[Math.min(pool.length - 1, Math.floor(p * pool.length))];
-  const span = q(0.995) - q(0.005);
+  const [wlo, whi] = visualWindow(pool, cmin, cmax);
+  const qlo = Math.max(q(0.005), wlo);
+  const qhi = Math.min(q(0.995), whi);
+  const span = qhi - qlo;
   if (!(span > 0)) return { pts: [], atoms, mean, sd, mass };
-  const hardLo = q(0.005) - cmin <= 0.25 * span;
-  const hardHi = cmax - q(0.995) <= 0.25 * span;
-  const lo = hardLo ? cmin : q(0.005);
-  const hi = hardHi ? cmax : q(0.995);
+  const hardLo = qlo - cmin <= 0.25 * span;
+  const hardHi = cmax - qhi <= 0.25 * span;
+  const lo = hardLo ? cmin : qlo;
+  const hi = hardHi ? cmax : qhi;
 
   // Accumulate F on the grid: each column contributes its interpolated
   // conditional CDF with equal weight (quantile midpoints carry equal
