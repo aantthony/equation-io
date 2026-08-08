@@ -8,7 +8,8 @@
  * (parametric surfaces/curves, z = f(x,y) heightmaps). Output is a PNG built
  * with CompressionStream — no image library.
  */
-import { type Expr, substVars } from '../lib/expr.ts';
+import { densityAt, pdfExpr, shadePolygon } from '../lib/dist.ts';
+import { type Expr, evaluate, substVars } from '../lib/expr.ts';
 import type { Plot } from '../lib/plot.ts';
 import { clampPhi, fitView2D } from '../lib/view.ts';
 import { type Analysis, type RowInfo, analyze } from './graph.ts';
@@ -299,10 +300,68 @@ function heightmapExpr(expr: Expr): Expr | null {
   return zVar(expr.l) ? expr.r : zVar(expr.r) ? expr.l : null;
 }
 
-function renderRow2D(r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [number, number, number]) {
+function renderRow2D(
+  r: Raster, v: View2D, row: RowInfo, env: EvalEnv, color: [number, number, number], analysis: Analysis,
+) {
   const { cls, expr } = row;
   if (!cls) return;
   const compile = (e: Expr) => compileFor(env, e);
+  if (cls.plot.type === 'density' || cls.plot.type === 'prob') {
+    // Sampled-density rows: the same estimator the app uses (lib/dist.ts),
+    // drawn as a polyline (density) or a filled area under it (P(…)).
+    const shade = cls.plot.type === 'prob' ? cls.plot.shade : undefined;
+    if (cls.plot.type === 'prob' && !shade) return; // readout-only row
+    const name = cls.plot.type === 'density' ? cls.plot.rv : shade!.rv;
+    const curve = analysis.rvs.curve(name, analysis.constEnv);
+    if (!curve) return;
+    if (cls.plot.type === 'density') {
+      // Point masses draw as probability stems (height = mass, not density).
+      for (const a of curve.atoms ?? []) {
+        const ax = toScreenX(r, v, a.x);
+        drawLine(r, ax, toScreenY(r, v, 0), ax, toScreenY(r, v, a.p), color);
+        drawDisc(r, ax, toScreenY(r, v, a.p), 3.5, color);
+      }
+    }
+    if (curve.pts.length < 4) return;
+    const pts = shade
+      ? shadePolygon(
+          curve,
+          shade.lo ? evaluate(shade.lo, analysis.constEnv) : undefined,
+          shade.hi ? evaluate(shade.hi, analysis.constEnv) : undefined,
+        )
+      : curve.pts;
+    if (!pts) return;
+    const sx: number[] = [], sy: number[] = [];
+    for (let i = 0; i + 1 < pts.length; i += 2) {
+      sx.push(toScreenX(r, v, pts[i]));
+      sy.push(toScreenY(r, v, pts[i + 1]));
+    }
+    if (shade) fillPolygon(r, sx, sy, color, 0.16);
+    for (let i = 0; i + 1 < sx.length; i++) drawLine(r, sx[i], sy[i], sx[i + 1], sy[i + 1], color);
+    if (shade) drawLine(r, sx[sx.length - 1], sy[sy.length - 1], sx[0], sy[0], color);
+    return;
+  }
+  if (cls.plot.type === 'expect') {
+    // The mean marker the app draws: a stem from the axis to the density at
+    // x = E, capped with a dot (web/main.ts case 'expect').
+    const name = cls.plot.rv;
+    const m = analysis.rvs.mean(name, analysis.constEnv);
+    if (!Number.isFinite(m)) return;
+    const exact = analysis.rvs.exactDist(name);
+    let h: number;
+    try {
+      h = exact
+        ? evaluate(pdfExpr(exact, { kind: 'num', value: m }), analysis.constEnv)
+        : (c => (c ? densityAt(c, m) : 0))(analysis.rvs.curve(name, analysis.constEnv));
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(h) || h < 0) h = 0;
+    const mx = toScreenX(r, v, m);
+    if (h > 0) drawLine(r, mx, toScreenY(r, v, 0), mx, toScreenY(r, v, h), color);
+    drawDisc(r, mx, toScreenY(r, v, h), 3.5, color);
+    return;
+  }
   if (cls.plot.type === 'cobweb') {
     // A recurrence a_{n+1} = f(a_n) draws the same three pieces as the app
     // (web/main.ts): the map's curve y = f(x), the y = x diagonal the orbit
@@ -510,6 +569,13 @@ export const OG_COVERAGE: Record<Plot['type'], 'draws' | 'fallback'> = {
   // Solution marks require running the numeric solver, which is not wired
   // into this backend yet.
   system: 'fallback',
+  // Sampled densities run the same lib/dist.ts estimator on the CPU: the
+  // curve is a polyline, a shaded P(…) a filled polygon, an E(…) row a
+  // vertical mean marker. A readout-only P(…) row (no shade) draws nothing,
+  // matching the app's canvas.
+  density: 'draws',
+  prob: 'draws',
+  expect: 'draws',
 };
 
 /**
@@ -617,7 +683,7 @@ export function renderRaster(texts: string[], w = OG_WIDTH, h = OG_HEIGHT): Rast
     const view: View2D = box?.kind === 'view' ? fitView2D(box, w, h) : { cx: 0, cy: 0, upp: 12 / h };
     drawGrid2D(raster, view);
     for (const row of plotRows) {
-      try { renderRow2D(raster, view, row, env, colorOf(row)); } catch { /* skip row */ }
+      try { renderRow2D(raster, view, row, env, colorOf(row), analysis); } catch { /* skip row */ }
     }
   }
   return raster;

@@ -5,9 +5,9 @@
  * sample is too slow and Workers forbid dynamic codegen (`new Function`), so
  * expressions compile once to opcode arrays run by a small stack machine.
  */
-import { type Expr, erf, normalcdf, normalpdf } from '../lib/expr.ts';
+import { type Expr, erf, ineqComparisons, normalcdf, normalpdf } from '../lib/expr.ts';
 
-const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2, Fn3 }
+const enum Op { Const, Var, Add, Sub, Mul, Div, Pow, Neg, Fn1, Fn2, Fn3, Lt, Le, Gt, Ge, Sel }
 
 const FN1: Record<string, (x: number) => number> = {
   sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -95,6 +95,41 @@ export function compileProg(e: Expr, slots: ReadonlyMap<string, number>): Prog {
         }
         return;
       }
+      case 'piecewise': {
+        // No jumps: every case value evaluates eagerly and Sel keeps the first
+        // whose condition holds. A NaN in a discarded branch costs nothing.
+        const emitCond = (cond: Expr): void => {
+          if (cond.kind !== 'ineq') throw new Error('Piecewise conditions must be inequalities.');
+          ineqComparisons(cond).forEach(({ op, l, r }, k) => {
+            emit(l);
+            emit(r);
+            code.push(op === '<' ? Op.Lt : op === '<=' ? Op.Le : op === '>' ? Op.Gt : Op.Ge, 0);
+            push(-1);
+            if (k > 0) {
+              code.push(Op.Mul, 0); // AND of 0/1 masks
+              push(-1);
+            }
+          });
+        };
+        const emitCases = (k: number): void => {
+          if (k === node.cases.length) {
+            if (node.otherwise) emit(node.otherwise);
+            else {
+              code.push(Op.Const, consts.length);
+              consts.push(NaN);
+              push(1);
+            }
+            return;
+          }
+          emitCond(node.cases[k].cond);
+          emit(node.cases[k].value);
+          emitCases(k + 1);
+          code.push(Op.Sel, 0);
+          push(-2);
+        };
+        emitCases(0);
+        return;
+      }
       default:
         throw new Error(`Cannot evaluate a ${node.kind} node numerically.`);
     }
@@ -124,6 +159,13 @@ export function run(p: Prog, vars: ArrayLike<number>, stack: Float64Array): numb
       case Op.Fn1: stack[sp - 1] = FN1_TABLE[arg](stack[sp - 1]); break;
       case Op.Fn2: sp--; stack[sp - 1] = FN2_TABLE[arg](stack[sp - 1], stack[sp]); break;
       case Op.Fn3: sp -= 2; stack[sp - 1] = FN3_TABLE[arg](stack[sp - 1], stack[sp], stack[sp + 1]); break;
+      // Comparisons yield 1/0 masks (0 for NaN operands, like a false branch).
+      case Op.Lt: sp--; stack[sp - 1] = stack[sp - 1] < stack[sp] ? 1 : 0; break;
+      case Op.Le: sp--; stack[sp - 1] = stack[sp - 1] <= stack[sp] ? 1 : 0; break;
+      case Op.Gt: sp--; stack[sp - 1] = stack[sp - 1] > stack[sp] ? 1 : 0; break;
+      case Op.Ge: sp--; stack[sp - 1] = stack[sp - 1] >= stack[sp] ? 1 : 0; break;
+      // [cond, then, else] → the first matching case wins.
+      case Op.Sel: sp -= 2; stack[sp - 1] = stack[sp - 1] === 1 ? stack[sp] : stack[sp + 1]; break;
     }
   }
   return stack[sp - 1];

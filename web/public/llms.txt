@@ -4,8 +4,8 @@
 > regions, scalar fields, vector fields and ODEs, complex functions (including
 > domain coloring, conformal maps and escape-time fractals), 3D surfaces,
 > parametric curves/surfaces, plane geometry (named draggable points,
-> segments, polygons, squares, circles), and random variables with shaded
-> probabilities. No account, no server round-trips: the graph state
+> segments, polygons, squares, circles), symbolic derivatives and integrals,
+> and random variables with shaded probabilities. No account, no server round-trips: the graph state
 > lives in the URL fragment, so you can construct a link that opens the app
 > with any set of equations already rendered.
 
@@ -54,6 +54,8 @@ Examples (paste-ready):
 - [Double pendulum](https://equation.io/#g%20%3D%209.8;L1%20%3D%201;L2%20%3D%201;m1%20%3D%201;m2%20%3D%201;M%20%3D%20%5B((m1%2Bm2)%20L1%2C%20m2%20L2%20cos(th_1%20-%20th_2))%2C%20(L1%20cos(th_1%20-%20th_2)%2C%20L2)%5D;f%20%3D%20(-m2%20L2%20om_2%5E2%20sin(th_1%20-%20th_2)%20-%20(m1%2Bm2)%20g%20sin(th_1)%2C%20L1%20om_1%5E2%20sin(th_1%20-%20th_2)%20-%20g%20sin(th_2));th'%20%3D%20om;om'%20%3D%20solve(M%2C%20f);th(0)%20%3D%20(2.5%2C%202.4);b1%20%3D%20(L1%20sin(th_1)%2C%20-L1%20cos(th_1));b2%20%3D%20b1%20%2B%20(L2%20sin(th_2)%2C%20-L2%20cos(th_2));segment((0%2C%200)%2C%20b1);segment(b1%2C%20b2);b1;b2): `M = [((m1+m2) L1, m2 L2 cos(th_1 - th_2)), (L1 cos(th_1 - th_2), L2)]; f = (…); th' = om; om' = solve(M, f); th(0) = (2.5, 2.4); …` — the Lagrangian form M(θ)ω′ = f: th and om are 2-vector states with components th_1, th_2; solve() is Cramer's rule; segment()s between named bob points draw the linkage
 - [Orbit (vector gravity)](https://equation.io/#r'%20%3D%20vel;vel'%20%3D%20-9%20r%2F%7Cr%7C%5E3;r(0)%20%3D%20(2%2C%200);vel(0)%20%3D%20(0%2C%201.5);segment((0%2C%200)%2C%20r);r;(0%2C%200)): `r' = vel; vel' = -9 r/|r|^3; r(0) = (2, 0); vel(0) = (0, 1.5); segment((0, 0), r); r; (0, 0)` — vector states with point arithmetic; the bare state name draws as a moving point
 - [Matrix phase portrait](https://equation.io/#a%20%3D%20-1;b%20%3D%20-1%2F4;A%20%3D%20%5B(0%2C%201)%2C%20(a%2C%20b)%5D;(x'%2C%20y')%20%3D%20A%20(x%2C%20y)): `a = -1; b = -1/4; A = [(0, 1), (a, b)]; (x', y') = A (x, y)` — a linear system as its literal matrix, sliders in the entries
+- [Central limit theorem](https://equation.io/#X1%20~%20Uniform%280%2C%201%29;X2%20~%20Uniform%280%2C%201%29;X3%20~%20Uniform%280%2C%201%29;X4%20~%20Uniform%280%2C%201%29;S%20%3D%20X1%20%2B%20X2%20%2B%20X3%20%2B%20X4;Z%20~%20Normal%282%2C%20sqrt%281%2F3%29%29;P%28S%20%3E%203%29): `X1 ~ Uniform(0, 1); X2 ~ Uniform(0, 1); X3 ~ Uniform(0, 1); X4 ~ Uniform(0, 1); S = X1 + X2 + X3 + X4; Z ~ Normal(2, sqrt(1/3)); P(S > 3)` — the sum of four uniforms hugs the matching normal
+- [Conditional random variable](https://equation.io/#X%20~%20Normal%280%2C%201%29;Y%20%3D%20%7BX%20%3E%200%3A%20X%5E2%2C%201%7D;P%28Y%20%3E%200.5%29;P%28Y%20%3E%20X%29): `X ~ Normal(0, 1); Y = {X > 0: X^2, 1}; P(Y > 0.5); P(Y > X)` — a piecewise transform of X, with probabilities of derived and joint events
 
 ## Share links with preview images (/g/)
 
@@ -103,6 +105,21 @@ demand instead of living in a tool description. No authentication required.
   outside). Bounds must be numbers or constants defined in another row (not
   `t`), because the sum is expanded symbolically before compiling — which makes
   `N` a slider that adds terms as you drag it.
+- Integrals: `int[a..b] f(x) dx` (definite) and `int(f(x) dx)`
+  (antiderivative), also written `∫`. The trailing `dx` names the variable;
+  any letter works, so `y = int[0..x] exp(-t^2) dt` plots a function of x,
+  and bounds may use sliders, t, or x. Integration is symbolic where a
+  verified antiderivative exists — polynomials and rational functions
+  (exactly), the elementary families, u-substitution, integration by parts,
+  Gaussians via erf — and falls back to Gauss–Legendre quadrature expanded
+  in place otherwise, so non-elementary rows like `y = int[0..x] sin(t)/t dt`
+  (Si) still plot. A row whose integral resolves to a constant shows the
+  numeric value as a readout. Classic notations work: `int[0..1] dx/(1+x^2)`,
+  and iterated integrals pair inside-out: `int[0..1] int[0..y] x dx dy`.
+  Bounds may be `±inf` (or `∞`): `int[-inf..x] exp(t) dt` is exp(x),
+  `int[-inf..inf] exp(-x^2) dx` reads √π, and `int[-inf..x] normalpdf(t, 0, 1) dt`
+  is the normal cdf. Divergent limits are refused (the closed form is checked
+  against real quadrature), not misreported.
 - Comments: a row starting with `#` (e.g. `# tangent lines`) plots nothing; in
   the app it renders as a heading whose group (the rows until the next `#` row)
   can be collapsed. Use them to label sections of longer documents.
@@ -162,11 +179,43 @@ demand instead of living in a tool description. No authentication required.
 - Probability: `P(X < 2)`, `P(X > 0)` or `P(0 < X < 2)` shades that area
   under X's density and shows the numeric probability (normal CDF) as a
   readout under the row.
+- Expectation: `E(X)`, `E(X^2 + Y)` — the mean of any expression in random
+  variables, shown as a readout under the row and marked on the density.
 - Parametric curve: components in u — `(2cos(2pi u), sin(4pi u))`; three
   components make a 3D curve — `(2cos(6pi u), 2sin(6pi u), 4u - 2)`.
 - Parametric surface: three components in u and v —
   `(cos(2pi u)(2+cos(2pi v)), sin(2pi u)(2+cos(2pi v)), sin(2pi v))`.
 - 3D surface: any equation in x, y, z.
+- Random variable: `X ~ Normal(mean, sd)` — also `Uniform(lo, hi)` and
+  `Exponential(rate)`, with short aliases `N`, `U`, `Exp`; a bare name means
+  the standard parameters (`X ~ N` is Normal(0, 1)). The row plots the exact
+  density curve; parameters may use sliders and t.
+- Derived random variable: `Y = X^2`, `S = X1 + X2` — arithmetic over
+  declared random variables declares a new one, including piecewise
+  conditionals: `Y = {X > 0: X^2, 1}`. Distinct names are independent, so
+  `S = X1 + X2` is the convolution; the same name stays dependent, so
+  `X + X` is exactly 2X. A bare expression in random variables (`X + Y` as
+  its own row) plots that density without naming it. Affine forms stay
+  exact: combinations of normals (`Z = (X + Y)/2`) are the exact normal, a
+  scaled/shifted uniform is a uniform, and sums of uniforms (`S = X1 + X2`,
+  the central-limit demo) draw their exact piecewise-polynomial convolution —
+  the triangle's apex is a true corner. These rows report exact μ and σ.
+  Everything else (products, nonlinear or piecewise transforms, mixed
+  families) is estimated from 131072 joint samples and reports μ, σ as `≈`.
+  Point masses are detected and drawn as probability stems (height = mass):
+  `Y = {X > 0: 1, 2}` is two stems, `floor(4X)` four, and a mixed result
+  like `{X > 0: X^2, 1}` draws its stem plus the continuous density.
+- Probability: `P(X < 2)`, `P(-1 < X < 2)`, and bounds around one expression
+  like `P(0.5 < X + Y < 1.5)` — exact (closed-form CDF or polynomial
+  integration) with the area under the density shaded, whenever the bounded
+  variable or expression has an exact law. Any other inequality —
+  `P(Y > 0.5)` for a nonlinear Y, `P(Y > X)` — is estimated from the joint
+  samples; the row shows the value as `≈`.
+- Expectation: `E(X)`, `E(2X + 3)`, `E(X^2 + Y)` — the mean of any
+  expression in the declared variables, exact whenever the expression has an
+  exact law (closed-form pdfs, affine combinations of normals, uniform sums)
+  and the finite-sample mean otherwise. The row shows the value as a readout
+  and draws a vertical marker at x = E under the expression's density.
 
 ## Definitions (extra rows that set up the others)
 

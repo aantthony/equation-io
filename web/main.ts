@@ -6,25 +6,33 @@ import {
   defKey,
   emptyDefs,
   evalConstEnv,
-  RESERVED,
   resolveExpr,
   scanDefinition,
+  usesIntegral,
   type Definition,
   type Defs,
 } from '../lib/defs.ts';
 import { buildComb, buildTube, combScale, curveExtent, curveFrames } from '../lib/curve3d.ts';
 import {
-  type DistDef,
+  type BaseDist,
+  type DensityCurve,
+  RVSystem,
+  buildRVSystem,
+  checkDerived,
+  densityAt,
   densityExpr,
+  matchExpectation,
   matchProbability,
-  parseDistribution,
+  pdfExpr,
   probabilityValue,
   regionExpr,
-  scanDistribution,
+  scanRandomRows,
+  shadePolygon,
+  toExpectation,
   toProbability,
 } from '../lib/dist.ts';
 import { SLIDER_NUM_RE as NUM_RE, dragAxes } from '../lib/drag.ts';
-import { type Expr, builtinFn, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
+import { type Expr, evaluate, freeVars, parseExpr, substVars } from '../lib/expr.ts';
 import { lowerGeom, pointComps } from '../lib/geom.ts';
 import { decodePayload, encodePayload } from '../lib/link.ts';
 import { type GridField, angularSpacing, buildGridField, sampleGradMag } from '../lib/grid.ts';
@@ -163,6 +171,11 @@ let stateVals: Record<string, number> = {};
 let stateTime = 0;
 /** Compiled coordinate fields; non-empty replaces the Cartesian grid. */
 let gridFields: GridField[] = [];
+/** Declared random variables and their sample caches (persists across
+ *  recompiles; definition-aware caching makes stale samples impossible). */
+const rvSys = new RVSystem();
+/** Every declared random-variable name, healthy or not. */
+let rvNames: ReadonlySet<string> = new Set();
 /** Click-dropped seeds for integral curves through vector fields / ODEs. */
 const drops: Array<{ x: number; y: number }> = [];
 /** What the pointer can grab, in math coords; rebuilt by every 2D frame. */
@@ -516,6 +529,9 @@ function render() {
         case 'sequence':
         case 'cobweb':
         case 'bifurcation':
+        case 'density':
+        case 'prob':
+        case 'expect':
           break; // 2D-only plots (densities, flows, sequences, planar figures); skipped in 3D scenes
         case 'plist': {
           const env = { ...constEnv, t: time };
@@ -750,6 +766,52 @@ function render() {
         case 'bifurcation':
           layers.bifs.push({ field: plot.field, color, params, uniforms: { uSeed: seedOf(plot.a0Name) } });
           break;
+        case 'density': {
+          let c: DensityCurve | null = null;
+          try {
+            c = rvSys.curve(plot.rv, env);
+          } catch { break; /* a parameter is missing this frame */ }
+          if (!c) break;
+          if (c.pts.length >= 4) extras.polylines.push({ pts: c.pts, color: css, width: 2 });
+          // Point masses draw as probability stems (height = mass, not density).
+          for (const a of c.atoms ?? []) {
+            extras.polylines.push({ pts: [a.x, 0, a.x, a.p], color: css, width: 2 });
+            extras.points.push({ x: a.x, y: a.p, color: css, r: 4 });
+          }
+          break;
+        }
+        case 'prob': {
+          // The estimate lives in the row's readout; the plot is the shaded
+          // area under the variable's density, when the body has that shape.
+          if (!plot.shade) break;
+          try {
+            const c = rvSys.curve(plot.shade.rv, env);
+            if (!c) break;
+            const lo = plot.shade.lo ? evaluate(plot.shade.lo, env) : undefined;
+            const hi = plot.shade.hi ? evaluate(plot.shade.hi, env) : undefined;
+            const poly = shadePolygon(c, lo, hi);
+            if (poly) {
+              extras.polylines.push({ pts: poly, color: css, closed: true, fill: cssColorA(color, 0.16) });
+            }
+          } catch { /* not evaluable this frame */ }
+          break;
+        }
+        case 'expect': {
+          // The value lives in the row's readout; the plot is a vertical
+          // marker at x = E under the variable's density.
+          try {
+            const m = rvSys.mean(plot.rv, env);
+            if (!isFinite(m)) break;
+            const exact = rvSys.exactDist(plot.rv);
+            let h = exact
+              ? evaluate(pdfExpr(exact, { kind: 'num', value: m }), env)
+              : (c => (c ? densityAt(c, m) : 0))(rvSys.curve(plot.rv, env));
+            if (!isFinite(h) || h < 0) h = 0;
+            if (h > 0) extras.polylines.push({ pts: [m, 0, m, h], color: css, width: 2 });
+            extras.points.push({ x: m, y: h, color: css, r: 4 });
+          } catch { /* not evaluable this frame */ }
+          break;
+        }
         case 'system':
           // A 3-unknown system forces the 3D view, so only 2D lands here.
           if (plot.dim === 2) {
@@ -829,10 +891,20 @@ const stateResetBtn = document.getElementById('state-reset') as HTMLButtonElemen
  * on every keystroke.
  */
 function recompileAll() {
+  // Random-variable rows resolve outside the definition system: `X ~ …` is
+  // never a definition, and `Y = X^2` with X random declares a *derived*
+  // random variable, not a constant. The scan is transitive (`Z = Y + 1`
+  // follows Y into the set), so it must see the whole document first.
+  const rvScan = scanRandomRows(equations.map(eq => {
+    const text = eq.text.trim();
+    return !text || text.startsWith('#') || scanSeqRec(text) ? null : text;
+  }));
+  const rvRowIdx = new Set([...rvScan.base.keys(), ...rvScan.derived.keys()]);
+
   const raw: Definition[] = [];
   const defRows = new Map<string, Equation>();
   const dupRows: Equation[] = [];
-  for (const eq of equations) {
+  for (const [i, eq] of equations.entries()) {
     eq.cls = undefined;
     eq.parsed = undefined;
     eq.error = undefined;
@@ -844,6 +916,7 @@ function recompileAll() {
     eq.comment = text.startsWith('#');
     if (!eq.comment) eq.collapsed = undefined;
     if (!text || eq.comment) continue;
+    if (rvRowIdx.has(i)) continue;
     // Sequence/recurrence rows (a_n = …, a_{n+1} = …) are plots, not definitions.
     if (scanSeqRec(text)) continue;
     const d = scanDefinition(text);
@@ -917,31 +990,77 @@ function recompileAll() {
   for (const name of defs.states.keys()) delete constVals[name];
   const ropts = { consts: constVals, boundConsts: sumBoundNames };
 
-  // Random-variable rows (`X ~ Normal(0, a)`) resolve first so P(…) rows can
-  // reference them regardless of row order.
-  const dists = new Map<string, DistDef>();
+  // Random-variable rows resolve before plot rows so P(…) and bare
+  // expressions can reference them regardless of row order.
+  const builtRVs = buildRVSystem(rvSys, rvScan, {
+    fnNames,
+    getFn,
+    ropts,
+    constNames,
+    taken: n => defs.consts.has(n) || defs.fns.has(n) || defs.fields.has(n)
+      || defs.states.has(n) || defs.points.has(n) || defs.mats.has(n),
+  });
+  rvNames = builtRVs.names;
   const distRows = new Set<Equation>();
-  for (const eq of equations) {
-    if (eq.def || eq.comment) continue;
-    const text = eq.text.trim();
-    if (!text) continue;
-    const scan = scanDistribution(text);
-    if (!scan) continue;
-    distRows.add(eq);
+  // Readout environment: constants at t = 0. Animated or state-fed variables
+  // simply skip their readout (the sampler throws on the missing name).
+  let envT0: Record<string, number> | null = null;
+  try {
+    envT0 = evalConstEnv(defs, 0);
+  } catch { /* a broken constant: rows using it already carry errors */ }
+  const rvInfo = (eq: Equation, name: string) => {
+    if (!envT0) return;
     try {
-      if (RESERVED.has(scan.name) || builtinFn(scan.name)) {
-        throw new Error(`Cannot use ${scan.name} as a random variable name.`);
+      // Exact moments where the law has a closed form; the sample estimate
+      // (with its ≈) everywhere else.
+      const m = rvSys.exactMoments(name, envT0);
+      if (m && isFinite(m.mean) && isFinite(m.sd)) {
+        eq.info = `μ = ${fmtNum(m.mean)}, σ = ${fmtNum(m.sd)}`;
+        return;
       }
-      if (dists.has(scan.name) || defs.consts.has(scan.name) || defs.fns.has(scan.name) || defs.fields.has(scan.name)) {
-        throw new Error(`${scan.name} is already defined.`);
-      }
-      const d = parseDistribution(scan.name, scan.rhs, fnNames);
-      d.mean = resolveExpr(d.mean, getFn, ropts);
-      d.sd = resolveExpr(d.sd, getFn, ropts);
-      dists.set(scan.name, d);
-      eq.cls = classify(densityExpr(d), constNames);
-    } catch (e) {
-      eq.error = e instanceof Error ? e.message : String(e);
+      // One-variable transforms integrate against the base pdf (quadrature):
+      // still ≈, but good to display precision rather than sampling noise.
+      const s = rvSys.quadMoments(name, envT0) ?? rvSys.curve(name, envT0);
+      if (!s) return;
+      eq.info = `μ ≈ ${s.mean.toFixed(3)}, σ ≈ ${s.sd.toFixed(3)}`
+        + (s.mass < 0.9995 ? `, P(defined) ≈ ${s.mass.toFixed(3)}` : '');
+    } catch { /* not numerically computable right now (e.g. animated) */ }
+  };
+  // A derived variable whose law is a closed-form pdf (affine in normals, or
+  // a single scaled uniform/exponential) plots exactly through the shader; a
+  // uniform-sum law plots its exact piecewise polynomial via curve(); only
+  // the rest estimate from samples.
+  const classifyDerived = (eq: Equation, name: string) => {
+    const exact = rvSys.exactDist(name);
+    if (exact && rvSys.get(name)!.kind === 'derived') {
+      eq.cls = classify(densityExpr(exact), constNames);
+    } else {
+      eq.cls = densityCls(name);
+    }
+    rvInfo(eq, name);
+  };
+  const densityCls = (name: string): Classified => {
+    const ps = rvSys.paramsOf(name);
+    return {
+      plot: { type: 'density', rv: name },
+      animated: ps.has('t'),
+      needs3D: false,
+      params: [...ps].filter(p => p !== 't'),
+    };
+  };
+  for (const [i, name] of builtRVs.rowRV) {
+    const eq = equations[i];
+    distRows.add(eq);
+    const message = builtRVs.errors.get(i);
+    if (message) {
+      eq.error = message;
+      continue;
+    }
+    const rv = rvSys.get(name)!;
+    if (rv.kind === 'base') {
+      eq.cls = classify(densityExpr(rv.dist), constNames);
+    } else {
+      classifyDerived(eq, name);
     }
   }
 
@@ -960,14 +1079,92 @@ function recompileAll() {
       }
       const probBody = defs.consts.has('P') || defs.fns.has('P') ? null : matchProbability(text);
       if (probBody !== null) {
-        if (!dists.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
-        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn, ropts), dists);
-        eq.cls = classify(regionExpr(p), constNames);
-        try {
-          const value = probabilityValue(p, evalConstEnv(defs, 0));
-          if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
-        } catch {
-          // Not numerically computable right now (e.g. animated); no readout.
+        if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const p = toProbability(resolveExpr(parseExpr(probBody, fnNames), getFn, ropts), rvNames);
+        for (const name of p.rvs) {
+          if (!rvSys.has(name)) throw new Error(`${name} has an error in its definition.`);
+        }
+        // Bounds around an inline expression (`P(0.5 < X + Y < 1.5)`) become
+        // bounds on an anonymous derived variable, so exactness and shading
+        // work exactly as for a named one.
+        let single = p.single;
+        if (!single && p.inline) {
+          checkDerived(p.inline.e, rvNames, constNames);
+          const anon = `@P${eq.id}`;
+          rvSys.add({ name: anon, kind: 'derived', expr: p.inline.e });
+          single = { rv: anon, lo: p.inline.lo, hi: p.inline.hi };
+        }
+        // Constant bounds on one variable whose law is a closed-form pdf get
+        // the exact CDF and the shader-drawn region.
+        const exact = single ? rvSys.exactDist(single.rv) : null;
+        if (single && exact) {
+          eq.cls = classify(regionExpr(exact, single.lo, single.hi), constNames);
+          try {
+            const value = probabilityValue(exact, single.lo, single.hi, evalConstEnv(defs, 0));
+            if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
+          } catch {
+            // Not numerically computable right now (e.g. animated); no readout.
+          }
+        } else {
+          // Everything else draws/estimates through the sampled channel —
+          // but a uniform-sum law still gets its exact value (and its shade
+          // fills under the exact piecewise-polynomial curve).
+          const ps = rvSys.bodyParams(p.body);
+          eq.cls = {
+            plot: { type: 'prob', body: p.body, shade: single },
+            animated: ps.has('t'),
+            needs3D: false,
+            params: [...ps].filter(v => v !== 't'),
+          };
+          if (envT0) {
+            try {
+              const value = single
+                ? rvSys.exactProbability(single.rv, single.lo, single.hi, envT0)
+                : null;
+              if (value !== null) {
+                if (isFinite(value)) eq.info = `≈ ${value.toFixed(4)}`;
+              } else {
+                const mc = rvSys.probability(p.body, envT0);
+                if (isFinite(mc)) eq.info = `≈ ${mc.toFixed(3)}`;
+              }
+            } catch { /* animated or broken: no readout */ }
+          }
+        }
+        continue;
+      }
+      const expectBody = defs.consts.has('E') || defs.fns.has('E') ? null : matchExpectation(text);
+      if (expectBody !== null) {
+        if (!rvNames.size) throw new Error('Define a random variable first, e.g. X ~ Normal(0, 1).');
+        const ex = toExpectation(resolveExpr(parseExpr(expectBody, fnNames), getFn, ropts), rvNames);
+        for (const name of ex.rvs) {
+          if (!rvSys.has(name)) throw new Error(`${name} has an error in its definition.`);
+        }
+        // The body becomes the variable whose density carries the marker: a
+        // bare name is itself, anything else an anonymous derived variable —
+        // so exact laws (affine in normals, uniform sums) apply unchanged.
+        let name: string;
+        if (ex.body.kind === 'var' && rvSys.has(ex.body.name)) {
+          name = ex.body.name;
+        } else {
+          checkDerived(ex.body, rvNames, constNames);
+          name = `@E${eq.id}`;
+          rvSys.add({ name, kind: 'derived', expr: ex.body });
+        }
+        const ps = rvSys.bodyParams(ex.body);
+        eq.cls = {
+          plot: { type: 'expect', rv: name },
+          animated: ps.has('t'),
+          needs3D: false,
+          params: [...ps].filter(p => p !== 't'),
+        };
+        if (envT0) {
+          try {
+            // Closed form and quadrature both earn full display precision;
+            // only the Monte Carlo fallback rounds to its noise floor.
+            const m = rvSys.exactMoments(name, envT0) ?? rvSys.quadMoments(name, envT0);
+            const value = m ? m.mean : rvSys.mean(name, envT0);
+            if (isFinite(value)) eq.info = `≈ ${value.toFixed(m ? 4 : 3)}`;
+          } catch { /* animated or broken: no readout */ }
         }
         continue;
       }
@@ -976,7 +1173,24 @@ function recompileAll() {
         eq.cls = classifySeqRec(seq, fnNames, getFn, constNames, ropts);
         continue;
       }
-      let parsed = resolveExpr(parseExpr(text, fnNames), getFn, ropts);
+      const rawParsed = parseExpr(text, fnNames);
+      let parsed = resolveExpr(rawParsed, getFn, ropts);
+      // A bare expression in random variables (`X + Y`, `X^2`) plots the
+      // density of that derived variable — distribution arithmetic in place.
+      const rvRefs = [...freeVars(parsed)].filter(n => rvNames.has(n));
+      if (rvRefs.length) {
+        for (const n of rvRefs) {
+          if (!rvSys.has(n)) throw new Error(`${n} has an error in its definition.`);
+        }
+        if (parsed.kind === 'ineq') {
+          throw new Error(`An inequality in random variables is a probability: try P(${text}).`);
+        }
+        checkDerived(parsed, rvNames, constNames);
+        const name = `@${eq.id}`;
+        rvSys.add({ name, kind: 'derived', expr: parsed });
+        classifyDerived(eq, name);
+        continue;
+      }
       // Expand point arithmetic and geometry statements (segment, polygon, …)
       // into scalar expressions; a point name A becomes (A_x, A_y).
       parsed = lowerGeom(parsed, n => compsOf(defs, n), n => defs.mats.get(n) ?? null);
@@ -985,10 +1199,19 @@ function recompileAll() {
       if (defs.fields.size) parsed = substVars(parsed, fieldEnv);
       eq.cls = classify(parsed, constNames);
       eq.parsed = parsed;
+      // A row that wrote an ∫ and resolved to a constant gets its value as a
+      // readout (the plot is the horizontal line y = that value).
+      if (envT0 && usesIntegral(rawParsed)) {
+        try {
+          const value = evaluate(parsed, envT0);
+          if (isFinite(value)) eq.info = `≈ ${Number(value.toPrecision(6))}`;
+        } catch { /* depends on plot coordinates: the curve is the answer */ }
+      }
     } catch (e) {
       eq.error = e instanceof Error ? e.message : String(e);
     }
   }
+  rvSys.prune(); // sample caches of variables that no longer exist
   spGen++; // queued hover recomputes predate this compile: drop them
   spQueue.clear();
   setHover(null);
@@ -1894,6 +2117,13 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['normal density', 'X ~ Normal(0, 1)'],
     ['P(X < b)', 'a = 1; b = 0.5; X ~ Normal(0, a); P(X < b)'],
     ['between two bounds', 'X ~ Normal(0, 1); P(-1 < X < 2)'],
+    ['uniform + exponential', 'X ~ Uniform(0, 2); Y ~ Exponential(1); P(0.5 < X < 1.5)'],
+    ['sum = convolution', 'X ~ Uniform(0, 1); Y ~ Uniform(0, 1); X + Y'],
+    ['central limit theorem', 'view(x = -0.5..4.5, y = -0.15..1.35); '
+      + 'X1 ~ Uniform(0, 1); X2 ~ Uniform(0, 1); X3 ~ Uniform(0, 1); X4 ~ Uniform(0, 1); '
+      + 'S = X1 + X2 + X3 + X4; Z ~ Normal(2, sqrt(1/3)); P(S > 3)'],
+    ['conditional variable', 'X ~ Normal(0, 1); Y = {X > 0: X^2, 1}; P(Y > 0.5); P(Y > X)'],
+    ['expectation', 'X ~ Uniform(0, 1); Y = X^2; E(Y); E(X + Y)'],
   ]],
   ['regions', [
     ['open half-plane', 'y < x/2 + 1'],
@@ -1920,6 +2150,11 @@ const EXAMPLES: Array<[string, Array<[string, string]>]> = [
     ['function', 'f(x) = x^3 - 3x; y = f(x)'],
     ['derivative', 'y = d/dx (x^3 - 3x)'],
     ['tangent line', 'f(x) = x^3 - 2x; g(x) = d/dx f(x); a = 1; y = f(x); y = f(a) + g(a)(x - a)'],
+    ['running integral', 'view(x = -7..7, y = -1.5..4); f(x) = sin(x)^2; y = f(x); y = int[0..x] f(t) dt'],
+    ['antiderivative', 'f(x) = x^2 - 1; y = f(x); y = int(f(x) dx)'],
+    ['gaussian error fn', 'view(x = -4..4, y = -1.2..1.2); y = int[0..x] exp(-t^2) dt'],
+    ['normal cdf', 'view(x = -4..4, y = -0.6..1.2); y = normalpdf(x, 0, 1); y = int[-inf..x] normalpdf(t, 0, 1) dt'],
+    ['sine integral Si(x)', 'view(x = -20..20, y = -2.2..2.2); y = int[0..x] sin(t)/t dt'],
     ['orbiting charge', 'r = 2 + sin(t); ln(w - r) - ln(w + r)'],
   ]],
   ['series', [

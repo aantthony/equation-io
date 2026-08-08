@@ -87,6 +87,80 @@ describe('og raster renderer', () => {
     expect(Math.max(...pixel(r, 90, 10))).toBeLessThan(245);
   });
 
+  it('draws base distribution rows exactly: pdf curve + shaded P(…) region', () => {
+    const rows = ['view(x = -4..4, y = -0.05..0.45)', 'X ~ Normal(0, 1)', 'P(X > 1)'];
+    const r = renderRaster(rows, 100, 100);
+    // The density passes (0.6, 0.333): screen (57.5, ~48) with the view
+    // centered at (0, 0.2) and 0.08 units/px — off the axis gridlines, so
+    // only the curve itself can ink it.
+    const near: number[] = [];
+    for (const x of [57, 58]) for (const y of [47, 48, 49]) near.push(Math.min(...pixel(r, x, y)));
+    expect(Math.min(...near)).toBeLessThan(200);
+    // Inside the shaded tail (world (1.5, 0.05)) the fill tints the pixel.
+    expect(Math.min(...pixel(r, 69, 52))).toBeLessThan(245);
+    // The untouched upper-left corner stays background.
+    expect(Math.min(...pixel(r, 10, 10))).toBeGreaterThan(240);
+  });
+
+  it('draws the piecewise uniform pdf and its region through the VM', () => {
+    const rows = ['view(x = -1..3, y = -0.1..1.2)', 'X ~ Uniform(0, 2)', 'P(0.5 < X < 1.5)'];
+    const r = renderRaster(rows, 100, 100);
+    // Inside the shaded band under pdf = 0.5 (world (0.8, 0.25)) vs the same
+    // height outside the support (world (2.5, 0.25)).
+    const inside = Math.min(...pixel(r, 45, 57));
+    const outside = Math.min(...pixel(r, 87, 57));
+    expect(inside).toBeLessThan(outside - 5);
+    // The box top, pdf = 0.5 on (0, 2): world (1.4, 0.5) → screen (60, ~51).
+    const top = [50, 51, 52].map(y => Math.min(...pixel(r, 60, y)));
+    expect(Math.min(...top)).toBeLessThan(200);
+  });
+
+  it('draws sampled densities: sum of uniforms + shaded Monte Carlo P(…)', () => {
+    const view = 'view(x = -1..3, y = -0.1..1.2)';
+    const grid = inkFraction(renderRaster([view], 100, 100));
+    const rows = [view, 'X ~ Uniform(0, 1)', 'Y ~ Uniform(0, 1)', 'S = X + Y', 'P(0.5 < S < 1.5)'];
+    const r = renderRaster(rows, 100, 100);
+    expect(inkFraction(r)).toBeGreaterThan(grid + 0.02);
+    // Under the triangle density's peak, inside the shaded band.
+    expect(Math.min(...pixel(r, 50, 51))).toBeLessThan(245);
+    // Beyond the sum's support stays background.
+    expect(Math.min(...pixel(r, 90, 20))).toBeGreaterThan(240);
+  });
+
+  it('draws E(…) rows as a mean marker under the density', () => {
+    const rows = ['view(x = -1..3, y = -0.1..1.2)', 'X ~ Uniform(0, 1.4)', 'E(X)'];
+    const r = renderRaster(rows, 100, 100);
+    // E[X] = 0.7 → screen x ≈ 42.5; the stem runs from the axis (py ≈ 64)
+    // up to pdf = 1/1.4 ≈ 0.714 (py ≈ 46).
+    const stem = [42, 43].map(x => Math.min(...pixel(r, x, 55)));
+    expect(Math.min(...stem)).toBeLessThan(210);
+    // The same height away from the mean is inside the box but unmarked.
+    expect(Math.min(...pixel(r, 30, 55))).toBeGreaterThan(230);
+  });
+
+  it('draws point masses as probability stems', () => {
+    const rows = ['view(x = 0..3, y = -0.2..1.2)', 'X ~ Normal(0, 1)', 'Y = {X > 0: 1.3, 2.6}'];
+    const r = renderRaster(rows, 100, 100);
+    // The stem at x = 1.3 (screen ~43) runs from the axis up to p = 0.5.
+    expect(Math.min(...pixel(r, 43, 58))).toBeLessThan(200);
+    // Above the stem top there is nothing — no KDE bump smearing the atom.
+    expect(Math.min(...pixel(r, 43, 40))).toBeGreaterThan(230);
+  });
+
+  it('renders a non-elementary integral curve (Si) through the VM', () => {
+    // The quadrature-sum expansion is an ordinary expression, so the stack VM
+    // samples it per pixel like any other implicit curve.
+    const rows = ['view(x = 0..10, y = 0..2)', 'y = int[0..x] sin(t)/t dt'];
+    const r = renderRaster(rows, 100, 100);
+    // Uniform scale: the x span wins, 0.1 units/px with cy = 1. Si peaks at
+    // x = π with Si(π) ≈ 1.852 → screen (~31, ~41.5).
+    const near: number[] = [];
+    for (const x of [30, 31, 32]) for (const y of [40, 41, 42, 43]) near.push(Math.min(...pixel(r, x, y)));
+    expect(Math.min(...near)).toBeLessThan(200);
+    // Far from the curve stays background.
+    expect(Math.min(...pixel(r, 80, 80))).toBeGreaterThan(230);
+  });
+
   it('renders definitions + slider constants (tangent-line graph)', () => {
     const rows = ['f(x) = x^2 - 2x', 'g(x) = d/dx f(x)', 'a = 3', 'y = f(x)', 'y = f(a) + g(a)(x - a)'];
     expect(inkFraction(renderRaster(rows, 120, 120))).toBeGreaterThan(0.02);

@@ -92,6 +92,16 @@ export function diff(e: Expr, v: string): Expr {
         const n = sub(mul(diff(y, v), x), mul(y, diff(x, v)));
         return div(n, add(pow(x, num(2)), pow(y, num(2))));
       }
+      if ((e.name === 'normalpdf' || e.name === 'normalcdf') && e.args.length === 3) {
+        // Full chain rule in all three arguments (x, mean, sd may all move).
+        const [x, m, s] = e.args;
+        const z = div(sub(x, m), s);
+        const dz = div(sub(sub(diff(x, v), diff(m, v)), mul(z, diff(s, v))), s);
+        const pdf = call('normalpdf', x, m, s);
+        if (e.name === 'normalcdf') return mul(mul(pdf, s), dz);
+        // φ′ = φ·(−z·z′ − s′/s): the −z z′ from the exponent, −s′/s from 1/s.
+        return mul(pdf, sub(mul(neg(z), dz), div(diff(s, v), s)));
+      }
       if (e.args.length !== 1) throw new Error(`Cannot differentiate ${e.name}.`);
       const a = e.args[0];
       const da = diff(a, v);
