@@ -280,8 +280,8 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement, grip: HTML
       idle();
       return;
     }
-    // A glide with one soft arrival bounce; the finger's speed carries in.
-    animateTo(target, v, 0.45, 0.85, () => {
+    // A glide with a lively arrival bounce; the finger's speed carries in.
+    animateTo(target, v, 0.45, 0.7, () => {
       setCorner(i);
       idle();
     });
@@ -304,7 +304,7 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement, grip: HTML
     }
     panel.style.willChange = 'transform, opacity';
     paint();
-    animateTo({ x: 0, y: 0 }, { x: 0, y: 0 }, 0.42, 0.8, idle);
+    animateTo({ x: 0, y: 0 }, { x: 0, y: 0 }, 0.42, 0.6, idle);
   }
 
   // --- gestures ---
@@ -544,7 +544,7 @@ export function initPanelSwipe(panel: HTMLElement, chip: HTMLElement, grip: HTML
       return;
     }
     if (open) {
-      animateTo({ x: 0, y: 0 }, v, 0.42, 0.8, idle);
+      animateTo({ x: 0, y: 0 }, v, 0.42, 0.6, idle);
     } else {
       // Not pulled far enough: park it again and bring the chip back.
       const parked = { x: geo.rest.x + g.base.x, y: geo.rest.y + g.base.y };
